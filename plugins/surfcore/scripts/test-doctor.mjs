@@ -1,5 +1,6 @@
 // 新手体检的判定规则（纯函数）：哪项该红、该给什么修复提示、一键配置补什么。
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { buildInstallChecks, installOk, planDoctorFix } from '../lib/doctor.js';
 
 const base = {
@@ -64,6 +65,12 @@ const base = {
     ['写入管理员 QQ']);
   assert.deepEqual(planDoctorFix({ hasUnified: true, hasToken: true, ownerQQ: 'abc', currentOwnerQQ: '' }), []);
   assert.deepEqual(planDoctorFix({ hasUnified: true, hasToken: true, ownerQQ: '1000000001', currentOwnerQQ: '1000000001' }), []);
+}
+
+// 回归守卫：诊断必须拿桥接状态，别再把 config 的 snowluma 段传进去（传错会恒定误报 onebot-rejected）
+{
+  const block = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8').match(/async function installChecks[\s\S]{0,1600}/)[0];
+  assert.ok(/bridgeStatus\(\)/.test(block) && !/diagnoseSnowLuma\(snow\)/.test(block), 'installChecks 应传桥接状态');
 }
 
 console.log('✅ 新手体检判定通过');
