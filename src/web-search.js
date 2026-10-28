@@ -33,6 +33,8 @@ const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const DEFAULT_API_VERSION = '2023-06-01';
 const DEFAULT_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+const DEFAULT_ACCOUNT_CREDENTIAL = 'deepseek-account-platform/default';
+const DEFAULT_API_SEARCH_URL = 'https://api.deepseek.com/v1/tools';
 const DEFAULT_TIMEOUT_MS = 35000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -45,6 +47,7 @@ const defaultConfig = Object.freeze({
   apiKey: '',
   apiKeyEnv: DEFAULT_API_KEY_ENV,
   baseURL: '',
+  apiSearchURL: '',
   model: DEFAULT_MODEL,
   maxUses: 5,
   maxTokens: 4096,
@@ -73,6 +76,7 @@ export function loadSearchConfig(root) {
     apiKey: typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
     apiKeyEnv: typeof raw.apiKeyEnv === 'string' && raw.apiKeyEnv.trim() ? raw.apiKeyEnv.trim() : DEFAULT_API_KEY_ENV,
     baseURL: typeof raw.baseURL === 'string' ? raw.baseURL.trim().replace(/\/+$/, '') : '',
+    apiSearchURL: typeof raw.apiSearchURL === 'string' ? raw.apiSearchURL.trim().replace(/\/+$/, '') : '',
     model: typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : DEFAULT_MODEL,
     maxUses: num(raw.maxUses, defaultConfig.maxUses, 1, 5),
     maxTokens: num(raw.maxTokens, defaultConfig.maxTokens, 256, 8192),
@@ -88,15 +92,20 @@ export function resolveDshHome() {
 
 /**
  * 从 DSH 的凭据文件里取 key。
- * 结构：`refs: { <名称>: <明文值> }`（实测；不是记录 id）。只看指定 ref，绝不遍历其它凭据。
+ * 旧结构是 `refs: { <名称>: <明文值> }`；
+ * DSH 0.2.x 起改成 `records: { <id>: { kind, payload: { token } } }`，两代都要认。
+ * 只看指定名字，绝不遍历其它凭据。
  */
 export function readDshCredential(ref) {
   const name = String(ref ?? '').trim();
   if (!name) return '';
   try {
     const doc = YAML.load(fs.readFileSync(path.join(resolveDshHome(), '.credentials.yaml'), 'utf8'));
-    const value = doc?.refs?.[name];
-    return typeof value === 'string' ? value.trim() : '';
+    const legacy = doc?.refs?.[name];
+    if (typeof legacy === 'string' && legacy.trim()) return legacy.trim();
+    const token = doc?.records?.[name]?.payload?.token;
+    if (typeof token === 'string' && token.trim()) return token.trim();
+    return '';
   } catch {
     return '';
   }
@@ -111,6 +120,8 @@ export function resolveSearchApiKey(config) {
   if (fromEnv) return { key: fromEnv, source: 'env' };
   const fromDsh = readDshCredential(envName);
   if (fromDsh) return { key: fromDsh, source: 'dsh-credentials' };
+  const fromAccount = readDshCredential(DEFAULT_ACCOUNT_CREDENTIAL);
+  if (fromAccount) return { key: fromAccount, source: 'dsh-account-credential' };
   return { key: '', source: 'none' };
 }
 
@@ -285,9 +296,72 @@ async function postJson(url, addresses, options) {
   throw lastError ?? new Error('联网搜索请求失败');
 }
 
+/**
+ * Map the /v1/tools/search payload into the shared result shape.
+ * The API returns a short summary per hit, so callers rarely need a second fetch.
+ */
+export function mapApiSearchResponse(payload, maxResults = 10) {
+  const items = Array.isArray(payload?.results) ? payload.results : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const url = normalizeSearchUrl(item?.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const title = String(item?.title ?? '').trim().slice(0, 200) || url;
+    const snippet = String(item?.summary ?? item?.snippet ?? '').trim().slice(0, 500);
+    out.push({ title, url, ...(snippet ? { snippet } : {}) });
+    if (out.length >= maxResults) break;
+  }
+  return out;
+}
+
+/**
+ * DeepSeek Search API: one direct HTTP request, no model round.
+ * Cheaper and faster than the Messages path, so auto mode tries it first.
+ */
+export async function deepseekApiSearch(query, config = defaultConfig) {
+  const { key, source } = resolveSearchApiKey(config);
+  if (!key) {
+    throw Object.assign(new Error('没有可用的 DeepSeek 凭据'), { code: 'NO_KEY' });
+  }
+  const baseURL = config.apiSearchURL || process.env.DEEPSEEK_SEARCH_API_BASE_URL || DEFAULT_API_SEARCH_URL;
+  const { url, addresses } = await validateSearchEndpoint(baseURL);
+  const endpoint = new URL(`${url.toString().replace(/\/+$/, '')}/search`);
+  const body = JSON.stringify({ query, count: Math.min(50, config.maxResults || 10) });
+  const response = await postJson(endpoint, addresses, {
+    headers: {
+      ...(source === 'dsh-account-credential'
+        ? { 'x-dsh-auth-token': key }
+        : { authorization: `Bearer ${key}` }),
+      'content-type': 'application/json',
+      accept: 'application/json',
+      'user-agent': 'qq-bridge-web-search/0.2.0'
+    },
+    body,
+    timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS
+  });
+  if (response.status < 200 || response.status >= 300) {
+    let detail = '';
+    try {
+      const parsed = JSON.parse(response.text);
+      const message = typeof parsed?.error === 'string' ? parsed.error : parsed?.error?.message ?? parsed?.message;
+      if (typeof message === 'string') detail = message.slice(0, 200);
+    } catch {}
+    throw new Error(`DeepSeek Search API HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(response.text);
+  } catch {
+    throw Object.assign(new Error('DeepSeek Search API 返回了非 JSON 响应'), { code: 'BAD_JSON' });
+  }
+  return mapApiSearchResponse(parsed, config.maxResults || 10);
+}
+
 /** DeepSeek 原生联网搜索。失败时抛出带稳定 code 的错误，由调用方决定是否回退。 */
 export async function deepseekSearch(query, config = defaultConfig) {
-  const { key } = resolveSearchApiKey(config);
+  const { key, source } = resolveSearchApiKey(config);
   if (!key) {
     throw Object.assign(new Error('没有可用的 DeepSeek API key'), { code: 'NO_KEY' });
   }
@@ -309,8 +383,10 @@ export async function deepseekSearch(query, config = defaultConfig) {
   });
   const response = await postJson(endpoint, addresses, {
     headers: {
-      'x-api-key': key,
-      authorization: `Bearer ${key}`,
+      // DSH Desktop signs account credentials with its own header; a platform token is not an API key.
+      ...(source === 'dsh-account-credential'
+        ? { 'x-dsh-auth-token': key }
+        : { 'x-api-key': key, authorization: `Bearer ${key}` }),
       'anthropic-version': DEFAULT_API_VERSION,
       'content-type': 'application/json',
       accept: 'application/json',
@@ -451,6 +527,10 @@ export async function webSearch(query, options = {}) {
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
 
+  const attemptApi = async () => {
+    const results = await deepseekApiSearch(q, config);
+    return { query: q, provider: 'deepseek-api', results };
+  };
   const attemptDeepSeek = async () => {
     const results = await deepseekSearch(q, config);
     return { query: q, provider: 'deepseek', results };
@@ -466,18 +546,26 @@ export async function webSearch(query, options = {}) {
   } else if (wanted === 'bing') {
     value = await attemptBing();
   } else {
+    // auto: one HTTP request first, then the model round, then Bing.
     try {
-      value = await attemptDeepSeek();
-    } catch (error) {
-      const reason = error?.code === 'NO_KEY' ? '未配置 DeepSeek 搜索凭据' : `DeepSeek 搜索不可用：${error?.message ?? error}`;
+      value = await attemptApi();
+    } catch (apiError) {
+      const apiReason = apiError?.code === 'NO_KEY'
+        ? '未配置 DeepSeek 搜索凭据'
+        : `DeepSeek Search API 不可用：${apiError?.message ?? apiError}`;
       try {
-        value = await attemptBing();
-      } catch (bingError) {
-        // 两个后端都失败时把**两边**的原因都带出来，否则调用方只会看到 Bing 的错，
-        // 完全不知道 DeepSeek 这一路为什么不行（排查时最需要的信息）。
-        throw new Error(`${reason}；Bing 兜底也失败：${bingError?.message ?? bingError}`);
+        value = await attemptDeepSeek();
+        value = { ...value, fallbackFrom: 'deepseek-api', note: `${apiReason}，已回退模型轮次搜索` };
+      } catch (error) {
+        const reason = error?.code === 'NO_KEY' ? '未配置 DeepSeek 搜索凭据' : `DeepSeek 搜索不可用：${error?.message ?? error}`;
+        try {
+          value = await attemptBing();
+        } catch (bingError) {
+          // Report every backend that failed, otherwise callers only see Bing's error.
+          throw new Error(`${apiReason}；${reason}；Bing 兜底也失败：${bingError?.message ?? bingError}`);
+        }
+        value = { ...value, fallbackFrom: 'deepseek', note: `${apiReason}；${reason}，已回退 Bing` };
       }
-      value = { ...value, fallbackFrom: 'deepseek', note: `${reason}，已回退 Bing` };
     }
   }
   // 空结果必须显式说明：以前直接返回 `results: []`，模型分不清「真没搜到」和
