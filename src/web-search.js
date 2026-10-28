@@ -33,6 +33,7 @@ const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const DEFAULT_API_VERSION = '2023-06-01';
 const DEFAULT_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+const DEFAULT_ACCOUNT_CREDENTIAL = 'deepseek-account-platform/default';
 const DEFAULT_TIMEOUT_MS = 35000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -88,15 +89,20 @@ export function resolveDshHome() {
 
 /**
  * 从 DSH 的凭据文件里取 key。
- * 结构：`refs: { <名称>: <明文值> }`（实测；不是记录 id）。只看指定 ref，绝不遍历其它凭据。
+ * 旧结构是 `refs: { <名称>: <明文值> }`；
+ * DSH 0.2.x 起改成 `records: { <id>: { kind, payload: { token } } }`，两代都要认。
+ * 只看指定名字，绝不遍历其它凭据。
  */
 export function readDshCredential(ref) {
   const name = String(ref ?? '').trim();
   if (!name) return '';
   try {
     const doc = YAML.load(fs.readFileSync(path.join(resolveDshHome(), '.credentials.yaml'), 'utf8'));
-    const value = doc?.refs?.[name];
-    return typeof value === 'string' ? value.trim() : '';
+    const legacy = doc?.refs?.[name];
+    if (typeof legacy === 'string' && legacy.trim()) return legacy.trim();
+    const token = doc?.records?.[name]?.payload?.token;
+    if (typeof token === 'string' && token.trim()) return token.trim();
+    return '';
   } catch {
     return '';
   }
@@ -111,6 +117,8 @@ export function resolveSearchApiKey(config) {
   if (fromEnv) return { key: fromEnv, source: 'env' };
   const fromDsh = readDshCredential(envName);
   if (fromDsh) return { key: fromDsh, source: 'dsh-credentials' };
+  const fromAccount = readDshCredential(DEFAULT_ACCOUNT_CREDENTIAL);
+  if (fromAccount) return { key: fromAccount, source: 'dsh-account-credential' };
   return { key: '', source: 'none' };
 }
 
@@ -287,7 +295,7 @@ async function postJson(url, addresses, options) {
 
 /** DeepSeek 原生联网搜索。失败时抛出带稳定 code 的错误，由调用方决定是否回退。 */
 export async function deepseekSearch(query, config = defaultConfig) {
-  const { key } = resolveSearchApiKey(config);
+  const { key, source } = resolveSearchApiKey(config);
   if (!key) {
     throw Object.assign(new Error('没有可用的 DeepSeek API key'), { code: 'NO_KEY' });
   }
@@ -309,8 +317,10 @@ export async function deepseekSearch(query, config = defaultConfig) {
   });
   const response = await postJson(endpoint, addresses, {
     headers: {
-      'x-api-key': key,
-      authorization: `Bearer ${key}`,
+      // DSH Desktop signs account credentials with its own header; a platform token is not an API key.
+      ...(source === 'dsh-account-credential'
+        ? { 'x-dsh-auth-token': key }
+        : { 'x-api-key': key, authorization: `Bearer ${key}` }),
       'anthropic-version': DEFAULT_API_VERSION,
       'content-type': 'application/json',
       accept: 'application/json',
