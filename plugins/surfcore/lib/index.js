@@ -1220,7 +1220,8 @@ export function apply(ctx) {
     const qqCfg = readQqConfig().config ?? {};
     const snow = qqCfg.snowluma ?? {};
     let snowState = { state: 'unknown', hint: '' };
-    try { snowState = await diagnoseSnowLuma(snow); } catch {}
+    // 诊断要桥接状态（带 connected），不是上面这个 config 段；传错会恒定误报 onebot-rejected
+    try { snowState = await diagnoseSnowLuma((await bridgeStatus().catch(() => ({})))?.snowluma ?? {}); } catch {}
     const bridgeSrc = path.join(QQBOT_ROOT, 'src', 'bridge.js');
     return buildInstallChecks({
       nodeVersion: process.versions.node,
