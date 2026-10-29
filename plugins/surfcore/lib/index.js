@@ -34,7 +34,7 @@ import { VOICE_PORTS, readPackCharacters, validateCharacter } from './voice-heal
 import {
   autoSnapshot, beforeSwitchSnapshot, characterDetail, characterOverview, createCharacterFromPayload,
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
-  updateCharacterFromPayload,
+  testCurrentCharacter, updateCharacterFromPayload,
 } from './characters.js';
 import { activeMemoryPaths, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
@@ -935,6 +935,10 @@ export function apply(ctx) {
       if (action === 'delete') {
         if (!id) throw new Error('缺少角色 id');
         json(res, 200, deleteCharacter(id));
+        return;
+      }
+      if (action === 'test') {
+        json(res, 200, await testCurrentCharacter());
         return;
       }
       json(res, 400, { ok: false, error: `未知 action：${action}` });

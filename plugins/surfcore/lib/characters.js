@@ -14,6 +14,8 @@ import {
   snapshotCharacter, switchCharacter, updateCharacter, archiveCharacter,
 } from '../../../src/character-persona.js';
 import { scanText } from './privacy.js';
+import { callBridge } from './bridge.js';
+import { readQqConfig } from './store.js';
 
 export const AUTO_AGE_DAYS = [180, 90, 60, 30, 15, 10, 7, 5, 3, 2, 1];
 export const BEFORE_SWITCH_SLOT = 'before-switch';
@@ -173,6 +175,26 @@ export function restoreCharacterSnapshot(id, slot) {
 
 export function deleteCharacter(id) {
   return archiveCharacter(id);
+}
+
+/** 测试当前人设：以机器人身份私聊管理员一句话，确认人格卡是否真的生效。 */
+export async function testCurrentCharacter() {
+  const current = readCurrentCharacter();
+  if (!current) throw new Error('还没有当前角色');
+  const qq = readQqConfig().config;
+  const owner = String(qq.ownerQQ ?? '').trim();
+  if (!/^\d{4,15}$/.test(owner)) throw new Error('未配置管理员 QQ（设置 → 管理员），无法测试');
+  const result = await callBridge('/api/test-send', {
+    method: 'POST',
+    body: {
+      kind: 'private',
+      id: Number(owner),
+      message: '【人设测试】你现在是谁？用你的性格口吻回一句介绍自己。',
+    },
+    timeoutMs: 8000,
+  });
+  if (!result.ok) throw new Error(result.data?.error || result.error || '发送失败');
+  return { ok: true, sentTo: owner };
 }
 
 /** 旧数据迁移；没有旧数据时返回 skipped，不创建空角色。 */

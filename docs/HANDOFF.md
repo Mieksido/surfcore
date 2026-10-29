@@ -5,6 +5,34 @@
 
 ---
 
+## 快照：2026-10-29 19:30–（设置页角色页加「测试当前人设」）
+
+### 需求
+
+> 「在角色页加一个测试选项，用来测试是否已经成功切换（人设）」——切换角色卡本身已有
+> （`/characters` 的 `action:"load"` → `switchCharacterEverywhere`）；缺的是「切完验证生效」这一步。
+
+### 改动
+
+| 改动 | 文件 |
+| --- | --- |
+| 新 `testCurrentCharacter()`：读当前角色 → 读 `ownerQQ` → `callBridge('/api/test-send', {kind:'private', id:owner, message:'【人设测试】…'})` | `plugins/surfcore/lib/characters.js` |
+| `handleCharacters` 加 `action:"test"` 分支 | `plugins/surfcore/lib/index.js` |
+| 角色页「当前角色」操作区加「测试当前人设」按钮（只有存在当前角色才显示） | `plugins/surfcore/lib/client.js` |
+
+### 验证
+
+- `node --check` 三个文件全过；`npm test --prefix plugins/surfcore` exit 0（含 client-contract）。
+- `npm run test:audit`：74/77，**3 个失败是既有的**（`test-version.mjs` README 顶部版本 0.6.20 未随 0.6.22 更新，另两个未在本轮核对）——与本改动无关，已在 PR 描述标注。
+
+### 注意 / 边界
+
+- 测试按钮会**真实私聊管理员发一条消息**（用户已确认选 A）。文案固定为「你现在是谁？用你的性格口吻回一句」。
+- 依赖 `callBridge` 的 `x-console-token` 与 `ownerQQ`；ownerQQ 没配会回可读错误，不发消息。
+- 未重启 DSH：本轮改的是插件代码，下次重启/热重载后设置页生效。
+
+---
+
 ## 快照：2026-10-26 09:05–09:40（设置页「检查更新」：本体 + 语音包 + 桌宠 + 未来扩展）
 
 ### 用户原话

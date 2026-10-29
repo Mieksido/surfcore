@@ -4053,6 +4053,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             current ? h(Btn, { kind: "qbw-btn2", onClick: () => act("snapshot", { id: current.id, label: "手动" }, "✓ 已存一份"), disabled: !!busy }, "立即存档") : null,
             current ? h(Btn, { kind: "qbw-btn2", onClick: () => act("auto-snapshot", { id: current.id }, "✓ 自动存档已更新"), disabled: !!busy }, "更新自动存档") : null,
             current ? h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("memory") }, "管理记忆卡") : null,
+            current ? h(Btn, { kind: "qbw-btn2", onClick: () => act("test", {}, "✓ 已私聊管理员一句测试"), disabled: !!busy }, "测试当前人设") : null,
             h(Btn, { onClick: () => setShowCreate((v) => !v) }, showCreate ? "收起新建" : "新建角色"))),
         err ? h("div", { className: "qbw-err" }, err) : null,
         h(PersonaEditor, { busy, setBusy, toast, unified, setUnified }),
