@@ -6,6 +6,8 @@
  *   · 本模块只判断“这一轮值不值得再花一次模型调用/再发一条”，
  *     不绕过鱼群守则；任何一边拒绝都不发。
  */
+import { withConfiguredTimeZone } from './timezone.js';
+
 export const DEFAULT_TOKEN_GUARD = Object.freeze({
   enabled: true,
   maxWakesPerDay: 20,
@@ -23,9 +25,11 @@ const num = (v, fallback) => {
 
 /** 每天 0 点（本地时区）。 */
 export function localDayStart(now = Date.now()) {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  return withConfiguredTimeZone(() => {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  });
 }
 
 /**

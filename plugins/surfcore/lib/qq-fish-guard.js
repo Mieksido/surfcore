@@ -4,10 +4,12 @@
  * 桥接把每次新触发写进 `state/social-v2.json` 的 `fishGuardLog`（每群最多 30 条），
  * 这里只负责把多个群的状态摊平成一张按时间倒序的表；不读不写文件，方便单测。
  */
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
+
 
 const localDate = (value) => {
   const t = new Date(value);
-  return Number.isFinite(t.getTime()) ? t.toLocaleDateString('sv-SE') : '';
+  return Number.isFinite(t.getTime()) ? withConfiguredTimeZone(() => t.toLocaleDateString('sv-SE')) : '';
 };
 
 function normalizeItem(key, entry, { active = false, ended = false } = {}) {

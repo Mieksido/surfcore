@@ -8,6 +8,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
 import {
   CHARACTERS_DIR, bumpEpoch, characterPaths, createCharacter, listCharacters, listSnapshots,
   migrateLegacy, readCurrentCharacter, readManifest, removeSnapshot, restoreSnapshot,
@@ -20,8 +21,10 @@ export const BEFORE_SWITCH_SLOT = 'before-switch';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function daySlot(now = Date.now()) {
-  const d = new Date(now);
-  return `auto-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return withConfiguredTimeZone(() => {
+    const d = new Date(now);
+    return `auto-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 }
 
 function ageOf(snapshot, now) {

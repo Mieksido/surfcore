@@ -29,6 +29,9 @@ const tests = [
   'test-self-identity.mjs',
   // 早安问候：08:00 重启丢枪的补发/重试逻辑 + reserved2 必须真调发送工具的提示词。
   'test-greeting.mjs',
+  // 自定义时区（config.json 的 timezone）：校验、临时切换/还原、进程层热切换、共享模块按配置时区算，
+  // 并在 UTC / 东京 / 美西三种系统时区下各跑一遍。
+  'test-timezone.mjs',
   // 出站身份闸：B站 评论/私信/动态/分享发送前拦主人/别人的账号标识（只许自己互认）。
   'test-identity-guard.mjs',
   // 观看历史：追加/去重/轮转/旧记忆回填/评分合并，以及 debrief·watch·角色迁移的接线契约。

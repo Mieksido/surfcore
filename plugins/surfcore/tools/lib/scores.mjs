@@ -9,10 +9,11 @@
 import { accountBili, biliState, biliStateDir } from './state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import { dayKey } from './clock.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 export const FILE = biliState('scores.json')
-export const today = () => new Date().toLocaleDateString('sv-SE')
+export const today = () => dayKey()
 
 export function loadScores() {
   try { return JSON.parse(fs.readFileSync(FILE, 'utf8')) } catch { return {} }

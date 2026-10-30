@@ -29,6 +29,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { withConfiguredTimeZone } from './timezone.js';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -187,8 +188,10 @@ export function resolveMemoryCardPaths(memoryDir) {
 }
 
 function todayKey(now = Date.now()) {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return withConfiguredTimeZone(() => {
+    const d = new Date(now);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 }
 
 function iso(now = Date.now()) {
@@ -212,8 +215,10 @@ function short(text, max = 80) {
 function dateOnly(value) {
   const t = typeof value === 'number' ? value : Date.parse(String(value ?? ''));
   if (!Number.isFinite(t)) return '????-??-??';
-  const d = new Date(t);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return withConfiguredTimeZone(() => {
+    const d = new Date(t);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 }
 
 function asArray(value) {
@@ -880,7 +885,7 @@ export function renderFullMemoryCard(records, { now = Date.now(), truncated = fa
   const lines = [
     '# 记忆卡（全量存档）',
     '',
-    `> 更新：${new Date(now).toLocaleString('zh-CN', { hour12: false })} · 全量 ${list.length} 条 · 全部清晰、永不遗忘`,
+    `> 更新：${withConfiguredTimeZone(() => new Date(now).toLocaleString('zh-CN', { hour12: false }))} · 全量 ${list.length} 条 · 全部清晰、永不遗忘`,
     '> 这张卡只存档，不参与日常提示词；日常加载的是 `memory-card.md` 的衰减版。',
     '> 需要加载全量记忆时，用控制台「全量记忆卡」搜索，或调用 `recallFullMemory()` 按关键词召回。',
   ];
@@ -1615,7 +1620,7 @@ export function decayDaysBetween(fromDate, now = Date.now()) {
 export function needsDailyDecay(card, config = {}, now = Date.now()) {
   const cfg = normalizeMemoryCardConfig(config);
   if (card.lastDecayDate === todayKey(now)) return false;
-  const hour = new Date(now).getHours();
+  const hour = withConfiguredTimeZone(() => new Date(now).getHours());
   return hour >= cfg.dailyHour;
 }
 
@@ -1796,7 +1801,7 @@ export function renderMemoryCard(card, options = {}) {
   const headerFull = [
     '# 记忆卡',
     '',
-    `> 更新：${new Date(now).toLocaleString('zh-CN', { hour12: false })} · ${limitText}`,
+    `> 更新：${withConfiguredTimeZone(() => new Date(now).toLocaleString('zh-CN', { hour12: false }))} · ${limitText}`,
     '> 规则：最初（和主人初次接触的 30 天）/ 最近 / 重要的事保持清晰；其余会随时间模糊；记不清的就不要编。',
     '> 「最初」和「重要」是两套判断：最初只看和主人的互动；初次相遇由用户指定或自动取最早一条。',
     '> 平台模块：B站冲浪、QQ 聊天、桌宠的私下相处、和主人的互动都在这张卡里；QQ / 桌宠的私事默认不带到 B站。',

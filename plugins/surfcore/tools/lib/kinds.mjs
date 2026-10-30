@@ -14,6 +14,7 @@
 //   质量门槛（近 N 天/播放/点赞率）仍在 daily.mjs 里，故意不开放——
 //   那是"选题质量"，不是"发不发"。
 import { config } from './config.mjs'
+import { withConfiguredTimeZone } from './clock.mjs'
 
 export const CATCHUP_DAY = '2026-10-21'
 
@@ -133,7 +134,7 @@ export function normalizeDynamics(input) {
 export function slotOf(kind, d = new Date(), kinds = kindsNow()) {
   const k = kinds[kind]
   if (!k || k.enabled === false) return false
-  const h = d.getHours() + d.getMinutes() / 60
+  const h = withConfiguredTimeZone(() => d.getHours() + d.getMinutes() / 60)
   const list = [...new Set(Object.values(kinds)
     .filter((item) => item.enabled !== false)
     .map((item) => item.slot))].sort((a, b) => a - b)

@@ -11,6 +11,8 @@
  *
  * 这个文件只做纯计算，方便单测；whale-night.mjs 负责读写状态和叫醒。
  */
+import { withConfiguredTimeZone } from './clock.mjs'
+
 
 export const DEFAULT_MIN_GAP_MIN = 20
 
@@ -67,8 +69,7 @@ export function qualityByWindow(scores = {}, windows = [], { now = Date.now(), d
       const at = new Date(row?.at ?? 0).getTime()
       const score = Number(row?.score)
       if (!Number.isFinite(at) || at < cutoff || !Number.isFinite(score)) continue
-      const d = new Date(at)
-      const minute = d.getHours() * 60 + d.getMinutes()
+      const minute = withConfiguredTimeZone(() => { const d = new Date(at); return d.getHours() * 60 + d.getMinutes() })
       const w = windows.find((x) => windowContains(x, minute))
       if (!w) continue
       const cur = acc.get(w.label) ?? { sum: 0, count: 0 }

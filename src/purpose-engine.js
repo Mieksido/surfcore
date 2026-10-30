@@ -70,9 +70,19 @@ function redactNumbers(text) {
   return String(text ?? '').replace(/\b\d{6,12}\b/g, '[号码]');
 }
 
+// 时区（docs/guides/TIMEZONE.md）：本文件保持零 import。「本地时钟」的计算统一过 clockScope，
+// 默认直接执行；宿主（DSH 里的插件）在启动时注入 setClockScope(withConfiguredTimeZone)，
+// 这样自定义时区在插件进程里也生效，而不用常驻改宿主的 TZ。
+let clockScope = (fn) => fn();
+export function setClockScope(scope) {
+  clockScope = typeof scope === 'function' ? scope : (fn) => fn();
+}
+
 export function localDateKey(at = Date.now()) {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return clockScope(() => {
+    const d = new Date(at);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 }
 
 function clockText(hh, mm) {
@@ -94,8 +104,10 @@ export function parseClock(value, fallback = '08:00') {
 }
 
 function minutesOfDay(at) {
-  const d = new Date(at);
-  return d.getHours() * 60 + d.getMinutes();
+  return clockScope(() => {
+    const d = new Date(at);
+    return d.getHours() * 60 + d.getMinutes();
+  });
 }
 
 /** 安静时段是否包含 now；quietStart === quietEnd 视为不启用。 */
@@ -112,10 +124,12 @@ export function inQuietHours(now, config = DEFAULT_PURPOSE_CONFIG) {
 /** 下一个「安静结束」时刻（严格晚于 now）。 */
 export function quietEndAfter(now, config = DEFAULT_PURPOSE_CONFIG) {
   const end = parseClock(config.quietEnd, '08:30');
-  const d = new Date(now);
-  d.setHours(end.hh, end.mm, 0, 0);
-  while (d.getTime() <= now) d.setDate(d.getDate() + 1);
-  return d.getTime();
+  return clockScope(() => {
+    const d = new Date(now);
+    d.setHours(end.hh, end.mm, 0, 0);
+    while (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  });
 }
 
 /** 下一天的起点（安静结束优先；没设安静时段就取次日 00:05）。 */
@@ -123,10 +137,12 @@ export function nextDayStartAfter(now, config = DEFAULT_PURPOSE_CONFIG) {
   const start = parseClock(config.quietStart, '23:30');
   const end = parseClock(config.quietEnd, '08:30');
   if (start.text !== end.text) return quietEndAfter(now, config);
-  const d = new Date(now);
-  d.setHours(0, 5, 0, 0);
-  while (d.getTime() <= now) d.setDate(d.getDate() + 1);
-  return d.getTime();
+  return clockScope(() => {
+    const d = new Date(now);
+    d.setHours(0, 5, 0, 0);
+    while (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  });
 }
 
 export function normalizePurposeConfig(input = {}, { ownerQQ = '' } = {}) {
@@ -1950,6 +1966,10 @@ const KIND_LABEL = {
 };
 
 function relTime(at, now = Date.now()) {
+  return clockScope(() => relTimeLocal(at, now));
+}
+
+function relTimeLocal(at, now) {
   const t = Number(at) || 0;
   if (!t) return '时间未知';
   const diff = now - t;
@@ -2017,10 +2037,15 @@ export function buildPurposePrompt({
   const lines = [];
   const owner = String(ownerName || '').trim() || '主人';
   const uin = String(ownerUin || '').replace(/[^\d]/g, '');
-  const clock = new Date(now);
-  const week = ['日', '一', '二', '三', '四', '五', '六'][clock.getDay()];
+  const { week, clockNow } = clockScope(() => {
+    const clock = new Date(now);
+    return {
+      week: ['日', '一', '二', '三', '四', '五', '六'][clock.getDay()],
+      clockNow: clockText(clock.getHours(), clock.getMinutes()),
+    };
+  });
   lines.push('【主动找主人 · 目的回合】');
-  lines.push(`现在是 ${localDateKey(now)} ${clockText(clock.getHours(), clock.getMinutes())}（周${week}）。没有人叫你，也不是在回复谁——这是你自己想找${owner}说话的一刻。`);
+  lines.push(`现在是 ${localDateKey(now)} ${clockNow}（周${week}）。没有人叫你，也不是在回复谁——这是你自己想找${owner}说话的一刻。`);
   lines.push('');
 
   // 驱动状态不是「心情报告」，只是告诉她此刻更容易被什么打动。

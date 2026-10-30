@@ -22,6 +22,7 @@ import path from 'node:path'
 import { config } from './config.mjs'
 import { DEFAULT_LIMITS, freeLimits } from './limits.mjs'
 import { biliState } from './state-paths.mjs'
+import { dayKey, withConfiguredTimeZone } from './clock.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 // 尊重 DSH_HOME（测试/多实例）；避免把临时账本写到真实 ~/.dsh。
@@ -32,8 +33,8 @@ const FILE = biliState('quota.json')
 export const FREE_LIMITS = DEFAULT_LIMITS
 
 
-const dayOf = (at) => new Date(at).toLocaleDateString('sv-SE')
-const today = () => new Date().toLocaleDateString('sv-SE')
+const dayOf = (at) => dayKey(at)
+const today = () => dayKey()
 
 function loadLog() {
   try { return JSON.parse(fs.readFileSync(FILE, 'utf8')).log ?? [] } catch { return [] }
@@ -47,7 +48,7 @@ const isTa = (x) => isAutoComment(x) && !!x?.reply && !!x?.ta
 const isMineOf = (x, k) => isAutoComment(x) && !!x?.reply
   && (k === 'best' ? (x?.mine === true || x?.mine === 'best') : x?.mine === k)
 
-const hhmmss = (t) => new Date(t).toLocaleTimeString('zh-CN', { hour12: false })
+const hhmmss = (t) => withConfiguredTimeZone(() => new Date(t).toLocaleTimeString('zh-CN', { hour12: false }))
 
 const CAPS = { comment: 'daily', reply: 'replyDaily', ta: 'taDaily' }
 const LABELS = { comment: '条普通评论', reply: '条回复', ta: '条搭话' }

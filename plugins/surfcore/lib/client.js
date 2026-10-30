@@ -1485,6 +1485,22 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       // 更新后必须重启 DSH：检查到更新、以及下载完成后都主动提示（只刷新页面不会应用）
       const [restartHint, setRestartHint] = useState(null);
       const [tokenDraft, setTokenDraft] = useState("");
+      // ── 时区（覆盖系统时区；很多服务器的系统时区是错的）──────────────────
+      const tz = overview?.timezone ?? null;
+      const [tzDraft, setTzDraft] = useState(null);
+      const tzValue = tzDraft ?? (tz?.configured ?? "");
+      const saveTimeZone = async (value) => {
+        setBusy("timezone");
+        try {
+          const r = await api("/config", { method: "POST", body: { qq: { timezone: value } } });
+          if (!r.ok) throw new Error(r.error ?? "保存失败");
+          toast(value ? `✓ 时区已设为 ${value}（桥接约 1 分钟内跟上）` : "✓ 已恢复跟随系统时区");
+          setTzDraft(null);
+          await reload();
+        } catch (e) {
+          toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
+        } finally { setBusy(""); }
+      };
       const saveGithubToken = async (clear = false) => {
         setBusy("token");
         try {
@@ -1825,6 +1841,29 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 : null),
             h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
               "只需要“读公开仓库”的权限；令牌只存在本机 config.json，不会上传，也不会出现在诊断信息里。")),
+          tz ? h("div", { className: "qbw-card" },
+            h("h4", null, "时区"),
+            h("p", null, "安静时段、每日额度换天、B站作息窗口、定点问候……都按这里的时间算。服务器系统时区不对（比如默认 UTC）时，在这里填正确的时区即可，不用改系统。"),
+            h("div", { className: "qbw-kv" }, h("span", null, "系统时区"), h("span", null, `${tz.system.zone}（${tz.system.offset}）· 现在 ${tz.system.now}`)),
+            h("div", { className: "qbw-kv" }, h("span", null, "SurfCore 使用"), h("span", null, `${tz.effective.zone}（${tz.effective.offset}）· 现在 ${tz.effective.now}${tz.configured ? "（自定义）" : "（跟随系统）"}`)),
+            tz.error ? h("div", { className: "qbw-hint", style: { color: "#d9534f" } }, `⚠️ 配置的时区无效：${tz.error}；当前已回退系统时区。`) : null,
+            tz.source === "env" ? h("div", { className: "qbw-hint" }, "环境变量 SURFCORE_TIMEZONE 正在生效，它优先于这里的设置。") : null,
+            h("div", { style: { display: "flex", gap: "8px", alignItems: "center", marginTop: "6px", flexWrap: "wrap" } },
+              h("input", {
+                list: "qbw-tz-list",
+                value: tzValue,
+                placeholder: "留空 = 跟随系统；例如 Asia/Shanghai",
+                onChange: (e) => setTzDraft(e.target.value),
+                style: { width: "280px" },
+              }),
+              h("datalist", { id: "qbw-tz-list" },
+                ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Taipei", "Asia/Tokyo", "Asia/Seoul", "Asia/Singapore", "Asia/Kolkata", "Europe/London", "Europe/Paris", "Europe/Moscow", "America/New_York", "America/Chicago", "America/Los_Angeles", "Australia/Sydney", "UTC"]
+                  .map((z) => h("option", { key: z, value: z }))),
+              h(Btn, { kind: "qbw-btn2", disabled: !!busy || tzDraft === null || tzDraft === (tz.configured ?? ""), onClick: () => saveTimeZone(tzValue.trim()) },
+                busy === "timezone" ? "保存中…" : "保存时区"),
+              tz.configured ? h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: () => saveTimeZone("") }, "恢复跟随系统") : null),
+            h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
+              "填 IANA 时区名（Asia/Shanghai、America/New_York、UTC…）或 UTC+8 这样的整点偏移。已排好的定点任务在换时区后的下一轮按新时区重新排。")) : null,
           (gateData?.events ?? []).length
             ? h("div", { className: "qbw-card" },
               h("h4", null, "安全提醒 ", h("span", { className: "qbw-badge " + ((gateData?.counts?.L3 ?? 0) > 0 ? "bad" : "warn") },

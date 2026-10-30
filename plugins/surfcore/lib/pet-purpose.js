@@ -36,11 +36,16 @@ import {
   normalizePurposeState,
   planNextFire,
   selectPurpose,
+  setClockScope,
   summarizePurposeState,
 } from '../../../src/purpose-engine.js';
 import { activeBiliDir, activeMemoryPaths } from '../../../src/character-persona.js';
 import { QQ_STATE_DIR } from './paths.js';
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
 import { readQqConfig, readUnified, writeJsonAtomic } from './store.js';
+
+// 引擎本身零 import：时区靠宿主注入。插件跑在 DSH 进程里，用临时切换（不常驻改宿主 TZ）。
+setClockScope(withConfiguredTimeZone);
 
 const ONE_SECOND = 1000;
 const MINUTE = 60 * ONE_SECOND;
@@ -302,7 +307,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
 
     const selected = selection.purpose;
     const userLines = [];
-    userLines.push(`【现在】${new Date().toLocaleString('zh-CN', { hour12: false })}。没人叫你，是你自己想找${owner.name}说句话。`);
+    userLines.push(`【现在】${withConfiguredTimeZone(() => new Date().toLocaleString('zh-CN', { hour12: false }))}。没人叫你，是你自己想找${owner.name}说句话。`);
     const needLabel = NEED_LABELS[selected?.need] || selected?.need || '';
     const actionLabel = ACTION_LABELS[selected?.action] || selected?.action || '';
     const emotionLabel = EMOTION_LABELS[selected?.emotion] || selected?.emotion || '';
@@ -604,7 +609,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     const p = purposeConfig();
     if (p.carrier === 'pet') {
       const next = loadState().nextFireAt;
-      pluginLog(`[pet-purpose] 已启动：载体=桌宠，形式=${p.modality}，下次 ${next ? new Date(next).toLocaleString() : '未排定'}`);
+      pluginLog(`[pet-purpose] 已启动：载体=桌宠，形式=${p.modality}，下次 ${next ? withConfiguredTimeZone(() => new Date(next).toLocaleString()) : '未排定'}`);
     }
     timer = setInterval(() => { void tick(); }, TICK_MS);
     timer.unref?.();

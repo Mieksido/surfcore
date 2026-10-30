@@ -4,6 +4,18 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [未发布]
+
+### 新增（自定义时区，覆盖系统时区）
+
+- **现象**：很多服务器的系统时区是错的，甚至默认 UTC，安静时段 / 每日额度换天 / B站作息窗口 / 定点问候全部错位。
+- **新增** `config.json` 的 `timezone`（IANA 名如 `Asia/Shanghai`，或 `UTC+8` 整点偏移；留空 = 跟随系统，行为与以前完全一致）。
+  也可用环境变量 `SURFCORE_TIMEZONE`（优先）。设置页「概览 → 时区」同时显示系统时区与 SurfCore 使用的时区，保存即生效，
+  桥接约 1 分钟内自动跟上，**无需重启**；填错会当场报错并给出建议，手改文件填错则回退系统时区并提示。
+- **实现**：桥接和 B站 CLI 等自己拥有的进程把 `TZ` 常驻设为配置值；DSH 宿主里的插件不改宿主 TZ，只在 SurfCore 自己的
+  本地时钟计算期间同步临时切换并显式还原。详见 [docs/guides/TIMEZONE.md](docs/guides/TIMEZONE.md)。
+
+> 调查记录：[自定义时区](docs/cases/2026-10-30-custom-timezone.md)
 ## [0.7.19] - 2026-10-30
 
 ### 新增（插件冲突体检）

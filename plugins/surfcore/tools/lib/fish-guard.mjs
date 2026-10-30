@@ -17,6 +17,7 @@
 import { biliState } from './state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import { dayKey, withConfiguredTimeZone } from './clock.mjs'
 
 export const FISH_GUARD_FILE = biliState('fish-guard.json')
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -196,7 +197,7 @@ function randomBetween(min, max) {
 }
 
 function today() {
-  return new Date().toLocaleDateString('sv-SE')
+  return dayKey()
 }
 
 export function loadFishGuardState(file = FISH_GUARD_FILE) {
@@ -230,7 +231,7 @@ export function saveFishGuardState(state, file = FISH_GUARD_FILE) {
       if (!at || new Date(at).getTime() < cutoff) delete state.likeFailed[key]
     }
     for (const key of Object.keys(state.daily ?? {})) {
-      if (key < new Date(cutoff).toLocaleDateString('sv-SE')) delete state.daily[key]
+      if (key < dayKey(cutoff)) delete state.daily[key]
     }
     // 鱼群检查记录：30 天 / 最多 50 条；给设置页「最近鱼群检查」用。
     if (Array.isArray(state.fishGuardLog)) {
@@ -695,7 +696,7 @@ export function fishGuardStatusText(plan) {
   bits.push(plan.flooded ? (plan.gatherTarget ? '→ 鱼太多：聚拢回复' : '→ 鱼太多：不发新楼层') : '→ 可以发新楼层')
   if (plan.gatherTarget) bits.push(`→ ${plan.gatherFallback ? '没有合适鱼楼，强制聚拢到' : '可聚拢到'} ${plan.gatherTarget.uname || plan.gatherTarget.rpid}（rpid ${plan.gatherTarget.rpid}）`)
   if (plan.likeTargets?.length) bits.push(`→ 可点赞 ${plan.likeTargets.length} 条（今天已赞 ${s.dailyLikes}/${s.config?.maxLikesPerDay ?? '?'}）`)
-  if (plan.likeBlockedUntil) bits.push(`→ 点赞风控冷却到 ${new Date(plan.likeBlockedUntil).toLocaleString('zh-CN')}`)
+  if (plan.likeBlockedUntil) bits.push(`→ 点赞风控冷却到 ${withConfiguredTimeZone(() => new Date(plan.likeBlockedUntil).toLocaleString('zh-CN'))}`)
   return `鱼群保护：${bits.join('；')}`
 }
 

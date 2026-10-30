@@ -63,6 +63,7 @@
 | [guides/BOUNDARIES.md](guides/BOUNDARIES.md) | **能力边界**：环境边界、能力矩阵（能做/有条件/不做）、失败模式 → 恢复动作表、安全承诺与不承诺、资源与数据出机边界 | ✅ 2026-10-26 新增 |
 | [guides/12-LESSONS-ARCHITECTURE.md](guides/12-LESSONS-ARCHITECTURE.md) | **12 课总结 + 修 bug 手册**：可直接粘贴的提示词模板、底层机制（进程/连接/文件/时间/身份/状态/契约/配置/消息/AI）、SurfCore 链路与状态所有权表、已知 bug 候选、十问清单与爆炸半径 | ✅ 2026-10-29 新增（当提示词用） |
 | [guides/ERROR-REPORTING.md](guides/ERROR-REPORTING.md) | **报错与建议规范（刚性）**：`ok/code/error/hint/tried` 结构、弹窗 vs toast 判据、禁止清单、交付自检；对应 AGENTS 1.7 | ✅ 2026-10-29 新增 |
+| [guides/TIMEZONE.md](guides/TIMEZONE.md) | **自定义时区**：为什么需要、怎么设、各进程怎么生效、设计取舍 | ✅ 新增 |
 | [guides/PERMISSIONS.md](guides/PERMISSIONS.md) | **权限清单**：身份判定唯一来源、7 项主人特权（判定/代码/审计/测试状态）、关系与称呼不参与授权、变更检查单 | ✅ 2026-10-29 新增 |
 
 ## design/ —— 设计与规划（读设计意图用）

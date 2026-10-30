@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process'
 // 收件箱读取复用工具链的实现（避免在插件里再抄一份 B站 接口 ✓）
 import { pullFeed, makeHeaders } from '../tools/lib/msgfeed.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
+import { dayKey, withConfiguredTimeZone } from '../tools/lib/clock.mjs'
 import { freeLimits } from '../tools/lib/limits.mjs'
 import { config } from '../tools/lib/config.mjs'
 import { pendingCount as attackPending } from '../tools/lib/attacks.mjs'
@@ -173,8 +174,8 @@ function identityContextLines() {
 function taToday() {
   try {
     const q = JSON.parse(fs.readFileSync(path.join(platformDir(), 'quota.json'), 'utf8'))
-    const t = new Date().toLocaleDateString('sv-SE')
-    return (q.log ?? []).filter((x) => x?.ta && new Date(x.at).toLocaleDateString('sv-SE') === t).length
+    const t = dayKey()
+    return (q.log ?? []).filter((x) => x?.ta && dayKey(new Date(x.at).getTime()) === t).length
   } catch { return 0 }
 }
 
@@ -442,8 +443,8 @@ export function startScheduler(ctx, opts) {
   const writeState = (o) => {
     try { fs.mkdirSync(path.dirname(STATE), { recursive: true }); fs.writeFileSync(STATE, JSON.stringify(o, null, 2) + '\n') } catch {}
   }
-  const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() }
-  const today = () => new Date().toLocaleDateString('sv-SE')
+  const nowMin = () => withConfiguredTimeZone(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() })
+  const today = () => dayKey()
 
   // ── 每日 token 额度闸门（2026-10-23）──────────────────────────────────
   // 额度不是「少发几条」，而是「今天 B站 不再叫醒」：到 100% 后所有 prompt 都不投，
@@ -695,7 +696,7 @@ export function startScheduler(ctx, opts) {
   const writeL = (o) => { try { fs.mkdirSync(path.dirname(LSTATE), { recursive: true }); fs.writeFileSync(LSTATE, JSON.stringify(o, null, 2) + '\n') } catch {} }
   const inWindow = (cfg) => {
     const wins = Array.isArray(cfg?.night?.windows) ? cfg.night.windows : []
-    const d = new Date(); const m = d.getHours() * 60 + d.getMinutes()
+    const m = nowMin()
     return wins.some((w) => {
       const [sh, sm] = String(w.start ?? '').split(':').map(Number)
       const [eh, em] = String(w.end ?? '').split(':').map(Number)
@@ -981,7 +982,7 @@ export function startScheduler(ctx, opts) {
     const gapMs = Math.max(5, dynamicsGapMin(cfgNow)) * 60_000
     const L = limitsNow()
     const now = new Date()
-    const h = now.getHours() + now.getMinutes() / 60
+    const h = withConfiguredTimeZone(() => now.getHours() + now.getMinutes() / 60)
     const NUDGE = path.join(dshHome, 'daily-nudge.json')
     let ns = {}
     try { ns = JSON.parse(fs.readFileSync(NUDGE, 'utf8')) } catch {}

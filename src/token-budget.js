@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { withConfiguredTimeZone } from './timezone.js';
 
 export const BUDGET_VERSION = 1;
 /** 80% 触发提醒；100% 才拦截。 */
@@ -191,17 +192,21 @@ export function normalizeUsage(input) {
 }
 
 export function localDayStart(now = Date.now()) {
-  const d = new Date(Number(now));
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  return withConfiguredTimeZone(() => {
+    const d = new Date(Number(now));
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  });
 }
 
 /** 本地日历日 key（YYYY-MM-DD）。额度按用户所在时区的自然日重置。 */
 export function localDayKey(now = Date.now()) {
-  const d = new Date(Number(now));
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${month}-${day}`;
+  return withConfiguredTimeZone(() => {
+    const d = new Date(Number(now));
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${month}-${day}`;
+  });
 }
 
 /** SurfCore 共享状态目录（默认 ~/.dsh/surfcore，可用 DSH_HOME 覆盖）。 */

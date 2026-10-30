@@ -8,10 +8,11 @@
 import { accountBili, biliState, biliStateDir } from './state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import { dayKey } from './clock.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 export const FILE = biliState('dynamic-pins.json')
-const today = () => new Date().toLocaleDateString('sv-SE')
+const today = () => dayKey()
 
 function load() {
   try { return JSON.parse(fs.readFileSync(FILE, 'utf8')) } catch { return {} }

@@ -4,6 +4,7 @@
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { timeZoneEnv } from '../../../src/timezone.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const map = {
@@ -74,5 +75,5 @@ if (!entry) {
   console.error(`未知命令: ${cmd}\n跑 "node bili.mjs help" 看清单。`)
   process.exit(2)
 }
-const r = spawnSync(process.execPath, [path.join(here, entry[0]), ...rest], { stdio: 'inherit' })
+const r = spawnSync(process.execPath, [path.join(here, entry[0]), ...rest], { stdio: 'inherit', env: { ...process.env, ...timeZoneEnv() } })
 process.exit(r.status ?? 1)

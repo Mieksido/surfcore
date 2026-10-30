@@ -13,6 +13,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { biliState } from './state-paths.mjs'
+import { dayKey } from './clock.mjs'
 
 export const WATCH_HISTORY_FILE = () => biliState('watch-history.jsonl')
 export const WATCH_HISTORY_ROTATED = () => biliState('watch-history.1.jsonl')
@@ -21,7 +22,7 @@ const DEDUPE_MS = 30 * 60 * 1000
 
 const localDate = (value) => {
   const t = new Date(value)
-  return Number.isFinite(t.getTime()) ? t.toLocaleDateString('sv-SE') : ''
+  return Number.isFinite(t.getTime()) ? dayKey(t.getTime()) : ''
 }
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0))
 const short = (text, n) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, n)

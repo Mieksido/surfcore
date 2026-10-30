@@ -53,6 +53,7 @@
     "homeDir": "",
     "downloadUrl": "https://github.com/SnowLuma/SnowLuma/releases/latest"
   },
+  "timezone": "",
   "ownerQQ": null,
   "admin": null,
   "sessionCwd": "",

@@ -23,6 +23,7 @@ import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../../src/fish-g
 import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js';
 import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { normalizeCardMode } from '../../../src/share-mode.js';
+import { normalizeTimeZone } from '../../../src/timezone.js';
 
 export const MASK = '********';
 
@@ -379,6 +380,11 @@ export function normalizeQqConfig(input) {
   cfg.deny.private = normalizeIdList(cfg.deny.private);
   cfg.deny.groups = normalizeIdList(cfg.deny.groups);
   cfg.allowAllWhenEmpty = cfg.allowAllWhenEmpty === true;
+  // 自定义时区：非法值在 /config 入口已被 400 拒绝；这里是兜底，落成空串（= 系统时区）而不是留一个无效值。
+  {
+    const tz = normalizeTimeZone(cfg.timezone);
+    cfg.timezone = tz.ok ? tz.zone : '';
+  }
   cfg.ownerQQ = cfg.ownerQQ == null || cfg.ownerQQ === '' ? null : normalizeIdList([cfg.ownerQQ])[0] ?? null;
   cfg.consolePort = finiteNumber(cfg.consolePort, 3100, 1024, 65535, { integer: true });
   cfg.sendDelayMs = finiteNumber(cfg.sendDelayMs, 300, 0, 60_000, { integer: true });

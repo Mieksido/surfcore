@@ -15,8 +15,9 @@ import { usageToday } from '../tools/lib/free-gate.mjs'
 import { DEFAULT_LIMITS, freeLimits } from '../tools/lib/limits.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
 import { normalizeCardMode } from '../../../src/share-mode.js'
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
 
-const today = () => new Date().toLocaleDateString('sv-SE')
+const today = () => withConfiguredTimeZone(() => new Date().toLocaleDateString('sv-SE'))
 
 function parseClock(label) {
   const match = /^(\d{1,2}):(\d{2})$/.exec(String(label ?? '').trim())
@@ -34,16 +35,18 @@ function nextClock(times, now = new Date()) {
     .filter((item) => item.clock)
     .sort((a, b) => (a.clock.hour * 60 + a.clock.minute) - (b.clock.hour * 60 + b.clock.minute))
   if (!list.length) return null
-  for (const item of list) {
+  return withConfiguredTimeZone(() => {
+    for (const item of list) {
+      const d = new Date(now)
+      d.setHours(item.clock.hour, item.clock.minute, 0, 0)
+      if (d.getTime() > now.getTime()) return d
+    }
+    const first = list[0]
     const d = new Date(now)
-    d.setHours(item.clock.hour, item.clock.minute, 0, 0)
-    if (d.getTime() > now.getTime()) return d
-  }
-  const first = list[0]
-  const d = new Date(now)
-  d.setDate(d.getDate() + 1)
-  d.setHours(first.clock.hour, first.clock.minute, 0, 0)
-  return d
+    d.setDate(d.getDate() + 1)
+    d.setHours(first.clock.hour, first.clock.minute, 0, 0)
+    return d
+  })
 }
 
 function isoOrNull(value) {

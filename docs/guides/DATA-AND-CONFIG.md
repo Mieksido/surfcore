@@ -94,6 +94,7 @@
 
 | 键 | 默认 | 作用 |
 | --- | --- | --- |
+| `timezone` | 空 | 自定义时区（覆盖系统时区）：IANA 名或 `UTC+8`；空 = 跟随系统。环境变量 `SURFCORE_TIMEZONE` 优先。见 [TIMEZONE.md](TIMEZONE.md) |
 | `consolePort` | `3100` | 控制台端口（`stop-qq-bot.ps1` 也读它） |
 | `consoleToken` | 空 | 控制台令牌；空 = 自动生成到 `state/console-token` 并在日志打印前 6 位 |
 | `ackMessage` | 空 | 收到消息时的回执文本（空 = 不回执） |

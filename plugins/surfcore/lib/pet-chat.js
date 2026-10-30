@@ -21,6 +21,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './store.js';
 import { resolvePersonaFile } from './persona.js';
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
 import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter } from '../../../src/character-persona.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
@@ -134,10 +135,12 @@ export function buildPetMemoryEvents({ userText = '', replyText = '', at = Date.
 }
 
 function localTimeText(at = Date.now()) {
-  const d = new Date(at);
-  const week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}（周${week}）`;
+  return withConfiguredTimeZone(() => {
+    const d = new Date(at);
+    const week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}（周${week}）`;
+  });
 }
 
 function tokenHash(text) {

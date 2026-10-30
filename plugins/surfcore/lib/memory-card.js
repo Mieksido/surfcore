@@ -12,6 +12,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
 import { BACKUP_DIR, QQ_STATE_DIR, maskPath } from './paths.js';
 import {
   activeMemoryPaths, activePlatformStateDir,
@@ -65,8 +66,10 @@ export function memoryCardPaths() {
 }
 
 function todayKey(now = Date.now()) {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return withConfiguredTimeZone(() => {
+    const d = new Date(now);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 }
 
 function readBiliEntries() {
@@ -292,7 +295,7 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
     // 全量卡是 append-only JSONL，不做整份备份；每天备份很小的 stats 文件即可。
     try {
       const stat = fs.statSync(pathsNow().fullStats);
-      if (new Date(stat.mtimeMs).toLocaleDateString('sv-SE') !== todayKey(now)) {
+      if (todayKey(stat.mtimeMs) !== todayKey(now)) {
         backupFile(pathsNow().fullStats, 'memory-card-full-stats');
       }
     } catch {}

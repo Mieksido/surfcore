@@ -17,6 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { withConfiguredTimeZone } from '../../../src/timezone.js'
 import {
   AUDIT_LOG, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED,
   QQ_ALIGNMENT_BRIEF, QQ_CONFIG, QQ_STATE_DIR, ensureDirs,
@@ -54,7 +55,7 @@ const TOPIC_RULES = [
 const MEME_RE = /(?:梗|笑死|难绷|绷不住|离谱|草|乐|典|急了|破防|抽象|整活|好活)/;
 
 function todayStamp() {
-  return new Date().toLocaleString('sv-SE');
+  return withConfiguredTimeZone(() => new Date().toLocaleString('sv-SE'));
 }
 
 function readFeedLines({ lookbackDays = 7, maxMessages = 300 } = {}) {

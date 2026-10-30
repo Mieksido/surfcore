@@ -79,6 +79,7 @@ import { createBiliDynamicsSync } from './bili-dynamics.js';
 import { createBiliShareScheduler } from './bili-share-scheduler.js';
 import { createBiliCardSender, normalizeCardMode } from './bili-card.js';
 import { fetchVideoInfo } from './bili-api.js';
+import { applyProcessTimeZone, describeTimeZone } from './timezone.js';
 import {
   loadSlang,
   saveSlang,
@@ -1678,6 +1679,20 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  // 自定义时区（config.json 的 timezone，覆盖系统时区）：必须在任何排程/日期计算之前生效。
+  // 之后每分钟复查一次，设置页改了不用重启桥接。详见 docs/guides/TIMEZONE.md。
+  {
+    const reportZone = (first) => {
+      const r = applyProcessTimeZone();
+      if (r.error && (first || r.changed)) log(`⚠️ 时区配置无效（${r.error}），已回退系统时区。请在设置页「概览 → 时区」改成有效值，例如 Asia/Shanghai。`);
+      if (first || r.changed) {
+        const d = describeTimeZone();
+        log(`时区：${d.effective.zone}（${d.effective.offset}，现在 ${d.effective.now}）${r.zone ? `← 来自${r.source === 'env' ? '环境变量 SURFCORE_TIMEZONE' : 'config.json 的 timezone'}` : '← 系统时区'}`);
+      }
+    };
+    reportZone(true);
+    setInterval(() => { try { reportZone(false); } catch {} }, 60_000).unref();
+  }
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();

@@ -235,6 +235,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector, createBiliMemory, fetchVideoInfo,
+    // 自定义时区：桩。夹具里不能改真实进程的 TZ，也不该读用户真实 config.json 的 timezone。
+    applyProcessTimeZone: () => ({ zone: '', source: 'system', changed: false }),
+    describeTimeZone: () => ({ effective: { zone: 'system', offset: 'UTC+00:00', now: '' } }),
     // DSH 端口兜底：isLoopbackBaseUrl 是真身（纯函数），两条探测是桩——
     // 测试不该在宿主机上真跑 netstat / 真去连 3080。
     isLoopbackBaseUrl,
