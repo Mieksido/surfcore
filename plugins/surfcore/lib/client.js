@@ -829,6 +829,12 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { group: "安全通知", note: "黑名单（deny.users / deny.groups / deny.private）在页面顶部的「QQ 黑名单」卡片里，这里不再重复输入框", fields: [
         F("security.interceptNotify", "安全拦截通知", "拦截到敏感操作时通知管理员", "switch"),
       ]},
+      { group: "优先规则", note: "这些规则优先于普通概率和全局唤醒上限；保存后需重启 QQ 桥接生效", fields: [
+        F("priority.forceReplyAtGroups", "被 @ 必回群", "这些群里任何人 @ 机器人，必须回一条；优先于唤醒上限", "list", { placeholder: "点击输入群号，逗号分隔，例如 460085222" }),
+        F("priority.privateAlwaysReplyUsers", "私聊必回 QQ", "这些 QQ 的私聊必须回一条；优先于唤醒上限", "list", { placeholder: "点击输入 QQ 号，逗号分隔" }),
+        F("priority.groupRates", "指定人在指定群的回复概率", "格式：群号:QQ号:概率；逗号分隔，例如 460085222:3614158761:0.3。0=不回，1=每次回", "list", { placeholder: "例如 460085222:3614158761:0.3" }),
+        F("priority.fallbackText", "保底回复文案", "模型 90 秒内没有发出消息时补发这一句；留空用默认", "text", { wide: true }),
+      ]},
       { group: "人格与注入", note: "人格卡在「角色」页统一编辑", fields: [
         F("role.maxInjectChars", "人格注入上限（字符）", "1000~20000；默认 6000", "number", { min: 1000, max: 20000 }),
       ]},
@@ -1143,6 +1149,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("listen.live", "直播间监听", "", "switch"),
         F("listen.liveRoom", "直播间房间号", "留空 = 不蹲直播"),
         F("listen.liveScope", "直播间只回", "只回主人 / 只回艾特她的", "select", { options: [["owner", "只回主人"], ["mention", "只回艾特她的"]] }),
+      ]},
+      { group: "优先回复", note: "私信必回 UID / 视频 @ 必回 UID / 评论区回复概率；B站平台限额和风控仍然生效", fields: [
+        F("priority.dmAlwaysReplyMids", "私信必回 UID", "逗号分隔 B站 mid；只处理这些 UID 的私信", "list"),
+        F("priority.mentionAlwaysReplyMids", "视频 @ 必回 UID", "这些 UID 在视频下 @ 你时，强制唤醒并要求必回", "list"),
+        F("priority.replyRate", "评论区回复概率", "有人回复你时，按该概率选中处理；0=不处理，1=全部", "number", { min: 0, max: 1, step: 0.01 }),
       ]},
       { group: "日记与推送", fields: [
         F("diary.push", "推送日记摘要", "日记照写；只控制推不推", "switch"),

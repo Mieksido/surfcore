@@ -407,5 +407,11 @@
       "uin": null,
       "name": ""
     }
+  },
+  "priority": {
+    "forceReplyAtGroups": [],
+    "privateAlwaysReplyUsers": [],
+    "groupRates": [],
+    "fallbackText": ""
   }
 }

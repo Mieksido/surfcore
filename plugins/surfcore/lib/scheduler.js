@@ -742,17 +742,23 @@ export function startScheduler(ctx, opts) {
       dmBusy = true
       try {
         // 2026-10-20（用户定）：listen.dmScope = 'all' 时**谁找她都叫醒她**（不只主人）
-        const any = String(L.dmScope ?? "owner") === "all"
+        const P = cfg.priority ?? {}
+        const dmMids = (Array.isArray(P.dmAlwaysReplyMids) ? P.dmAlwaysReplyMids : [])
+          .map((x) => String(x).trim()).filter((x) => /^\d+$/.test(x))
+        const any = String(L.dmScope ?? "owner") === "all" || dmMids.length > 0
         const r = await runBili(["dm-await", "--once", "--json", ...(any ? ["--any"] : [])])
         const line = String(r.out ?? "").trim().split("\n").pop() ?? ""
         let j = null
         try { j = JSON.parse(line) } catch { j = null }
         if (!j?.hit) return
         const ownerMid = String(cfg.owner?.mid ?? "")
-        const items = any
+        let items = any
           ? (j.items ?? [])
           : [{ mid: j.mid, name: j.name, text: j.text, ts: j.ts }]
+        // 指定 UID：只处理名单里的私信；名单为空时保持原来的 owner/all 行为。
+        if (dmMids.length) items = items.filter((it) => dmMids.includes(String(it.mid)))
         if (!items.length) return
+        const forcedDm = dmMids.length > 0
         const block = items.slice(0, 5).map((it) => {
           const mine = String(it.mid) === ownerMid
           const who = `${it.name || "mid " + it.mid}（${it.mid}）`
@@ -774,6 +780,11 @@ export function startScheduler(ctx, opts) {
               "",
               ...block,
               "",
+              ...(forcedDm ? [
+                `【优先私信】这些 UID 的私信必须回复：${dmMids.join('、')}。`,
+                "不要以「不回」结束；即使内容一般也至少回一句。B站私信条数/风控仍可能拒绝，但必须先尝试 `dm --to <mid> --go`。",
+                "",
+              ] : []),
               "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
               "1) 主人 → **直接回，不用审核** ✓，要比平时更温柔（先回应关心，不顶嘴）；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
               "2) 一两句就够 —— 私信是聊天，不是评论区 ✗",
@@ -816,8 +827,36 @@ export function startScheduler(ctx, opts) {
       const fresh = items.filter((x) => Number(x.t) > since && (!L.onlyOwner || String(x.mid) === String(cfg.owner?.mid ?? '')))
       if (!fresh.length) { listening = false; return }
       fresh.sort((a, b) => a.t - b.t)
-      const who = fresh.map((x) => `${x.who}（${x.kind === 'at' ? '@' : '回复'}）`).join('、')
-      const L = limitsNow()
+      const P = cfg.priority ?? {}
+      const mentionMids = (Array.isArray(P.mentionAlwaysReplyMids) ? P.mentionAlwaysReplyMids : [])
+        .map((x) => String(x).trim()).filter((x) => /^\d+$/.test(x))
+      const rawRate = P.replyRate
+      const hasRate = rawRate !== undefined && rawRate !== null && rawRate !== ''
+        && Number.isFinite(Number(rawRate))
+      const rate = hasRate ? Math.max(0, Math.min(1, Number(rawRate))) : 1
+      const selected = []
+      for (const x of fresh) {
+        if (x.kind === 'at') {
+          // @ 默认都处理；名单只负责把这些 UID 标成“必回”，不排斥其他人的 @。
+          selected.push(x)
+        } else if (!hasRate || Math.random() < rate) {
+          // 只对“回复我的”做比例抽样；@ 不受这个比例影响。
+          selected.push(x)
+        }
+      }
+      if (!selected.length) {
+        writeL({ lastSeen: Math.max(...fresh.map((x) => Number(x.t))) })
+        listening = false
+        return
+      }
+      const forcedMids = new Set(selected
+        .filter((x) => x.kind === 'at' && mentionMids.includes(String(x.mid)))
+        .map((x) => String(x.mid)))
+      const forced = forcedMids.size > 0
+      const who = selected.map((x) => `${x.who}（${x.kind === 'at' ? '@' : '回复'}）`).join('、')
+      const L2 = limitsNow()
+      const selectedLines = selected.slice(0, 20).map((x) =>
+        `- ${x.kind === 'at' ? '@' : '回复'} by ${x.who}（mid ${x.mid}）oid=${x.oid} root=${x.root} parent=${x.parent} business=${x.business}`)
       await ensureSession()
       await promptBili(
         {
@@ -829,20 +868,28 @@ export function startScheduler(ctx, opts) {
             text: [
               ...identityContextLines(),
               toolLine(),
-              `【有人找你】${fresh.length} 条新消息：${who}。`,
+              `【有人找你】${selected.length} 条新消息：${who}。`,
+              '',
+              '本轮只处理下面列表里的消息，不要回复列表外的东西：',
+              ...selectedLines,
               '',
               '按 AGENTS.md 的「倾听」做（不要等我说话，直接做）：',
-              '1) `node bili.mjs comment-digest --hours 24` —— 把积压的**一起看**（合并策略 ✓ 不可关）',
+              '1) `node bili.mjs comment-digest --hours 24` —— 用它核对上面列表的评论坐标和正文；**只回列表内**（合并策略 ✓ 不可关）',
+              ...(forced ? [
+                `【优先 @】这些 UID 在视频下 @ 你，必须回复：${[...forcedMids].join('、')}。`,
+                '本轮至少为其中每一条各回一条；不要以「不回」结束（攻击/隐私/违法内容除外，遇到就 attack add 报备）。',
+                '',
+              ] : []),
               '2) 只回「一两句能答清的提问 + 轻互动」，一条收住；吵架/要隐私/长篇追问/代表主人承诺 → 不回 ✗',
               '2.5) ⭐ **疑似被攻击/阴阳怪气 → 不回，改 `attack add` 记待审**（带序号，自动私信报备给管理员；他晚上审完批准才回）',
               '     例：`attack add --oid … --root … --parent … --who "昵称" --text "他的原话" [--suggest "你想回的"]`；待审不占额度 ✓',
               '3) ⭐ **谁找你都直接回**（2026-10-20 用户改：不再走草稿 ✓）：',
               // mid 动态读配置 ✓（别把 uid 写死进代码 ✗ 开源版会带出去 ✗）
               `   · 对方是**主人**（mid ${cfg.owner?.mid ?? '（未配置）'}）→ 直接回 ✓，而且要比平时更温柔（先谢谢/回应关心，不抬杠、不回嘴）`,
-              `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${L.replyDaily} 条/天）`,
+              `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${L2.replyDaily} 条/天）`,
               '     `comment --oid … --root … --parent … --message "…" --auto --once-per-person（仅当开关=开 ✓） --dry` → `--go` → `thread` 复核 ✓',
               '     ⚠️ 别带 --ta —— 那是"我去搭热评"，两本账分开记 ✗',
-              `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${L.mineDaily} 条/天 · 每人 ${L.minePerPerson} 条 ✓`,
+              `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${L2.mineDaily} 条/天 · 每人 ${L2.minePerPerson} 条 ✓`,
               '     ⚠️ oid 必须用 comment-digest 打印的坐标（19 位动态 id 不能手抄：JS 数字会丢末几位）',
               '4) 吵架 / 要隐私 / 要你代表主人承诺 → 一条都不回 ✗（直接不理，别解释）',
               '5) 别贪多：这一批处理完就停 ✓（**只有设置页「同一个人最多只回一条」= 开时**才加 --once-per-person ✓；关掉就别加 ✗）',
@@ -852,7 +899,7 @@ export function startScheduler(ctx, opts) {
         new AbortController().signal,
       )
       writeL({ lastSeen: Math.max(...fresh.map((x) => Number(x.t))) })
-      log(`[bili-whale] 监听命中 ${fresh.length} 条（${who}）→ 已叫醒`)
+      log(`[bili-whale] 监听命中 ${selected.length} 条（${who}）→ 已叫醒${forced ? ' · 优先 @ 必回' : ''}`)
     } catch (e) {
       log(`[bili-whale] 监听失败：${String(e.message).slice(0, 140)}`)
     } finally {
