@@ -14,6 +14,7 @@ import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
 import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
+import { deepWellFormed } from './safe-text.js';
 
 /** DSH home：凭据文件与（历史）启动日志都在这里。 */
 export function resolveDshHome() {
@@ -621,7 +622,8 @@ export class NodeApiClient extends AbstractApiClient {
       type: 'client-request',
       rpcId: this.mintRpcId(),
       method: endpoint,
-      payload: wrapArgs(method, payload)
+      // 整包兜底：任何字段里漏网的孤立代理项（被劈开的 emoji）发到模型都是 400，见 src/safe-text.js。
+      payload: wrapArgs(method, deepWellFormed(payload))
     };
     this.onEnvelope(message);
     const response = await this.postJson(`/api/${endpoint}`, message, signal, timeoutPolicy);

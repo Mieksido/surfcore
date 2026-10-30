@@ -21,6 +21,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './store.js';
 import { resolvePersonaFile } from './persona.js';
+import { sliceHead, wellFormed } from '../../../src/safe-text.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter } from '../../../src/character-persona.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
@@ -54,7 +55,7 @@ function clampInt(value, fallback, min, max) {
 
 function clip(text, max) {
   const s = String(text ?? '').replace(/\r\n/g, '\n').trim();
-  return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
+  return s.length > max ? `${sliceHead(s, Math.max(1, max - 1))}…` : s;
 }
 
 /** 按句号/问号/感叹号截断到 max 字以内；没有标点就硬截。语音回复必须能一次念完。 */
@@ -292,12 +293,12 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const pending = (Array.isArray(state.pending) ? state.pending : [])
       .filter((p) => p && p.text)
       .slice(-4)
-      .map((p) => String(p.text).slice(0, 80));
+      .map((p) => sliceHead(p.text, 80));
     return {
       pending,
-      lastPurpose: String(state.lastPurpose || '').slice(0, 100),
-      emotion: String(state.lastEmotionText || '').slice(0, 40),
-      goals: (Array.isArray(state.goals) ? state.goals : []).slice(0, 3).map((g) => String(g?.intent || '').slice(0, 80)).filter(Boolean),
+      lastPurpose: sliceHead(state.lastPurpose || '', 100),
+      emotion: sliceHead(state.lastEmotionText || '', 40),
+      goals: (Array.isArray(state.goals) ? state.goals : []).slice(0, 3).map((g) => sliceHead(g?.intent || '', 80)).filter(Boolean),
     };
   }
 
@@ -606,8 +607,9 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const base = {
       provider: target.provider,
       model: target.model,
-      system: String(system || ''),
-      messages: [{ role: 'user', content: [{ type: 'text', text: String(user || '') }] }],
+      // 兜底：老数据里可能已经有孤立代理项（emoji 被劈开），发给模型会 400。
+      system: wellFormed(system || ''),
+      messages: [{ role: 'user', content: [{ type: 'text', text: wellFormed(user || '') }] }],
       maxTokens: clampInt(maxTokens, 800, 128, 4000),
       temperature: Math.min(2, Math.max(0, Number(temperature) || 1)),
       ...(signal ? { signal } : {}),
@@ -672,12 +674,12 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     lines.push('');
     if (role.persona) {
       lines.push('【人格卡（你就是这个人）】');
-      lines.push(role.persona.slice(0, 4200));
+      lines.push(sliceHead(role.persona, 4200));
       lines.push('');
     }
     if (memory) {
       lines.push('【记忆卡（你记得的事；越早的事记得越模糊，别把模糊的事说得很确定）】');
-      lines.push(memory.slice(0, 2600));
+      lines.push(sliceHead(memory, 2600));
       lines.push('');
     }
     const bits = [];
@@ -719,7 +721,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   async function chat({ text = '', modality = 'text' } = {}) {
     const s = settings();
     if (!s.chat.enabled) return { ok: false, error: '桌宠对话已关闭（设置 → 桌宠 → 对话）' };
-    const say = String(text ?? '').trim().slice(0, MAX_INPUT_CHARS);
+    const say = sliceHead(String(text ?? '').trim(), MAX_INPUT_CHARS);
     if (!say) return { ok: false, error: '说点什么吧' };
     const mode = modality === 'voice' ? 'voice' : 'text';
     if (!llmReady()) return { ok: false, error: 'DSH 模型服务还没就绪，稍后再试' };

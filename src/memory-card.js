@@ -29,6 +29,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { sliceHead } from './safe-text.js';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -206,7 +207,7 @@ function hash(value, len = 16) {
 
 function short(text, max = 80) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return s.length > max ? `${sliceHead(s, max)}…` : s;
 }
 
 function dateOnly(value) {

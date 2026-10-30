@@ -16,6 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { sliceHead } from '../../../src/safe-text.js';
 import {
   NEED_LABELS,
   ACTION_LABELS,
@@ -58,7 +59,7 @@ function readJson(file, fallback = null) {
 
 function clip(text, max = 120) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  return s.length > max ? `${sliceHead(s, max - 1)}…` : s;
 }
 
 /**

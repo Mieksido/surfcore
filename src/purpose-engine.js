@@ -60,9 +60,19 @@ function clampInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(n)));
 }
 
+// 截断不能把 emoji 之类的代理对劈开：孤立的高位代理一旦进了提示词，发给模型 API 就是 400
+// （src/safe-text.js 有同样的逻辑；本文件保持零 import，所以这里内联一份）。
+function headSafe(s, max) {
+  if (s.length <= max) return s;
+  let cut = max;
+  const c = cut > 0 ? s.charCodeAt(cut - 1) : 0;
+  if (c >= 0xD800 && c <= 0xDBFF) cut -= 1;
+  return s.slice(0, cut);
+}
+
 function clip(text, max = 120) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return s.length > max ? `${headSafe(s, max)}…` : s;
 }
 
 /** 群聊素材里常带 QQ 号；给主人看的摘要不带号，只留事。 */

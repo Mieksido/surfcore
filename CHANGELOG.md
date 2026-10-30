@@ -4,6 +4,19 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [未发布]
+
+### 修复（桌宠对话 / 主动搭话一直 400：被劈开的 emoji 进了提示词）
+
+- **现象**：桌宠 `/chat`、测试对话、桌宠载体的主动搭话全部 `DeepSeek Messages request failed (400)`，QQ 群里的对话正常。
+- **根因**：`clip()` 等处用 `slice(0, n)` 按 UTF-16 单元截断，正好把 emoji（两个单元）劈开，留下孤立代理项
+  （如 `\ud83d`）；它随「最近在想的」进了系统提示词，请求体不合法，DeepSeek 直接 400，响应里还没有 `error.message`。
+- **修法**：新增 `src/safe-text.js`；截断处（`purpose-engine` / `memory-card` / `pet-purpose` / `pet-chat`）不再劈开代理对；
+  发给模型前再兜底（`pet-chat.complete()` 与 `dsh-client.callUnary()` 整包），已存在的坏数据也不会再 400。
+
+> 调查记录：[孤立代理项导致 400](docs/cases/2026-10-30-lone-surrogate-400.md)
+
+
 ## [0.7.19] - 2026-10-30
 
 ### 新增（插件冲突体检）
