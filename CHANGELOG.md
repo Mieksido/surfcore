@@ -4,6 +4,26 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [未发布]
+
+### 新增（QQ 空间说说 / 互动 / 轮询，默认关闭）
+
+- SnowLuma v2.2.1 的 `send_qzone_msg` 已接入：AI 可在管理员私聊里调用 `qq_post_qzone` 发一条说说，
+  另有只读的 `qq_qzone_status` 查今日额度/上次时间。
+- **默认关闭**（`qzone.enabled=false`），且只允许 `private:<管理员QQ>` 调用；群里的 AI 不能替主人发。
+- 安全默认：只发文字（带图要单独开）、好友可见（`ugc_right=4`）、每日最多 2 条、两条至少隔 6 小时、
+  正文 500 字上限、命中本机路径/凭据特征直接拒绝、`file://` 本机图片默认禁止；权限只从配置读，模型改不了。
+- 另有 `dryRun` 演练模式（只返回将要发布的内容）；状态落盘 `state/qzone.json`，重启不重置额度。
+- 设置页：QQ → 高级 →「QQ 空间（说说）」。开完保存 → 重启桥接；工具本身要重启 DSH 才出现。
+- **第二批（同日）**：只读 `qq_qzone_posts` / `qq_qzone_post` / `qq_qzone_feeds` / `qq_qzone_profile`；
+  互动 `qq_qzone_like` / `qq_qzone_comment`（独立开关 `qzone.interact.enabled`，默认关；
+  默认只允许评论主人或自己的说说，点赞 ≤20/天、评论 ≤5/天、两条评论 ≥2 分钟）；
+  以及空间轮询 `qzone.watch`（默认关）：新评论/@、主人发新说说会唤醒 AI，
+  首轮只建水位、不回补历史，桥接只负责发现和叫醒，发不发仍由 AI 决定。
+  空间没有推送接口，轮询默认 10 分钟；已见 comment_id / 主人 tid 落盘，重启不重复。
+
+> 调查记录：[QQ 空间说说发布](docs/cases/2026-10-30-qzone-post.md)
+
 ## [0.7.20] - 2026-10-31
 
 ### 修复（SnowLuma 断线时主动唤醒空烧 token）
@@ -24,7 +44,6 @@
 - 语音页新增说明：语音包不参与「检查更新」，需要新版本时用「重新导入离线包」，
   导入保留 config.toml / .venv / models / vendor；
 - 未做语音包自动版本检查/通知；以后另做独立手动更新通道。
-
 
 ## [0.7.19] - 2026-10-30
 

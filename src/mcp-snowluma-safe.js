@@ -1413,4 +1413,196 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   );
 }
 
+// ── QQ 空间说说（2026-10-30；默认关闭）────────────────────────────────────
+// 只在这个开关打开时注册工具：关着的时候连工具描述都不该出现在模型的上下文里
+// （既省 token，也避免它反复调用、反复拿到 403）。
+// 服务端还有第二道闸（桥接 /api/socialV2/qzone：只认管理员私聊 + 每日上限 + 敏感信息扫描），
+// 这里只是把「能不能用」如实告诉模型。
+if (cfg.qzone?.enabled === true && cfg.socialV2?.tools?.postQzone !== false) {
+  server.tool(
+    'qq_qzone_status',
+    '查看 QQ 空间说说发布状态（只读）：开关、查看权限、今天已发几条/上限、上一条发布时间、还要等多久。发之前先看一眼，别重复发。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）')
+    },
+    async ({ key, token }) => {
+      try {
+        const data = await agentApi(`/api/socialV2/qzone?key=${encodeURIComponent(key)}`, {
+          method: 'GET',
+          headers: { 'x-agent-token': token }
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `查询 QQ 空间状态失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_post_qzone',
+    '发一条 QQ 空间说说（机器人自己的空间，**对外可见，发出去就收不回**）。只有管理员私聊能调用。发之前想清楚：不要发私聊内容、不要发本机路径/token/密码、不要发别人的个人信息；一条一条发，刷屏会被风控。成功返回 tid（说说 id）。内容尽量 500 字内，写成像你自己会发的那种。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      content: z.string().describe('说说正文（纯文本；上限见设置，默认 500 字）'),
+      images: z.array(z.string()).optional().describe('图片地址数组（可选）：http(s):// 或 base64://；本机 file:// 默认不允许')
+    },
+    async ({ key, token, content, images }) => {
+      try {
+        const data = await agentApi('/api/socialV2/qzone', {
+          method: 'POST',
+          body: JSON.stringify({ key, content, images }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 60000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `发说说失败：${error?.message ?? error}${error?.hint ? `；建议：${error.hint}` : ''}` }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // ── 只读：说说列表 / 单条评论 / 好友动态 / 空间资料 ──────────────────────
+  const qzoneRead = (path, extra = '') => async ({ key, token }) => {
+    try {
+      const data = await agentApi(`/api/socialV2/qzone/${path}?key=${encodeURIComponent(key)}${extra}`, {
+        method: 'GET',
+        headers: { 'x-agent-token': token },
+        timeoutMs: 30000
+      });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取 QQ 空间失败：${error?.message ?? error}${error?.hint ? `；建议：${error.hint}` : ''}` }], isError: true };
+    }
+  };
+
+  server.tool(
+    'qq_qzone_posts',
+    '列出 QQ 空间的说说（默认机器人自己的；带 targetUin 看别人的，需要有访问权限）。返回 tid / 正文 / 时间 / 评论数 / 是否仅自己可见。发评论、点赞前先用它拿 tid。只读。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      targetUin: z.union([z.number(), z.string()]).optional().describe('要看谁的空间；省略=机器人自己'),
+      limit: z.number().optional().describe('返回几条，默认 5，最多 20')
+    },
+    async ({ key, token, targetUin, limit }) => {
+      const extra = `${targetUin ? `&targetUin=${encodeURIComponent(String(targetUin))}` : ''}${limit ? `&num=${Number(limit) || 5}` : ''}`;
+      return qzoneRead('posts', extra)({ key, token });
+    }
+  );
+
+  server.tool(
+    'qq_qzone_post',
+    '看一条说说的详情和评论（含楼中楼）。回复评论时要用这里返回的 commentId / uin；只读。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      tid: z.string().describe('说说 tid（来自 qq_qzone_posts / qq_qzone_feeds）'),
+      targetUin: z.union([z.number(), z.string()]).optional().describe('说说所属 QQ 号；省略=机器人自己'),
+      limit: z.number().optional().describe('返回几条评论，默认 20，最多 100')
+    },
+    async ({ key, token, tid, targetUin, limit }) => {
+      const extra = `&tid=${encodeURIComponent(tid)}${targetUin ? `&targetUin=${encodeURIComponent(String(targetUin))}` : ''}${limit ? `&num=${Number(limit) || 20}` : ''}`;
+      return qzoneRead('post', extra)({ key, token });
+    }
+  );
+
+  server.tool(
+    'qq_qzone_feeds',
+    '看 QQ 空间好友动态（谁发了什么、几条评论、几张图），带 nextCursor 可翻下一页。只读。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      count: z.number().optional().describe('本页几条，默认 10，最多 30'),
+      cursor: z.string().optional().describe('上一页返回的 nextCursor；不传=第一页')
+    },
+    async ({ key, token, count, cursor }) => {
+      const extra = `${count ? `&count=${Number(count) || 10}` : ''}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      return qzoneRead('feeds', extra)({ key, token });
+    }
+  );
+
+  server.tool(
+    'qq_qzone_profile',
+    '看 QQ 空间的名称和说明（默认机器人自己，带 targetUin 看别人）。只读。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      targetUin: z.union([z.number(), z.string()]).optional().describe('看谁的空间；省略=机器人自己')
+    },
+    async ({ key, token, targetUin }) => {
+      const extra = targetUin ? `&targetUin=${encodeURIComponent(String(targetUin))}` : '';
+      return qzoneRead('profile', extra)({ key, token });
+    }
+  );
+}
+
+// ── QQ 空间互动（点赞 / 评论）：单独开关，默认关 ──────────────────────────
+// 评论会出现在别人的空间里，所以比"发自己的说说"更需要克制：
+// 桥接侧还有「只允许评论主人/自己的说说」「每日上限」「最小间隔」「敏感信息」四道闸。
+//
+// 注册条件只看 qzone.enabled（不跟 interact.enabled 走）：MCP 工具是**进程启动时**注册的，
+// 如果这里也跟着 interact 开关走，用户每开一次互动都要重启 DSH，体验太差（2026-10-30 连踩两次）。
+// 真正的权限判断在桥接调用期：interact 没开就返回 QZONE_INTERACT_DISABLED + 去哪打开，
+// 工具本身在提示词里也写清楚"需要先开启互动"。
+if (cfg.qzone?.enabled === true && cfg.socialV2?.tools?.postQzone !== false) {
+  server.tool(
+    'qq_qzone_like',
+    '给一条说说点赞或取消赞。只在你真觉得好时点，别把人家空间刷成一片赞（有每日上限）。需要设置里先打开「允许点赞与评论」，否则会被拒绝。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      tid: z.string().describe('说说 tid'),
+      targetUin: z.union([z.number(), z.string()]).optional().describe('说说所属 QQ 号；省略=机器人自己'),
+      like: z.boolean().optional().describe('true=点赞（默认），false=取消赞')
+    },
+    async ({ key, token, tid, targetUin, like }) => {
+      try {
+        const data = await agentApi('/api/socialV2/qzone/like', {
+          method: 'POST',
+          body: JSON.stringify({ key, tid, targetUin, like: like !== false }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `点赞失败：${error?.message ?? error}${error?.hint ? `；建议：${error.hint}` : ''}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_qzone_comment',
+    '评论一条说说，或回复某条评论（楼中楼）。评论是公开的：说人话、别阴阳、别复制粘贴；同一条说说别重复发顶层评论。回复楼中楼要带 commentId（以及 commentUin）。需要设置里先打开「允许点赞与评论」，否则会被拒绝。',
+    {
+      key: z.string().describe('会话 key，必须是管理员私聊 private:<管理员QQ>'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      tid: z.string().describe('说说 tid'),
+      targetUin: z.union([z.number(), z.string()]).optional().describe('说说所属 QQ 号；省略=机器人自己'),
+      content: z.string().describe('评论内容（纯文本，默认最多 100 字）'),
+      commentId: z.string().optional().describe('回复某条一级评论时填它的 commentId（不填就是新评论）'),
+      commentUin: z.union([z.number(), z.string()]).optional().describe('被回复评论的作者 QQ 号'),
+      replyUin: z.union([z.number(), z.string()]).optional().describe('回复楼中楼里的某个人时填他的 QQ 号'),
+      replyName: z.string().optional().describe('被回复人的昵称（配合 replyUin）')
+    },
+    async ({ key, token, tid, targetUin, content, commentId, commentUin, replyUin, replyName }) => {
+      try {
+        const data = await agentApi('/api/socialV2/qzone/comment', {
+          method: 'POST',
+          body: JSON.stringify({ key, tid, targetUin, content, commentId, commentUin, replyUin, replyName }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 60000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `评论失败：${error?.message ?? error}${error?.hint ? `；建议：${error.hint}` : ''}` }], isError: true };
+      }
+    }
+  );
+}
+
 await server.connect(new StdioServerTransport());

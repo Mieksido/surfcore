@@ -47,6 +47,9 @@ const tests = [
   'test-night-schedule.mjs',
   // Token 防爆破：每天唤醒上限、私聊更紧、最小间隔、单次发送条数、近 24h 花费。
   'test-token-guard.mjs',
+  // QQ 空间说说（默认关闭）：开关/字数/敏感信息/图片协议/权限/每日上限/最小间隔，
+  // 以及桥接端点、SnowLuma send_qzone_msg、MCP 工具与设置页字段的接线。
+  'test-qzone-post.mjs',
   // 每日 token 额度：单位解析（¥8 / 8M / 2万）、双单位比例、80% 每天只提醒一次、
   // 额度文件损坏回落默认、当天/跨天文件语义（纯逻辑 + 插件 session/event 采集）。
   'test-token-budget.mjs', 'test-token-budget-service.mjs', 'test-token-budget-bridge.mjs',

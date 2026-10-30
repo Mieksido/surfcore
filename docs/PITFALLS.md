@@ -2973,3 +2973,30 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 
 **验证**：`plugins/surfcore npm test`（test-updates-voice 钉住不再登记 surfvoice 组件 +
 语音页说明）；`npm run test:audit` 89/89。
+
+## #92（2026-10-30）QQ 空间功能上线踩的三个坑：配置白名单、作用域、两条重启线
+
+**现象**：用户打开「启用说说发布」并重启桥接后，桥接仍报 `enabled:false`；AI 也拿不到
+`qq_post_qzone`。补了互动接口后又出现评论接口 HTTP 500。
+
+**根因**：
+1. `src/bridge.js` 的 `loadConfig()` 是**白名单式重建**（只抄认识的顶层段），新加的 `qzone` 段
+   没写进去 → config.json 里写了也读不到；
+2. `agentTokenOk` 是 `startConsoleServer()` 里的 `const`，新写的 `qzoneAgentGuard()` 放在外面
+   → 请求时抛 `agentTokenOk is not defined`（HTTP 500）；
+3. 工具是 **MCP 进程启动时**注册的（DSH spawn），和「重启桥接」是两条独立的进程链；
+   只重启桥接，模型那边永远看不到工具。SnowLuma 也没有空间推送接口，
+   「被评论/@」「主人发新说说」只能轮询。
+
+**修法**：
+- `loadConfig` 显式透传 `qzone: file.qzone ?? {}`，并加静态断言钉住；
+- `qzoneAgentGuard` 挪进 `startConsoleServer()`、紧挨 `agentTokenOk`；
+- 设置页保存时若 `qzone.enabled` 从关变开，toast + 错误条直接写「还需重启 DSH」；
+- 轮询首轮只建水位，不回补历史；每日唤醒上限 + 已见 comment_id 落盘去重；
+- **工具注册只跟 `qzone.enabled` 走**，不再跟 `qzone.interact.enabled` 走——
+  否则用户每开一次互动都要再重启一次 DSH（2026-10-30 当天连踩两次：MCP 进程 09:14:50 启动、
+  配置 09:18:02 才保存，AI 于是只看到只读工具）。互动是否允许改在桥接调用期判断
+  （`QZONE_INTERACT_DISABLED` + 去哪打开）。
+
+**验证**：`node scripts/test-qzone-post.mjs`；`node scripts/test-audit-bridge.mjs`；
+`npm run test:audit`。

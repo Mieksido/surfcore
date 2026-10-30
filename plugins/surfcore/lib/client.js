@@ -940,6 +940,38 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.tokenGuard.directBypassGap", "被 @/叫到时越过间隔", "默认开；@、引用、叫名字、提问、拍一拍可立即唤醒；每日次数/额度上限仍生效", "switch"),
         F("socialV2.tokenGuard.maxOutboundPerTurn", "每次醒来最多发", "默认 8 条；连续回 10 条仍会被硬拦", "number", { min: 1, max: 20 }),
       ]},
+      // QQ 空间是**公开外向**的动作：发出去收不回、可能被好友/陌生人看到。
+      // 所以默认关闭，且只允许管理员私聊里的 AI 调用（桥接侧硬拦，不靠提示词）。
+      { group: "QQ 空间（说说）", note: "默认关闭。开启后 AI 只会在管理员私聊里拿到 qq_post_qzone 工具；说说对外可见，先想清楚再发。改完保存 → 重启桥接；工具本身要重启 DSH 才会出现", fields: [
+        F("qzone.enabled", "启用说说发布", "默认关；开着才会注册发布工具", "switch"),
+        F("qzone.ugcRight", "查看权限", "1=所有人 / 4=好友（默认） / 16=部分好友可见 / 64=仅自己可见 / 128=部分好友不可见", "number", { min: 1, max: 128 }),
+        F("qzone.targetUins", "权限名单 QQ", "权限选 16 或 128 时必填；逗号分隔", "list"),
+        F("qzone.allowImages", "允许带图", "默认关；关着只能发纯文字", "switch"),
+        F("qzone.maxImages", "最多几张图", "默认 3", "number", { min: 1, max: 9 }),
+        F("qzone.maxChars", "正文上限（字）", "默认 500", "number", { min: 1, max: 2000 }),
+        F("qzone.maxPerDay", "每天最多几条", "默认 2；0 = 不限（不推荐）", "number", { min: 0, max: 20 }),
+        F("qzone.minGapMs", "两条之间最小间隔（ms）", "默认 21600000（6 小时）", "number", { min: 0 }),
+        F("qzone.dryRun", "演练模式", "打开后只返回将要发布的内容，不真的发", "switch"),
+        F("qzone.allowLocalImages", "允许本机图片", "默认关；打开后 file:// 图片会被上传到空间，等于把本机文件发到公网", "switch"),
+      ]},
+      // 互动 = 评论/点赞别人的说说。评论会出现在别人空间里，所以单独开关、默认关。
+      { group: "QQ 空间（互动）", note: "默认关闭。只允许评论「主人或自己」的说说；有每日上限与最小间隔。改完保存 → 重启桥接；工具要重启 DSH", fields: [
+        F("qzone.interact.enabled", "允许点赞与评论", "默认关；开着才会注册 qq_qzone_like / qq_qzone_comment", "switch"),
+        F("qzone.interact.commentScope", "评论范围", "owner-and-mine=只评论主人和自己的说说（默认）；any=允许评论陌生人（不建议）", "select", { options: [["owner-and-mine", "只限主人与我"], ["any", "任何人的说说"]] }),
+        F("qzone.interact.maxLikesPerDay", "每天最多点赞", "默认 20；0 = 不限", "number", { min: 0, max: 200 }),
+        F("qzone.interact.maxCommentsPerDay", "每天最多评论", "默认 5；0 = 不限", "number", { min: 0, max: 50 }),
+        F("qzone.interact.minCommentGapMs", "两条评论最小间隔（ms）", "默认 120000（2 分钟）", "number", { min: 0 }),
+        F("qzone.interact.maxCommentChars", "评论字数上限", "默认 100", "number", { min: 1, max: 500 }),
+      ]},
+      // 轮询 = 发现"有人评论我 / 主人发新说说"然后叫醒 AI；桥接不替 AI 发东西。
+      { group: "QQ 空间（轮询）", note: "默认关闭。空间没有推送接口，只能定时拉；首次跑只建立水位，不回补历史。叫醒后发不发仍由 AI 决定", fields: [
+        F("qzone.watch.enabled", "启用空间轮询", "默认关；开着才会定时检查新评论/主人新说说", "switch"),
+        F("qzone.watch.pollMs", "轮询间隔（ms）", "默认 600000（10 分钟）", "number", { min: 60000 }),
+        F("qzone.watch.replyComments", "有人评论就叫我", "默认开；新评论/@ 会唤醒 AI", "switch"),
+        F("qzone.watch.commentOnOwnerPosts", "主人发说说就叫我", "默认关；打开后主人发新说说会唤醒 AI", "switch"),
+        F("qzone.watch.ownerPostMode", "主人新说说怎么处理", "suggest=先问主人要不要评论（默认）；direct=直接评论", "select", { options: [["suggest", "先问主人"], ["direct", "直接评论"]] }),
+        F("qzone.watch.maxWakesPerDay", "每天最多唤醒几次", "默认 6；0 = 不限", "number", { min: 0, max: 50 }),
+      ]},
       { group: "二代 · 唤醒与潜水", note: "qq_set_wake_config 的边界", fields: [
         F("socialV2.wake.defaultMode", "默认状态", "diving / active", "select", { options: [["diving", "潜水"], ["active", "活跃"]] }),
         F("socialV2.wake.preSleepWaitEnabled", "沉睡前必须观察", "", "switch"),
@@ -1064,6 +1096,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       markRead: "标记已读", closeConversation: "对话收尾", memory: "轻量记忆", slangQuery: "查黑话", slangSubmit: "提交黑话",      getImages: "看图", getForwardMsg: "看合并转发", sendPoke: "拍一拍", listStickers: "表情列表",
       getStickerImage: "表情图片", sendSticker: "发表情", setStickerRemark: "改表情备注",
       stickerNote: "表情笔记", collectSticker: "收藏表情", getSelfImage: "看自己形象", sendVoice: "发语音",
+      postQzone: "发 QQ 空间",
     };
 
     // B站 → QQ 自动分享（写根 config.json 的 biliBridge；保存后重启桥接生效）。
@@ -5573,6 +5606,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       const save = async (restartBridge = false) => {
         setBusy("save"); setErr("");
+        // QQ 空间工具是 MCP 在 **DSH 启动时**注册的：开关从关到开必须重启 DSH，
+        // 只重启桥接不解决。以前提示只写在分组说明里，用户很容易漏（2026-10-30 真实反馈）。
+        const qzoneWasOn = qq?.qzone?.enabled === true;
         try {
           if (budgetDirty && limitDraft) {
             const b = await api("/token-budget", { method: "POST", body: { limits: limitDraft } });
@@ -5596,8 +5632,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           if (r.unified) setUnified(r.unified);
           const nextSaved = JSON.stringify({ qq: r.qq ?? normalizedQq, bili: r.bili ?? bili, unified: r.unified ?? normalizedUnified });
           setSaved(nextSaved);
-          notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${r.warnings?.length ? "（有提示）" : ""}`);
-          if (r.warnings?.length) setErr(r.warnings.join(" "));
+          const qzoneTurnedOn = !qzoneWasOn && r.qq?.qzone?.enabled === true;
+          notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${qzoneTurnedOn ? "；QQ 空间已开启，还需重启 DSH，AI 才会拿到 qq_post_qzone 工具" : ""}${r.warnings?.length ? "（有提示）" : ""}`);
+          if (qzoneTurnedOn) setErr("QQ 空间已开启：桥接侧已生效；但 qq_post_qzone 是 DSH 启动时注册的 MCP 工具，请重启 DSH 后再让 AI 发。");
+          if (r.warnings?.length) setErr((prev) => prev || r.warnings.join(" "));
           await loadOverview();
         } catch (e) { setErr(`保存失败：${e.message}`); } finally { setBusy(""); }
       };

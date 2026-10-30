@@ -482,4 +482,72 @@ await test('slang learner session self-heals when the saved session is gone', as
 }, { files: { 'state/slang-session.json': { sessionId: 'session-dead', preset: 'qq-chat' } } });
 
 
+// QQ 空间说说（2026-10-30）：默认关闭、只认管理员私聊、演练模式不真的发。
+// 这里不碰真 SnowLuma：harness 的 fetch 是桩，dryRun 分支根本不会调用它。
+{
+  const h = await bridgeHarness();
+  const owner = '1000000001';
+  h.cfg.admin = { ...(h.cfg.admin ?? {}), qq: owner };
+  h.cfg.qzone = { enabled: false };
+  h.setMode('reserved2');
+  const server = h.startConsoleServer();
+  try {
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    const call = (path, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
+      const request = http.request(
+        { host: '127.0.0.1', port, path, method, headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token', ...headers } },
+        (response) => {
+          let data = '';
+          response.on('data', (chunk) => { data += chunk; });
+          response.on('end', () => resolve({ status: response.statusCode, body: data }));
+        },
+      );
+      request.on('error', reject);
+      request.setTimeout(3000, () => request.destroy(new Error('request hung')));
+      request.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+
+    const status = await call('/api/socialV2/qzone');
+    assert.equal(status.status, 200, 'QQ 空间状态接口应可用');
+    const statusBody = JSON.parse(status.body);
+    assert.equal(statusBody.enabled, false, '默认必须是关闭的');
+    assert.equal(statusBody.ugcRight, 4, '默认好友可见');
+
+    // 群会话不能替主人往公开空间发东西（这条拦在 token 之前，纯配置判定）
+    const wrongKey = await call('/api/socialV2/qzone', 'POST', {}, { key: 'group:1000000002', content: '你好' });
+    assert.equal(wrongKey.status, 403);
+    assert.match(wrongKey.body, /QZONE_OWNER_ONLY/);
+
+    // 正确的会话 + 有效 agent token，但总开关关着 → 明确拒绝（不是静默失败）
+    const st = h.getSocialV2State(`private:${owner}`);
+    const disabled = await call('/api/socialV2/qzone', 'POST', { 'x-agent-token': st.agentToken }, { key: `private:${owner}`, content: '你好' });
+    assert.equal(disabled.status, 403);
+    assert.match(disabled.body, /QZONE_DISABLED/);
+
+    // 打开开关 + 演练模式：返回预览，且**不**调用上游
+    h.cfg.qzone = { enabled: true, dryRun: true };
+    const dry = await call('/api/socialV2/qzone', 'POST', { 'x-agent-token': st.agentToken }, { key: `private:${owner}`, content: '今天风挺大' });
+    assert.equal(dry.status, 200, `演练模式应成功，实际 ${dry.status} ${dry.body}`);
+    const dryBody = JSON.parse(dry.body);
+    assert.equal(dryBody.dryRun, true);
+    assert.equal(dryBody.preview.content, '今天风挺大');
+    assert.equal(h.calls.images.length, 0, '演练模式不该上传任何图片');
+
+    // 互动是独立开关：总开关开着但互动没开 → 明确拒绝
+    const interactOff = await call('/api/socialV2/qzone/comment', 'POST', { 'x-agent-token': st.agentToken }, { key: `private:${owner}`, tid: 't1', content: '好看' });
+    assert.equal(interactOff.status, 403, 'interactOff: ' + interactOff.body);
+    assert.match(interactOff.body, /QZONE_INTERACT_DISABLED/);
+
+    // 开了互动，但默认只许评论主人/自己的说说：陌生人的 tid 要被拦下（不发上游）
+    h.cfg.qzone = { enabled: true, interact: { enabled: true, commentScope: 'owner-and-mine' } };
+    const stranger = await call('/api/socialV2/qzone/comment', 'POST', { 'x-agent-token': st.agentToken }, { key: `private:${owner}`, tid: 'stranger-tid', targetUin: 1000000009, content: '好看' });
+    assert.equal(stranger.status, 403, 'stranger: ' + stranger.body);
+    assert.match(stranger.body, /QZONE_COMMENT_SCOPE/);
+
+    console.log('PASS qzone endpoint guards (默认关闭 / 只认管理员私聊 / 演练不调用上游 / 互动独立开关)');
+  } catch (error) { failures++; console.error('FAIL qzone endpoint guards:', error.message); }
+  finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
+}
+
 if (failures) process.exitCode = 1;

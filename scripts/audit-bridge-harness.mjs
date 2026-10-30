@@ -24,6 +24,7 @@ import { synthesizeToFile } from '../src/voice-tts.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as fishGuard from '../src/fish-guard.js';
 import * as tokenGuard from '../src/token-guard.js';
+import * as qzonePost from '../src/qzone-post.js';
 import * as tokenBudget from '../src/token-budget.js';
 import * as turnGuard from '../src/turn-guard.js';
 import * as gateEvents from '../src/gate-events.js';
@@ -243,6 +244,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshBaseUrl: async () => null,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
+    ...qzonePost,
     ...voiceDiagnostics,
     synthesizeToFile,
     ...tokenBudget,

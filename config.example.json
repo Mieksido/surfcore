@@ -9,6 +9,36 @@
     "authPrefix": "Bearer",
     "allowRemote": false
   },
+  "qzone": {
+    "enabled": false,
+    "ugcRight": 4,
+    "targetUins": [],
+    "allowImages": false,
+    "allowLocalImages": false,
+    "maxImages": 3,
+    "maxChars": 500,
+    "maxPerDay": 2,
+    "minGapMs": 21600000,
+    "dryRun": false,
+    "interact": {
+      "enabled": false,
+      "maxLikesPerDay": 20,
+      "maxCommentsPerDay": 5,
+      "minCommentGapMs": 120000,
+      "maxCommentChars": 100,
+      "commentScope": "owner-and-mine"
+    },
+    "watch": {
+      "enabled": false,
+      "pollMs": 600000,
+      "myPostCount": 5,
+      "commentPageSize": 20,
+      "replyComments": true,
+      "commentOnOwnerPosts": false,
+      "ownerPostMode": "suggest",
+      "maxWakesPerDay": 6
+    }
+  },
   "role": {
     "maxInjectChars": 6000
   },

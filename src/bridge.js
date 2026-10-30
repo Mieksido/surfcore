@@ -66,6 +66,10 @@ import { createTurnGuard } from './turn-guard.js';
 import { createGateEventStore } from './gate-events.js';
 import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
 import {
+  QZONE_UGC_RIGHTS, buildQzoneActionParams, buildQzoneCommentParams, formatQzoneEventLines,
+  normalizeQzoneConfig, summarizeQzoneInteract, summarizeQzoneState, validateQzoneInteraction, validateQzonePost,
+} from './qzone-post.js';
+import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
 } from './token-budget.js';
 import { createBiliMemory } from './bili-memory.js';
@@ -788,6 +792,11 @@ function loadConfig() {
       ...(file.dsh ?? {})
     },
     snowluma: { wsUrl: 'ws://127.0.0.1:3001', accessToken: '', ...(file.snowluma ?? {}) },
+    // QQ 空间说说（2026-10-30，默认关闭）。
+    // 注意：loadConfig 是**白名单**式重建，新增的顶层段必须在这里显式透传，
+    // 否则 config.json 里写了也永远读不到（第一版就踩了：开关打开了，桥接仍报 disabled）。
+    // 这里只透传原始片段，默认值与校验在 qzone-post.js 的 normalizeQzoneConfig()（纯函数）。
+    qzone: file.qzone && typeof file.qzone === 'object' && !Array.isArray(file.qzone) ? file.qzone : {},
     // 空 => 每个会话在 state/agents/<key> 下建独立工作目录
     sessionCwd: file.sessionCwd ?? '',
     agentPreset: file.agentPreset ?? 'qq-chat',
@@ -906,7 +915,9 @@ function loadConfig() {
         stickerNote: true,
         collectSticker: true,
         getSelfImage: true,
-        closeConversation: true
+        closeConversation: true,
+        // 工具开关默认开；真正的总开关是 qzone.enabled（默认关）。
+        postQzone: true
       },
       wake: {
         defaultMode: 'diving',
@@ -1056,6 +1067,9 @@ function loadConfig() {
     getSelfImage: true,
     closeConversation: true,
     sendVoice: false,
+    // QQ 空间：工具开关默认开，但真正的总开关是 qzone.enabled（默认关）。
+    // 两层都开着，MCP 才会注册 qq_post_qzone / qq_qzone_status。
+    postQzone: true,
     ...(cfg.socialV2.tools ?? {})
   };
 
@@ -3590,6 +3604,8 @@ async function main() {
         if (cfg.purpose?.enabled !== false) {
           try { startPurposeLoop(); } catch (error) { log(`[目的] 启动失败：${error?.message ?? error}`); }
         }
+        // QQ 空间轮询（默认关）：只在 qzone.enabled + qzone.watch.enabled 都开时跑。
+        try { startQzoneWatch(); } catch (error) { log(`[qzone] 轮询启动失败：${error?.message ?? error}`); }
         if (currentMode === 'reserved2') {
           // 首次确定模式为 reserved2 后再恢复持久化的有限睡眠定时器，
           // 避免在 initial chat 模式下设置定时器导致 timeout 唤醒被模式守卫吞掉。
@@ -3945,6 +3961,202 @@ async function main() {
     return cfg.socialV2?.tools?.[flag] !== false;
   }
 
+  // ── QQ 空间说说（2026-10-30；默认关闭）────────────────────────────────
+  // SnowLuma v2.2.1 的扩展动作 send_qzone_msg 能发说说，但这是**对外公开**的动作：
+  // 发出去收不回，还可能把本机路径/凭据带上公网。所以默认关，且只允许管理员私聊会话调用。
+  // 是否「能发」的判定全在 src/qzone-post.js（纯函数），这里只负责读状态、调 SnowLuma、记结果。
+  const QZONE_FILE = path.join(STATE_DIR, 'qzone.json');
+  let qzoneStateCache = null;
+  function qzoneStateData() {
+    if (qzoneStateCache) return qzoneStateCache;
+    let raw = null;
+    try { raw = JSON.parse(fs.readFileSync(QZONE_FILE, 'utf8')); } catch { raw = null; }
+    const posts = Array.isArray(raw?.posts)
+      ? raw.posts.filter((p) => p && Number.isFinite(Number(p.at))).slice(-200)
+      : [];
+    const likes = Array.isArray(raw?.likes) ? raw.likes.map(Number).filter((n) => Number.isFinite(n) && n > 0).slice(-500) : [];
+    const comments = Array.isArray(raw?.comments)
+      ? raw.comments.filter((c) => c && Number.isFinite(Number(c.at))).slice(-300)
+      : [];
+    const w = raw?.watch && typeof raw.watch === 'object' ? raw.watch : {};
+    const seenComments = {};
+    // 说说 tid 是十六进制串（如 58b175afb6bce46a440c0100），不是纯数字。
+    // 这里早先用 /^\d+$/ 过滤，重启后所有已见评论被丢掉 → 同一条评论会重复唤醒。
+    for (const [tid, list] of Object.entries(w.seenComments && typeof w.seenComments === 'object' ? w.seenComments : {})) {
+      if (!/^[0-9A-Za-z_-]{1,64}$/.test(String(tid))) continue;
+      seenComments[String(tid)] = (Array.isArray(list) ? list.map(String) : []).slice(-100);
+    }
+    qzoneStateCache = {
+      posts,
+      likes,
+      comments,
+      watch: {
+        seenComments,
+        seenOwnerTids: Array.isArray(w.seenOwnerTids) ? w.seenOwnerTids.map(String).slice(-50) : [],
+        wakes: Array.isArray(w.wakes) ? w.wakes.map(Number).filter((n) => Number.isFinite(n) && n > 0).slice(-200) : [],
+        seeded: w.seeded === true,
+        lastTickAt: Number(w.lastTickAt) || 0,
+        lastError: typeof w.lastError === 'string' ? w.lastError.slice(0, 300) : '',
+      },
+    };
+    return qzoneStateCache;
+  }
+  function saveQzoneState() {
+    try {
+      const s = qzoneStateData();
+      atomicWriteJson(QZONE_FILE, {
+        posts: s.posts.slice(-200),
+        likes: s.likes.slice(-500),
+        comments: s.comments.slice(-300),
+        watch: {
+          seenComments: Object.fromEntries(Object.entries(s.watch.seenComments).map(([k, v]) => [k, v.slice(-100)])),
+          seenOwnerTids: s.watch.seenOwnerTids.slice(-50),
+          wakes: s.watch.wakes.slice(-200),
+          seeded: s.watch.seeded === true,
+          lastTickAt: s.watch.lastTickAt || 0,
+          lastError: s.watch.lastError || '',
+        },
+      });
+    } catch (error) {
+      log('[qzone] 保存发布记录失败:', error?.message ?? error);
+    }
+  }
+  function qzoneConfig() {
+    return normalizeQzoneConfig(cfg.qzone ?? {});
+  }
+  function qzoneStatus(now = Date.now()) {
+    const c = qzoneConfig();
+    return {
+      ...summarizeQzoneState({ config: c, posts: qzoneStateData().posts, now, dayStart: localDayStart(now) }),
+      interact: summarizeQzoneInteract({ config: c, interactions: { likes: qzoneStateData().likes, comments: qzoneStateData().comments }, now, dayStart: localDayStart(now) }),
+      watch: {
+        enabled: c.watch.enabled,
+        pollMs: c.watch.pollMs,
+        replyComments: c.watch.replyComments,
+        commentOnOwnerPosts: c.watch.commentOnOwnerPosts,
+        ownerPostMode: c.watch.ownerPostMode,
+        lastTickAt: qzoneStateData().watch.lastTickAt || 0,
+        lastError: qzoneStateData().watch.lastError || '',
+      },
+    };
+  }
+
+  /** 管理员 QQ：空间动作只认这个人的私聊会话。 */
+  function qzoneOwnerQQ() {
+    return String(cfg.admin?.qq ?? cfg.ownerQQ ?? '').trim();
+  }
+
+  function mapQzonePost(p = {}) {
+    return {
+      tid: String(p.tid ?? ''),
+      content: String(p.content ?? ''),
+      time: Number(p.time) || 0,
+      comments: Number(p.comment_num) || 0,
+      private: p.is_private === true,
+      images: Array.isArray(p.images) ? p.images.map(String) : [],
+    };
+  }
+
+  // ── QQ 空间轮询：只负责「发现 + 叫醒」，不替 AI 发 ─────────────────────
+  // SnowLuma 没有空间推送接口（只有拉取），所以被评论/@、主人发新说说都靠定时拉取。
+  // 首次成功的一轮只建立水位（seeded），不回补历史，避免刚打开就对着几天前的评论回一句。
+  let qzoneWatchTimer = null;
+  function stopQzoneWatch() {
+    if (qzoneWatchTimer) { clearInterval(qzoneWatchTimer); qzoneWatchTimer = null; }
+  }
+  function startQzoneWatch() {
+    stopQzoneWatch();
+    const c = qzoneConfig();
+    if (!c.enabled || !c.watch.enabled) return;
+    qzoneWatchTimer = setInterval(() => { void qzoneWatchTick(); }, c.watch.pollMs);
+    qzoneWatchTimer.unref?.();
+    setTimeout(() => { void qzoneWatchTick(); }, 30000).unref?.();
+    log(`[qzone] 空间轮询已启动：每 ${Math.round(c.watch.pollMs / 60000)} 分钟检查新评论/主人新说说`);
+  }
+
+  async function qzoneWatchTick() {
+    const c = qzoneConfig();
+    const owner = qzoneOwnerQQ();
+    if (!c.enabled || !c.watch.enabled || !owner) return;
+    const key = `private:${owner}`;
+    const st = getSocialV2State(key);
+    if (isConversationBusyV2(key, st)) return;
+    const s = qzoneStateData();
+    const events = [];
+    try {
+      s.watch.lastTickAt = Date.now();
+      if (c.watch.replyComments) {
+        const data = await onebotAction('get_qzone_msg_list', { pos: 0, num: c.watch.myPostCount });
+        for (const p of Array.isArray(data?.msglist) ? data.msglist : []) {
+          const tid = String(p?.tid ?? '');
+          if (!tid) continue;
+          const detail = await onebotAction('get_qzone_msg_detail', { tid, pos: 0, num: c.watch.commentPageSize });
+          const seen = s.watch.seenComments[tid] ?? (s.watch.seenComments[tid] = []);
+          for (const cm of Array.isArray(detail?.comments) ? detail.comments : []) {
+            const cid = String(cm?.comment_id ?? '');
+            const uin = Number(cm?.uin) || 0;
+            if (cid && uin !== Number(selfUserId) && !seen.includes(cid)) {
+              seen.push(cid);
+              if (s.watch.seeded) {
+                events.push({ type: 'comment', tid, commentId: cid, uin, name: String(cm?.name ?? ''), content: String(cm?.content ?? ''), post: String(p?.content ?? '') });
+              }
+            }
+            for (const r of Array.isArray(cm?.replies) ? cm.replies : []) {
+              const rid = String(r?.comment_id ?? '');
+              const ruin = Number(r?.uin) || 0;
+              if (!rid || ruin === Number(selfUserId) || seen.includes(rid)) continue;
+              seen.push(rid);
+              if (s.watch.seeded) {
+                events.push({
+                  type: 'comment', tid, commentId: rid, parentCommentId: cid, parentUin: uin,
+                  uin: ruin, name: String(r?.name ?? ''), content: String(r?.content ?? ''), post: String(p?.content ?? ''),
+                });
+              }
+            }
+          }
+          if (seen.length > 100) s.watch.seenComments[tid] = seen.slice(-100);
+        }
+      }
+      if (c.watch.commentOnOwnerPosts) {
+        const data = await onebotAction('get_qzone_msg_list', { target_uin: Number(owner), pos: 0, num: 3 });
+        for (const p of Array.isArray(data?.msglist) ? data.msglist : []) {
+          const tid = String(p?.tid ?? '');
+          if (!tid || s.watch.seenOwnerTids.includes(tid)) continue;
+          s.watch.seenOwnerTids.push(tid);
+          if (s.watch.seeded) {
+            events.push({ type: 'ownerPost', tid, content: String(p?.content ?? ''), time: Number(p?.time) || 0 });
+          }
+        }
+        if (s.watch.seenOwnerTids.length > 50) s.watch.seenOwnerTids = s.watch.seenOwnerTids.slice(-50);
+      }
+      const seededNow = !s.watch.seeded;
+      s.watch.seeded = true;
+      s.watch.lastError = '';
+      saveQzoneState();
+      if (seededNow) {
+        log('[qzone] 轮询首轮：已建立水位（不会回补历史评论）');
+        return;
+      }
+      if (!events.length) return;
+      const dayStart = localDayStart();
+      const wakesToday = s.watch.wakes.filter((t) => t >= dayStart).length;
+      if (c.watch.maxWakesPerDay > 0 && wakesToday >= c.watch.maxWakesPerDay) {
+        log(`[qzone] 今日空间唤醒已达 ${wakesToday}/${c.watch.maxWakesPerDay}，本轮不唤醒`);
+        return;
+      }
+      s.watch.wakes.push(Date.now());
+      st.qzoneEvent = { at: Date.now(), events: events.slice(0, 6) };
+      saveQzoneState();
+      log(`[qzone] 空间有新动静 ${events.length} 条，唤醒 ${key}`);
+      void sendWakePromptV2(key, 'qzone').catch((error) => log(`[qzone] 唤醒异常：${error?.message ?? error}`));
+    } catch (error) {
+      s.watch.lastError = String(error?.message ?? error).slice(0, 300);
+      saveQzoneState();
+      log(`[qzone] 轮询失败：${error?.message ?? error}`);
+    }
+  }
+
+
   function startConsoleServer() {
     const port = cfg.consolePort ?? 3100;
     // 控制台鉴权：优先用 config.consoleToken，未配置则自动生成并持久化，不再默认无鉴权。
@@ -3976,6 +4188,35 @@ async function main() {
       const st = socialV2.conversations.get(canonical ?? key);
       return !!st && !!st.agentToken && tokenEq(token, st.agentToken);
     };
+    /**
+     * QQ 空间工具的统一准入：必须是管理员私聊 + 有效会话令牌 + 工具没被关掉。
+     * 返回 null 表示放行，否则返回 { status, body }（结构化的 code/error/hint）。
+     *
+     * 必须放在 startConsoleServer 里面：它依赖同作用域的 agentTokenOk，
+     * 放到外面会在请求时抛「agentTokenOk is not defined」（2026-10-30 实测）。
+     */
+    function qzoneAgentGuard(req, key) {
+      const owner = qzoneOwnerQQ();
+      if (!owner) {
+        return { status: 403, body: { ok: false, code: 'QZONE_NO_OWNER', error: '还没配置管理员 QQ', hint: '设置 → 管理员' } };
+      }
+      if (String(key ?? '') !== `private:${owner}`) {
+        return {
+          status: 403,
+          body: { ok: false, code: 'QZONE_OWNER_ONLY', error: 'QQ 空间动作只允许管理员私聊会话调用', hint: `key 必须是 private:${owner}` },
+        };
+      }
+      if (!req.headers['x-agent-token'] || !agentTokenOk(`private:${owner}`, req.headers['x-agent-token'])) {
+        return { status: 403, body: { ok: false, code: 'QZONE_BAD_TOKEN', error: 'agent token 无效', hint: '用唤醒提示里的【会话令牌】' } };
+      }
+      if (!v2ToolEnabled('postQzone')) {
+        return { status: 403, body: { ok: false, code: 'QZONE_TOOL_OFF', error: '工具未启用：QQ 空间', hint: '设置 → QQ → 高级 → 二代工具开关' } };
+      }
+      if (currentMode !== 'reserved2') {
+        return { status: 403, body: { ok: false, code: 'QZONE_WRONG_MODE', error: '该接口仅 reserved2 模式可用', hint: '控制台切到二代仿真模式' } };
+      }
+      return null;
+    }
     /**
      * 令牌是否匹配**任意**一个活跃二代会话。
      *
@@ -4338,6 +4579,8 @@ async function main() {
             // 上游健康只给操作者看：它包含网关诊断信息（good/hint），
             // 属于管理侧观测，不该进 QQ 会话里那个受限的智能体视图。
             snowluma: snowlumaHealthSnapshot(),
+            // QQ 空间说说状态（管理端）：开机就能看到「开没开、今天发了几条、还能发几条」。
+            qzone: qzoneStatus(),
             activity: readActivityTail(100)
           });
           return;
@@ -6450,6 +6693,248 @@ async function main() {
           }
           return;
         }
+        // ── QQ 空间说说（默认关闭；只允许管理员私聊会话调用）──────────────
+        // GET：读状态（?probe=1 时顺带向 SnowLuma 读 1 条说说，验证 send_qzone_msg 链路，只读不发）。
+        // POST：发布一条；能不能发的判定全在 src/qzone-post.js。
+        if (url.pathname === '/api/socialV2/qzone' && (req.method === 'GET' || req.method === 'POST')) {
+          const ownerQQ = String(cfg.admin?.qq ?? cfg.ownerQQ ?? '').trim();
+          const status = qzoneStatus();
+          if (req.method === 'GET') {
+            let probe = null;
+            if (String(url.searchParams.get('probe') ?? '') === '1') {
+              try {
+                const data = await onebotAction('get_qzone_msg_list', { pos: 0, num: 1 });
+                const latest = Array.isArray(data?.msglist) ? data.msglist[0] : null;
+                probe = {
+                  ok: true,
+                  total: Number(data?.total) || 0,
+                  latest: latest
+                    ? { tid: String(latest.tid ?? ''), time: Number(latest.time) || 0, private: latest.is_private === true }
+                    : null,
+                };
+              } catch (error) {
+                probe = {
+                  ok: false,
+                  error: String(error?.message ?? error),
+                  hint: '确认 SnowLuma 在线、snowluma.httpUrl 指向 HTTP API（默认 3002）',
+                };
+              }
+            }
+            sendJson({ ok: true, ...status, ownerOnly: Boolean(ownerQQ), probe });
+            return;
+          }
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const agentToken = req.headers['x-agent-token'];
+          if (!ownerQQ) {
+            sendJson({ ok: false, code: 'QZONE_NO_OWNER', error: '还没配置管理员 QQ', hint: '设置 → 管理员' }, 403);
+            return;
+          }
+          // 只认管理员私聊：群里的 AI 不能替主人往公开空间发东西。
+          if (key !== `private:${ownerQQ}`) {
+            sendJson({
+              ok: false,
+              code: 'QZONE_OWNER_ONLY',
+              error: 'QQ 空间说说只允许管理员私聊会话调用',
+              hint: `key 必须是 private:${ownerQQ}`,
+            }, 403);
+            return;
+          }
+          if (!agentToken || !agentTokenOk(key, agentToken)) {
+            sendJson({ ok: false, code: 'QZONE_BAD_TOKEN', error: 'agent token 无效', hint: '用唤醒提示里的【会话令牌】' }, 403);
+            return;
+          }
+          if (!v2ToolEnabled('postQzone')) {
+            sendJson({ ok: false, code: 'QZONE_TOOL_OFF', error: '工具未启用：qq_post_qzone', hint: '设置 → QQ → 高级 → 二代工具开关' }, 403);
+            return;
+          }
+          if (currentMode !== 'reserved2') {
+            sendJson({ ok: false, code: 'QZONE_WRONG_MODE', error: '该接口仅 reserved2 模式可用', hint: '控制台切到二代仿真模式' }, 403);
+            return;
+          }
+          const now = Date.now();
+          const verdict = validateQzonePost(body, {
+            config: cfg.qzone ?? {},
+            posts: qzoneStateData().posts,
+            now,
+            dayStart: localDayStart(now),
+            sensitiveRe: SENSITIVE_RE,
+          });
+          if (!verdict.ok) {
+            sendJson(verdict, 403);
+            return;
+          }
+          const value = verdict.value;
+          const preview = {
+            content: value.content,
+            chars: value.content.length,
+            images: value.images.length,
+            ugcRight: value.ugcRight,
+            ugcLabel: QZONE_UGC_RIGHTS[value.ugcRight] ?? String(value.ugcRight),
+          };
+          if (value.dryRun) {
+            log(`[qzone] 演练模式：未发布（${value.content.length} 字，${preview.ugcLabel}）`);
+            sendJson({ ok: true, dryRun: true, preview, status: qzoneStatus(now) });
+            return;
+          }
+          try {
+            const data = await onebotAction('send_qzone_msg', buildQzoneActionParams(value));
+            const tid = String(data?.tid ?? '');
+            const time = Number(data?.time) || Math.floor(now / 1000);
+            qzoneStateData().posts.push({
+              at: now, tid, time, chars: value.content.length, images: value.images.length, ugcRight: value.ugcRight,
+            });
+            saveQzoneState();
+            log(`[qzone] 已发布说说 tid=${tid || '(空)'}（${value.content.length} 字，${preview.ugcLabel}，图 ${value.images.length} 张）`);
+            sendJson({ ok: true, tid, time, posted: preview, status: qzoneStatus(now) });
+          } catch (error) {
+            log(`[qzone] 发布失败：${error?.message ?? error}`);
+            sendJson({
+              ok: false,
+              code: 'QZONE_UPSTREAM',
+              error: `发布失败：${error?.message ?? error}`,
+              hint: '看 SnowLuma 控制台与桥接日志；确认账号已登录、空间没被限制后重试',
+            }, 502);
+          }
+          return;
+        }
+
+        // ── QQ 空间：只读（说说 / 评论 / 好友动态 / 空间资料）──────────────
+        // 读不产生副作用；agent 调用仍要求「管理员私聊 + 有效令牌」，管理端（控制台令牌）直接放行。
+        if (req.method === 'GET' && url.pathname.startsWith('/api/socialV2/qzone/')) {
+          const isAgent = Boolean(req.headers['x-agent-token']);
+          if (isAgent) {
+            const guard = qzoneAgentGuard(req, String(url.searchParams.get('key') ?? '').trim());
+            if (guard) { sendJson(guard.body, guard.status); return; }
+            if (!qzoneConfig().enabled) {
+              sendJson({ ok: false, code: 'QZONE_DISABLED', error: 'QQ 空间未启用（默认关闭）', hint: '设置 → QQ → 高级 →「QQ 空间（说说）」先打开总开关' }, 403);
+              return;
+            }
+          }
+          const targetUin = Number(url.searchParams.get('targetUin')) || 0;
+          const pos = Math.max(0, Number(url.searchParams.get('pos')) || 0);
+          const num = Math.min(20, Math.max(1, Number(url.searchParams.get('num')) || 5));
+          try {
+            if (url.pathname === '/api/socialV2/qzone/posts') {
+              const data = await onebotAction('get_qzone_msg_list', {
+                pos, num, ...(targetUin > 0 ? { target_uin: targetUin } : {}),
+              });
+              sendJson({
+                ok: true,
+                total: Number(data?.total) || 0,
+                posts: (Array.isArray(data?.msglist) ? data.msglist : []).map(mapQzonePost),
+              });
+              return;
+            }
+            if (url.pathname === '/api/socialV2/qzone/post') {
+              const tid = String(url.searchParams.get('tid') ?? '').trim();
+              if (!tid) { sendJson({ ok: false, code: 'QZONE_TID_REQUIRED', error: '缺少 tid', hint: '先用 qq_qzone_posts 拿 tid' }, 400); return; }
+              const data = await onebotAction('get_qzone_msg_detail', {
+                tid, pos, num: Math.min(100, Math.max(1, Number(url.searchParams.get('num')) || 20)),
+                ...(targetUin > 0 ? { target_uin: targetUin } : {}),
+              });
+              const comments = (Array.isArray(data?.comments) ? data.comments : []).map((c) => ({
+                commentId: String(c?.comment_id ?? ''),
+                uin: Number(c?.uin) || 0,
+                name: String(c?.name ?? ''),
+                content: String(c?.content ?? ''),
+                time: Number(c?.time) || 0,
+                replies: (Array.isArray(c?.replies) ? c.replies : []).map((r) => ({
+                  commentId: String(r?.comment_id ?? ''),
+                  parentCommentId: String(r?.parent_comment_id ?? ''),
+                  parentUin: Number(r?.parent_comment_uin) || 0,
+                  uin: Number(r?.uin) || 0,
+                  name: String(r?.name ?? ''),
+                  content: String(r?.content ?? ''),
+                  time: Number(r?.time) || 0,
+                })),
+              }));
+              sendJson({ ok: true, tid, content: String(data?.content ?? ''), comments });
+              return;
+            }
+            if (url.pathname === '/api/socialV2/qzone/feeds') {
+              const cursor = String(url.searchParams.get('cursor') ?? '').trim();
+              const count = Math.min(30, Math.max(1, Number(url.searchParams.get('count')) || 10));
+              const data = await onebotAction('get_qzone_feeds', { count, ...(cursor ? { cursor } : {}) });
+              sendJson({
+                ok: true,
+                feeds: (Array.isArray(data?.feeds) ? data.feeds : []).map((f) => ({
+                  uin: Number(f?.uin) || 0,
+                  nickname: String(f?.nickname ?? ''),
+                  time: Number(f?.time) || 0,
+                  tid: f?.tid ? String(f.tid) : '',
+                  content: f?.content ? String(f.content) : '',
+                  images: Array.isArray(f?.images) ? f.images.map(String) : [],
+                  likes: f?.like_count ?? null,
+                  comments: f?.comment_count ?? null,
+                })),
+                hasMore: data?.has_more === true,
+                nextCursor: data?.next_cursor ? String(data.next_cursor) : '',
+              });
+              return;
+            }
+            if (url.pathname === '/api/socialV2/qzone/profile') {
+              const data = await onebotAction('get_qzone_profile', { ...(targetUin > 0 ? { target_uin: targetUin } : {}) });
+              sendJson({ ok: true, name: String(data?.name ?? ''), description: String(data?.description ?? '') });
+              return;
+            }
+          } catch (error) {
+            log(`[qzone] 读取失败：${error?.message ?? error}`);
+            sendJson({ ok: false, code: 'QZONE_UPSTREAM', error: `读取失败：${error?.message ?? error}`, hint: '看 SnowLuma 与桥接日志；确认账号在线、空间可访问' }, 502);
+            return;
+          }
+          sendJson({ ok: false, code: 'QZONE_UNKNOWN', error: '未知的读取接口', hint: '可用：posts / post / feeds / profile' }, 404);
+          return;
+        }
+
+        // ── QQ 空间：点赞 / 评论（互动的独立开关，默认关）──────────────────
+        if (req.method === 'POST' && (url.pathname === '/api/socialV2/qzone/like' || url.pathname === '/api/socialV2/qzone/comment')) {
+          const body = await readBody();
+          const guard = qzoneAgentGuard(req, String(body.key ?? '').trim());
+          if (guard) { sendJson(guard.body, guard.status); return; }
+          const now = Date.now();
+          const stateQ = qzoneStateData();
+          const kind = url.pathname.endsWith('/like') ? 'like' : 'comment';
+          const verdict = validateQzoneInteraction({ ...body, kind }, {
+            config: cfg.qzone ?? {},
+            interactions: { likes: stateQ.likes, comments: stateQ.comments },
+            now,
+            dayStart: localDayStart(now),
+            sensitiveRe: SENSITIVE_RE,
+            ownerUin: qzoneOwnerQQ(),
+            selfUin: selfUserId,
+            myTids: stateQ.posts.map((p) => String(p.tid ?? '')),
+          });
+          if (!verdict.ok) { sendJson(verdict, 403); return; }
+          const action = kind === 'like' ? (verdict.value.like ? 'like_qzone' : 'unlike_qzone') : 'comment_qzone';
+          try {
+            const data = await onebotAction(action, verdict.value.params);
+            if (kind === 'like') {
+              if (verdict.value.like) stateQ.likes.push(now);
+            } else {
+              stateQ.comments.push({
+                at: now,
+                tid: verdict.value.tid,
+                targetUin: verdict.value.targetUin || 0,
+                commentId: String(data?.comment_id ?? ''),
+              });
+            }
+            saveQzoneState();
+            log(`[qzone] ${kind === 'like' ? (verdict.value.like ? '点赞' : '取消赞') : '评论'}成功（tid=${verdict.value.tid}）`);
+            sendJson({
+              ok: true,
+              kind,
+              tid: verdict.value.tid,
+              commentId: kind === 'comment' ? String(data?.comment_id ?? '') : '',
+              status: qzoneStatus(now),
+            });
+          } catch (error) {
+            log(`[qzone] ${kind} 失败：${error?.message ?? error}`);
+            sendJson({ ok: false, code: 'QZONE_UPSTREAM', error: `${kind === 'like' ? '点赞' : '评论'}失败：${error?.message ?? error}`, hint: '看 SnowLuma 与桥接日志；确认账号在线、对这条说说有权限' }, 502);
+          }
+          return;
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/socialV2/send-poke') {
           const body = await readBody();
           const key = String(body.key ?? '').trim();
@@ -8838,6 +9323,32 @@ async function main() {
     return sendChain.then(() => sent);
   }
 
+
+  // 通用 OneBot 扩展动作调用（目前只有 QQ 空间的几个动作在用）。
+  // 为什么单独抽：send_qzone_msg 这类动作不在标准 OneBot 里，返回体也不一定是消息段，
+  // 直接把 fetch 内联在各个端点里会让「HTTP 426 指向 WS 端口」这类提示各写一遍、迟早写漏。
+  async function onebotAction(action, params = {}, { timeoutMs = 20000 } = {}) {
+    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    const res = await fetch(`${httpUrl}/${action}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}),
+      },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || body.status !== 'ok' || body.retcode !== 0) {
+      const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口）' : '';
+      const wording = body?.wording || body?.message || `HTTP ${res.status}`;
+      const error = new Error(`OneBot ${action} 失败：${wording}${hint}`);
+      error.retcode = body?.retcode ?? null;
+      error.status = res.status;
+      throw error;
+    }
+    return body.data;
+  }
 
   async function onebotSend(kind, id, message, replyToMessageId, atUserId = null) {
     const segments = [];
@@ -13069,6 +13580,16 @@ async function main() {
     }
     if (reason === 'poke') {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
+    }
+    if (reason === 'qzone') {
+      const ev = st.qzoneEvent;
+      const lines = formatQzoneEventLines(ev?.events ?? [], {
+        ownerUin: qzoneOwnerQQ(),
+        ownerMode: qzoneConfig().watch.ownerPostMode,
+      });
+      // 事件是一次性的：这次唤醒用完就清掉，避免下次醒来又看到同一批。
+      st.qzoneEvent = null;
+      return `${base}【QQ 空间】${key}\n原因：空间里有新动静（轮询发现，不是聊天消息）。\n${lines.join('\n')}\n\n【怎么做】想回就调用 qq_qzone_comment（带 tid；回复某条评论再带 commentId / commentUin）；只想点个赞用 qq_qzone_like。不想理就不理，别为了礼貌硬回。处理完照常设置下一次唤醒。`;
     }
     return `${base}【唤醒】${key}\n原因：${reason}\n【行动前】先判断：群里在聊什么？热闹还是冷清？有没有人直接找你？对方说完了吗？你有没有真正想说的？\n如果群聊正热但没人叫你，可以插一句有趣的/相关的，插不上再看情况潜水；不要一上来就划走。\n【引用：只在必要时用】只有你这条消息指向的人或消息并非最新一条别人的消息，或者你连续的几句话中不同消息指代的是不同的消息或人时，才用 qq_reply 或 qq_send_message 的 replyToMessageId 指向具体那条；其他情况不要引用，别让对方猜。\n你可以调用工具查看未读消息、人设、状态，自行决定是否发言；决定潜水前必须按上面的【沉睡前强制等待】先等够观察窗口。开口前先看【对话收尾判断】：判断这段已自然结束时，不用再补一句，直接 qq_close_conversation 收尾。`;
   }
