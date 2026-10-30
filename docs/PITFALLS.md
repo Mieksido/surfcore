@@ -2929,3 +2929,33 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 
 **验证**：`node scripts/test-gate-events.mjs`；`npm run test:audit` 88/88；
 `plugins/surfcore npm test`。
+
+## #90（2026-10-30）私聊「不回我」：回访吃掉一半每日额度，且用尽后全静默
+
+**现象**：用户晚上私聊连发两条 + 一句「在吗？」，QQ 上完全没有回复；设置页/概览也没有任何提示。
+同一份体检还报 `⚠️ SnowLuma 在线 · onebot-rejected · 多半是 accessToken 不匹配`，但桥接其实连着。
+
+**根因**：
+1. `wakeTimes` 一条时间线同时承担「最小间隔 / 每分钟·每小时限频 / 每天最多醒」三种语义；
+   `replyCheck`（回复后回访）也算一次额度 —— 每段对话固定花 2 次，私聊 10 次/天只够 5 轮；
+2. 日上限在最前面判，`direct`（@/提问/拍一拍）只能越过 120 秒间隔，越不过次数；
+3. 被 `token-guard` 拦下只写一行 `state/bridge.log`，`/api/status` 和设置页都不带这个状态；
+4. 体检 `installChecks()` 把 `config.json` 的 `snowluma` **配置对象**传给 `diagnoseSnowLuma`，
+   函数第一行看 `.connected`（配置里没有）→ 永远 false → 只要 3001 在听就报 `onebot-rejected`。
+
+**修法**：
+- `src/token-guard.js`：`isFreeWakeReason()` + `evaluateWakeBudget({ reason, budgetTimes })`，
+  回访不占次数（`replyCheckFree`，默认开），间隔/限频仍看全量 `wakeTimes`；
+- `src/bridge.js`：会话状态新增 `wakeBudgetTimes`（旧状态回填 `wakeTimes` 快照），
+  只有计次唤醒才写入；`/api/status` 新增 `wakeGuard`，`/api/socialV2/states` 每会话带一份；
+- 插件：`mapStatusPayload` 透出 `wakeGuard`，概览额度用完时顶部黄条 +「去调高额度」，
+  体检新增「唤醒额度」项；`diagnoseSnowLuma(bridge?.snowluma, { bridge })` 并新增
+  `bridge-down` / `bridge-error`，桥接没跑时不再甩锅 SnowLuma token。
+
+**验证**：`node scripts/test-token-guard.mjs`；`node plugins/surfcore/scripts/test-doctor.mjs`；
+`npm run test:audit`；`plugins/surfcore npm test`。
+
+**教训**：一个数组承担三种语义，迟早会互相踩；「拦下来」必须和「发出去」一样可见，
+否则用户分不清「它在思考」和「它今天不能再醒」。详见
+[`cases/2026-10-30-wake-quota-invisible.md`](cases/2026-10-30-wake-quota-invisible.md)。
+

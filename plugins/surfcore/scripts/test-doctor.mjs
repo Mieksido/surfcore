@@ -1,5 +1,6 @@
 // 新手体检的判定规则（纯函数）：哪项该红、该给什么修复提示、一键配置补什么。
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { buildInstallChecks, installOk, planDoctorFix } from '../lib/doctor.js';
 
 const base = {
@@ -64,6 +65,49 @@ const base = {
     ['写入管理员 QQ']);
   assert.deepEqual(planDoctorFix({ hasUnified: true, hasToken: true, ownerQQ: 'abc', currentOwnerQQ: '' }), []);
   assert.deepEqual(planDoctorFix({ hasUnified: true, hasToken: true, ownerQQ: '1000000001', currentOwnerQQ: '1000000001' }), []);
+}
+
+// 7) SnowLuma 的「怎么补」必须跟着状态走（2026-10-30 误报）：
+//    桥接没在跑时让人去查 SnowLuma token 是错的；OneBot 拒绝时才该指向 bridge.log。
+{
+  const down = buildInstallChecks({ ...base, snowState: { state: 'bridge-down', hint: '桥接没在跑' } });
+  const item = down.find((c) => c.name === 'SnowLuma 在线');
+  assert.equal(item.level, 'warn');
+  assert.ok(item.fix.includes('QQ 桥接'), 'bridge-down 时应先让人启动桥接');
+  assert.ok(!/SnowLuma token|accessToken/.test(item.fix), 'bridge-down 时不要甩锅给 token');
+
+  const rejected = buildInstallChecks({ ...base, snowState: { state: 'onebot-rejected', hint: '端口在听' } });
+  assert.ok(rejected.find((c) => c.name === 'SnowLuma 在线').fix.includes('bridge.log'));
+  const unknown = buildInstallChecks({ ...base, snowState: { state: 'offline' } });
+  assert.ok(unknown.find((c) => c.name === 'SnowLuma 在线').fix.includes('SnowLuma'));
+}
+
+// 8) 今日唤醒额度用完 → warn，并指出去哪调高（2026-10-30「私聊不回我」）
+{
+  const checks = buildInstallChecks({
+    ...base,
+    wakeGuard: { conversations: [{ key: 'private:1000000001', dayCount: 10, maxDay: 10, blocked: true }] },
+  });
+  const item = checks.find((c) => c.name === '唤醒额度');
+  assert.equal(item.level, 'warn');
+  assert.ok(item.detail.includes('10/10'), '要显示实际次数');
+  assert.ok(item.fix.includes('私聊每天最多醒'), '要告诉用户改哪个参数');
+  assert.equal(installOk(checks), true, '额度用完是 warn，不该把体检判成不通过');
+
+  const healthy = buildInstallChecks({
+    ...base,
+    wakeGuard: { conversations: [{ key: 'private:1000000001', dayCount: 2, maxDay: 10, blocked: false }] },
+  });
+  assert.equal(healthy.find((c) => c.name === '唤醒额度').level, 'ok');
+  // 没有桥接快照（桥接没跑）时不显示这一项，避免误报
+  assert.equal(buildInstallChecks(base).some((c) => c.name === '唤醒额度'), false);
+}
+
+// 9) 接线：体检必须用桥接状态判断 SnowLuma（以前传的是配置对象 → 永远 onebot-rejected）
+{
+  const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.ok(src.includes('diagnoseSnowLuma(bridge?.snowluma'), '体检又拿配置对象当桥接状态了');
+  assert.ok(src.includes('wakeGuard: bridge?.wakeGuard'), '体检没有把唤醒额度带进检查项');
 }
 
 console.log('✅ 新手体检判定通过');

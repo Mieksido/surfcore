@@ -53,10 +53,34 @@ export function buildInstallChecks(ctx) {
     snowFilled ? `${ctx.snow.httpUrl} / ${ctx.snow.wsUrl}` : '没填 OneBot 的 HTTP/WS 地址',
     snowFilled ? '' : '设置 → QQ → 连接，填 SnowLuma 界面上的端口');
 
-  const snowOk = ['connected', 'ok', 'online'].includes(String(ctx.snowState?.state ?? ''));
+  const snowStateName = String(ctx.snowState?.state ?? 'unknown');
+  const snowOk = ['connected', 'ok', 'online'].includes(snowStateName);
+  // 「怎么补」必须跟着状态走：桥接没跑时提示「先启动 SnowLuma」是错的，用户会去查 token。
+  const snowFix = {
+    'bridge-down': '先启动 QQ 桥接（设置 → SurfCore → 概览），SnowLuma 可以后启动',
+    'bridge-error': '桥接在跑但状态接口拒绝访问：多为 consoleToken 不一致，重启桥接',
+    'needs-login': '打开 SnowLuma 控制台扫码登录',
+    'not-running': '先启动 SnowLuma 并扫码登录',
+    'onebot-rejected': '看 <surfcore>/state/bridge.log 的 SnowLuma 错误行，核对 accessToken 与 http/ws 端口',
+  }[snowStateName] ?? '先启动 SnowLuma 并扫码登录';
   add('SnowLuma 在线', snowOk ? 'ok' : 'warn',
-    snowOk ? '已连上' : `探测结果：${ctx.snowState?.state || 'unknown'}${ctx.snowState?.hint ? ` · ${ctx.snowState.hint}` : ''}`,
-    snowOk ? '' : '先启动 SnowLuma 并扫码登录');
+    snowOk ? '已连上' : `探测结果：${snowStateName}${ctx.snowState?.hint ? ` · ${ctx.snowState.hint}` : ''}`,
+    snowOk ? '' : snowFix);
+
+  // 今日唤醒额度：额度用完 = 它不会回消息，但以前只写日志、界面上一点提示都没有
+  // （2026-10-30 用户报「私聊不回我」，查日志才发现 10/10）。有桥接快照就把它显示出来。
+  const guardRows = Array.isArray(ctx.wakeGuard?.conversations) ? ctx.wakeGuard.conversations : [];
+  if (guardRows.length) {
+    const label = (key) => (String(key).startsWith('private:') ? `私聊 ${String(key).slice(8)}` : `群 ${String(key).slice(6)}`);
+    const blocked = guardRows.filter((row) => row?.blocked);
+    add('唤醒额度', blocked.length ? 'warn' : 'ok',
+      blocked.length
+        ? `今日已用完：${blocked.map((row) => `${label(row.key)} ${row.dayCount}/${row.maxDay}`).join('、')}——额度内不会再回消息`
+        : `今日已用：${guardRows.map((row) => `${label(row.key)} ${row.dayCount}/${row.maxDay || '不限'}`).join('、')}`,
+      blocked.length
+        ? '设置 → SurfCore → QQ → 高级 → Token 防爆破，调高「私聊每天最多醒」；或等次日 00:00 自动重置'
+        : '');
+  }
 
   add('QQ 桥接源码', ctx.bridgeSrc ? 'ok' : 'fail',
     ctx.bridgeSrc ? ctx.bridgeMasked : '没找到 src/bridge.js：安装目录选错了？');

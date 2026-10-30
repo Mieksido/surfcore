@@ -64,7 +64,7 @@ import { createOwnerAudit } from './owner-audit.js';
 import { createTokenLedger } from './token-ledger.js';
 import { createTurnGuard } from './turn-guard.js';
 import { createGateEventStore } from './gate-events.js';
-import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
+import { evaluateWakeBudget, evaluateOutbound, isFreeWakeReason, localDayStart } from './token-guard.js';
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
 } from './token-budget.js';
@@ -4214,6 +4214,9 @@ async function main() {
             // 上游健康只给操作者看：它包含网关诊断信息（good/hint），
             // 属于管理侧观测，不该进 QQ 会话里那个受限的智能体视图。
             snowluma: snowlumaHealthSnapshot(),
+            // 今日唤醒额度：设置页靠它显示「今天还能叫醒它几次」，体检靠它给出可执行提示。
+            // 只放管理端视图，智能体那份精简对象里没有。
+            wakeGuard: wakeGuardSnapshot(),
             activity: readActivityTail(100)
           });
           return;
@@ -5929,6 +5932,7 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/states') {
           const list = [];
+          const guard = wakeGuardSnapshot();
           for (const [key, st] of socialV2.conversations) {
             list.push({
               key,
@@ -5937,10 +5941,12 @@ async function main() {
               recentCount: st.recentMessages.length,
               lastWakeReason: st.lastWakeReason,
               lastAiReplyAt: st.lastAiReplyAt,
-              noActionCount: st.wakeConfig.noActionCount || 0
+              noActionCount: st.wakeConfig.noActionCount || 0,
+              // 今日额度：控制台「查看唤醒状态」直接渲染，不用自己数 wakeTimes。
+              wakeGuard: guard.conversations.find((row) => row.key === key) ?? null,
             });
           }
-          sendJson({ ok: true, conversations: list });
+          sendJson({ ok: true, day: guard.day, conversations: list });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/wake') {
@@ -9692,6 +9698,9 @@ async function main() {
         agentToken: crypto.randomBytes(16).toString('hex'),
         bootstrapSent: false,
         wakeTimes: [],
+        // 只装「计入每天最多醒」的唤醒；回复后回访不进来（见 isFreeWakeReason）。
+        // wakeTimes 仍是全量，用于最小间隔与每分钟/每小时限频。
+        wakeBudgetTimes: [],
         sendTimes: [],
         stickerCollectTimes: [],
         pendingWakeTimer: null,
@@ -9766,6 +9775,11 @@ async function main() {
             agentToken,
             bootstrapSent: !!val.bootstrapSent,
             wakeTimes: Array.isArray(val.wakeTimes) ? val.wakeTimes : [],
+            // 旧状态文件没有 wakeBudgetTimes：回填成 wakeTimes 的快照，升级当天不会凭空多出额度。
+            // 之后 replyCheck 不再往这里写，日额度就会按「真实对话轮次」计算。
+            wakeBudgetTimes: Array.isArray(val.wakeBudgetTimes)
+              ? val.wakeBudgetTimes
+              : (Array.isArray(val.wakeTimes) ? val.wakeTimes.slice(-200) : []),
             sendTimes: Array.isArray(val.sendTimes) ? val.sendTimes : [],
             stickerCollectTimes: Array.isArray(val.stickerCollectTimes) ? val.stickerCollectTimes : [],
             pendingWakeTimer: null,
@@ -9891,6 +9905,7 @@ async function main() {
           agentToken: st.agentToken,
           bootstrapSent: st.bootstrapSent,
           wakeTimes: st.wakeTimes.slice(-200),
+          wakeBudgetTimes: wakeBudgetTimesOf(st).slice(-200),
           sendTimes: st.sendTimes.slice(-500),
           stickerCollectTimes: Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-500) : [],
           lastIncomingAt: st.lastIncomingAt || 0,
@@ -10214,6 +10229,49 @@ async function main() {
     return g && typeof g === 'object' ? g : {};
   }
 
+  /** 计入「每天最多醒」的唤醒时间；旧会话没有这个字段时回落到全量 wakeTimes。 */
+  function wakeBudgetTimesOf(st) {
+    if (Array.isArray(st?.wakeBudgetTimes)) return st.wakeBudgetTimes;
+    return Array.isArray(st?.wakeTimes) ? st.wakeTimes : [];
+  }
+
+  /** 这个会话的每日唤醒上限（私聊更紧）。0 = 不限。 */
+  function wakeCapFor(key, guard = tokenGuardCfg()) {
+    const isPrivate = String(key ?? '').startsWith('private:');
+    const n = Math.round(Number(isPrivate ? guard.privateMaxWakesPerDay : guard.maxWakesPerDay));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  /**
+   * 今日唤醒额度快照：给设置页/体检看「还能不能叫醒它」。
+   *
+   * 为什么要有：额度用完后桥接只写一行日志，用户在界面上什么都看不到，
+   * 表现就是「不理我」；先把状态结构化出来，界面才有东西可显示。
+   */
+  function wakeGuardSnapshot(now = Date.now()) {
+    const g = tokenGuardCfg();
+    const dayStart = localDayStart(now);
+    const enabled = g.enabled !== false;
+    const rows = [];
+    for (const [key, st] of socialV2.conversations) {
+      const maxDay = wakeCapFor(key, g);
+      const dayCount = wakeBudgetTimesOf(st).filter((t) => Number(t) >= dayStart).length;
+      rows.push({
+        key,
+        dayCount,
+        maxDay,
+        blocked: enabled && maxDay > 0 && dayCount >= maxDay,
+        lastBlock: st.lastWakeBlock ?? null,
+      });
+    }
+    return {
+      enabled,
+      day: localDayKey(now),
+      conversations: rows,
+      blocked: rows.filter((row) => row.blocked).map((row) => row.key),
+    };
+  }
+
   // ── 每日 token 额度（2026-10-23 用户要求）────────────────────────────
   // 权威用量由插件用 session/event 采集并写 token-usage-daily.json（含 B站）；
   // 桥接只读快照，快照超过 10 分钟没更新才回落到自己的 tokenLedger。
@@ -10276,7 +10334,7 @@ async function main() {
     return result;
   }
 
-  function tokenGuardWakeBlock(key, st, { direct = false } = {}) {
+  function tokenGuardWakeBlock(key, st, { direct = false, reason = '' } = {}) {
     const g = tokenGuardCfg();
     // 额度是独立的（设置页「Token 额度」），不随「Token 防爆破」总开关一起关掉。
     const usage = bridgeDailyUsage();
@@ -10292,8 +10350,19 @@ async function main() {
       };
     }
     if (g.enabled === false) return null;
-    const r = evaluateWakeBudget({ key, wakeTimes: st?.wakeTimes, now: Date.now(), guard: g, cost: null, direct });
-    return r.blocked ? { error: r.error, retryAfterMs: r.retryAfterMs || 0, reason: r.reason } : null;
+    const r = evaluateWakeBudget({
+      key,
+      wakeTimes: st?.wakeTimes,
+      budgetTimes: wakeBudgetTimesOf(st),
+      reason,
+      now: Date.now(),
+      guard: g,
+      cost: null,
+      direct,
+    });
+    return r.blocked
+      ? { error: r.error, retryAfterMs: r.retryAfterMs || 0, reason: r.reason, dayCount: r.dayCount, maxDay: r.maxDay }
+      : null;
   }
 
   function tokenGuardSendBlock(key, st, count = 1) {
@@ -11130,6 +11199,10 @@ async function main() {
       st.wakeTimes = Array.isArray(st.wakeTimes) ? st.wakeTimes : [];
       st.wakeTimes.push(now);
       if (st.wakeTimes.length > 200) st.wakeTimes = st.wakeTimes.slice(-200);
+      // 「目的」是真实的一段对话，计入每日唤醒额度（和 message/proactive 一样）。
+      if (!Array.isArray(st.wakeBudgetTimes)) st.wakeBudgetTimes = [];
+      st.wakeBudgetTimes.push(now);
+      if (st.wakeBudgetTimes.length > 200) st.wakeBudgetTimes = st.wakeBudgetTimes.slice(-200);
       st.lastWakeReason = 'purpose';
       saveSocialV2State();
       const result = await deliverPrompt(key, prompt);
@@ -12961,8 +13034,19 @@ async function main() {
     }
     // Token 防爆破：鱼群守则之后、真正投递之前。被拦时消息保留在未读，不烧模型回合。
     const directWake = isDirectFishGuardWake(reason) || fishGuardDirectUnread(st) || fishGuardOwnerUnread(st) || Boolean(bypass);
-    const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake });
+    const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake, reason });
     if (tokenWake) {
+      // 记下最近一次硬拦（额度用完这类）：以前只写日志，界面上什么都看不到，
+      // 用户只会觉得「它不理我」。这里挂在会话状态上，由 /api/status 的 wakeGuard 带给设置页/体检。
+      // 只放内存：拦不拦本身由 wakeTimes/wakeBudgetTimes 推导，重启后照样算得出来。
+      st.lastWakeBlock = {
+        at: Date.now(),
+        reason,
+        guardReason: tokenWake.reason ?? 'guard',
+        error: tokenWake.error,
+        dayCount: tokenWake.dayCount ?? null,
+        maxDay: tokenWake.maxDay ?? null,
+      };
       log(`[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
       if (tokenWake.retryAfterMs > 0 && !st.tokenRetryTimer) {
         const waitMs = Math.min(60000, Math.max(1000, Math.round(tokenWake.retryAfterMs)));
@@ -13037,8 +13121,17 @@ async function main() {
     st.preSleepWaitAccumMs = 0;
     cancelReplyCheckV2(key); // 本次唤醒已接管，清理仍在排队的回复检查
     const wakeTime = now;
+    // 全量时间线（间隔/限频）与计费时间线（每天最多醒）分开记：
+    // 回复后回访要更新间隔，但不能再吃每日额度。
+    const freeWake = isFreeWakeReason(reason, tokenGuardCfg());
     st.wakeTimes.push(wakeTime);
     if (st.wakeTimes.length > 200) st.wakeTimes = st.wakeTimes.slice(-200);
+    if (!freeWake) {
+      if (!Array.isArray(st.wakeBudgetTimes)) st.wakeBudgetTimes = [];
+      st.wakeBudgetTimes.push(wakeTime);
+      if (st.wakeBudgetTimes.length > 200) st.wakeBudgetTimes = st.wakeBudgetTimes.slice(-200);
+    }
+    st.lastWakeBlock = null;
     resetTokenTurn(st);   // 新的一轮醒来，重新给最多 N 条额度
     // 无论提前唤醒还是超时唤醒，都清理有限潜水定时器与 sleepUntil，避免状态残留/重复唤醒
     const prevSleepUntil = st.wakeConfig.sleepUntil;
@@ -13057,6 +13150,10 @@ async function main() {
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
       if (idx >= 0) st.wakeTimes.splice(idx, 1);
+      if (Array.isArray(st.wakeBudgetTimes)) {
+        const bidx = st.wakeBudgetTimes.lastIndexOf(wakeTime);
+        if (bidx >= 0) st.wakeBudgetTimes.splice(bidx, 1);
+      }
       saveSocialV2State();
     };
     try {

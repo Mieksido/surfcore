@@ -14,7 +14,19 @@ export const DEFAULT_TOKEN_GUARD = Object.freeze({
   directBypassGap: true,
   maxOutboundPerTurn: 8,
   maxDailyCostCNY: 8,
+  // 回复后回访（replyCheck）是「同一次对话的收尾动作」，不是一段新对话：
+  // 它还要冒一次模型回合，但不能再占「每天最多醒」的次数，否则一次对话等于花掉两次额度，
+  // 私聊 10 次/天实际只能聊 5 轮（2026-10-30 用户反馈「私聊不回我」）。
+  // 仍受两次苏醒最小间隔、每分钟/每小时限频和每日额度（¥）约束。
+  replyCheckFree: true,
 });
+
+/** 不占「每天最多醒」次数的唤醒理由（默认只有回复后回访）。 */
+export function isFreeWakeReason(reason, guard = DEFAULT_TOKEN_GUARD) {
+  const g = { ...DEFAULT_TOKEN_GUARD, ...(guard && typeof guard === 'object' ? guard : {}) };
+  if (g.replyCheckFree === false) return false;
+  return String(reason ?? '').split(':')[0] === 'replyCheck';
+}
 
 const num = (v, fallback) => {
   const n = Number(v);
@@ -30,22 +42,32 @@ export function localDayStart(now = Date.now()) {
 
 /**
  * 醒前预算检查。
- * @param {{key?:string, wakeTimes?:number[], now?:number, guard?:object, cost?:number, direct?:boolean}} opts
- * @returns {{blocked:boolean, error?:string, retryAfterMs?:number, reason?:string, dayCount?:number, maxDay?:number}}
+ * @param {{key?:string, wakeTimes?:number[], budgetTimes?:number[], reason?:string, now?:number, guard?:object, cost?:number, direct?:boolean}} opts
+ *   wakeTimes   全部唤醒时间（判「两次苏醒最小间隔」与每分钟/每小时限频，回复后回访也算）
+ *   budgetTimes 真正计入「每天最多醒」的时间（回复后回访不落进来；不传时回落到 wakeTimes）
+ *   reason      本次唤醒原因，用来决定要不要计次（见 isFreeWakeReason）
+ * @returns {{blocked:boolean, error?:string, retryAfterMs?:number, reason?:string, dayCount?:number, maxDay?:number, free?:boolean}}
  */
-export function evaluateWakeBudget({ key = '', wakeTimes = [], now = Date.now(), guard = DEFAULT_TOKEN_GUARD, cost = null, direct = false } = {}) {
+export function evaluateWakeBudget({
+  key = '', wakeTimes = [], budgetTimes = null, reason = '',
+  now = Date.now(), guard = DEFAULT_TOKEN_GUARD, cost = null, direct = false,
+} = {}) {
   const g = { ...DEFAULT_TOKEN_GUARD, ...(guard && typeof guard === 'object' ? guard : {}) };
-  if (g.enabled === false) return { blocked: false };
-  const times = (Array.isArray(wakeTimes) ? wakeTimes : []).map(Number).filter((t) => Number.isFinite(t) && t > 0);
+  const clean = (arr) => (Array.isArray(arr) ? arr : []).map(Number).filter((t) => Number.isFinite(t) && t > 0);
+  const times = clean(wakeTimes);
+  const counted = Array.isArray(budgetTimes) ? clean(budgetTimes) : times;
   const isPrivate = String(key ?? '').startsWith('private:');
   const maxDay = Math.max(0, Math.round(num(isPrivate ? g.privateMaxWakesPerDay : g.maxWakesPerDay, 0)));
-  const dayCount = times.filter((t) => t >= localDayStart(now)).length;
-  if (maxDay > 0 && dayCount >= maxDay) {
+  const free = isFreeWakeReason(reason, g);
+  const dayCount = counted.filter((t) => t >= localDayStart(now)).length;
+  if (g.enabled === false) return { blocked: false, dayCount, maxDay, free };
+  if (!free && maxDay > 0 && dayCount >= maxDay) {
     return {
       blocked: true,
       reason: 'day',
       dayCount,
       maxDay,
+      free,
       error: `Token 防爆破：这个会话今天已经醒了 ${dayCount}/${maxDay} 次，今天不再唤醒`,
     };
   }
@@ -70,7 +92,7 @@ export function evaluateWakeBudget({ key = '', wakeTimes = [], now = Date.now(),
       error: `Token 防爆破：近 24 小时花费 ¥${Number(cost).toFixed(2)} ≥ ¥${maxCost.toFixed(2)}，暂停唤醒`,
     };
   }
-  return { blocked: false, dayCount, maxDay };
+  return { blocked: false, dayCount, maxDay, free };
 }
 
 /**

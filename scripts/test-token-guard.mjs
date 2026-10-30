@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  DEFAULT_TOKEN_GUARD, localDayStart, evaluateWakeBudget, evaluateOutbound,
+  DEFAULT_TOKEN_GUARD, localDayStart, evaluateWakeBudget, evaluateOutbound, isFreeWakeReason,
 } from '../src/token-guard.js';
 
 const now = new Date('2026-10-23T15:00:00+08:00').getTime();
@@ -44,6 +44,45 @@ const directOff = evaluateWakeBudget({
 });
 assert.equal(directOff.blocked, true);
 assert.equal(directOff.reason, 'gap');
+
+// 回复后回访（replyCheck）不占每日次数（2026-10-30）：
+// 一次真实对话以前要花 2 次额度（回复 + 回访），私聊 10 次/天实际只能聊 5 轮。
+const filled = Array.from({ length: 10 }, (_, i) => now - 60_000 * (10 - i));
+const replyCheckFree = evaluateWakeBudget({
+  key: 'private:123', wakeTimes: filled, budgetTimes: filled, reason: 'replyCheck', now,
+  guard: { ...DEFAULT_TOKEN_GUARD, minWakeGapMs: 0 },
+});
+assert.equal(replyCheckFree.blocked, false, 'replyCheck 不该占每日次数');
+assert.equal(replyCheckFree.free, true);
+assert.equal(replyCheckFree.dayCount, 10);
+const realMessageBlocked = evaluateWakeBudget({
+  key: 'private:123', wakeTimes: filled, budgetTimes: filled, reason: 'private', now,
+  guard: { ...DEFAULT_TOKEN_GUARD, minWakeGapMs: 0 },
+});
+assert.equal(realMessageBlocked.blocked, true, '真实消息仍然要吃每日次数');
+assert.equal(realMessageBlocked.reason, 'day');
+assert.equal(realMessageBlocked.free, false);
+// 关掉这个开关 = 退回旧语义（回访也计次）
+const freeOff = evaluateWakeBudget({
+  key: 'private:123', wakeTimes: filled, budgetTimes: filled, reason: 'replyCheck', now,
+  guard: { ...DEFAULT_TOKEN_GUARD, minWakeGapMs: 0, replyCheckFree: false },
+});
+assert.equal(freeOff.blocked, true);
+// 全量时间线（间隔）与计费时间线分开：只要 interval 内醒过就拦，与日额度无关
+const gapWins = evaluateWakeBudget({
+  key: 'private:123',
+  wakeTimes: [now - 60_000, ...filled],
+  budgetTimes: filled.slice(0, 9),
+  reason: 'private', now,
+  guard: { ...DEFAULT_TOKEN_GUARD, minWakeGapMs: 120_000 },
+});
+assert.equal(gapWins.blocked, true);
+assert.equal(gapWins.reason, 'gap');
+// 理由归一化：'replyCheck:xxx' 同属一类
+assert.equal(isFreeWakeReason('replyCheck'), true);
+assert.equal(isFreeWakeReason('replyCheck:extra'), true);
+assert.equal(isFreeWakeReason('private'), false);
+assert.equal(isFreeWakeReason('proactiveCheck'), false);
 
 // 近 24h 花费上限
 const costBlocked = evaluateWakeBudget({ key: 'group:402', wakeTimes: [now - 10 * 60_000], now, guard: { ...DEFAULT_TOKEN_GUARD, minWakeGapMs: 0, maxDailyCostCNY: 6 }, cost: 6.01 });
@@ -104,5 +143,15 @@ assert.ok(client.includes('function TokenTab'), '设置页缺少 Token 额度页
 assert.ok(client.includes('Token 额度'), '设置页缺少 Token 额度标签');
 assert.ok(client.includes('今日 token 额度已用到 80%'), '设置页缺少 80% 弹窗');
 assert.ok(client.includes('今天唯一一次'), '弹窗没有说明「每天只提醒一次」');
+
+// 2026-10-30：回复后回访不再吃每日额度 + 额度用尽必须看得见（不能只写日志）
+assert.ok(bridge.includes('wakeBudgetTimes'), '桥接没有拆分「计费唤醒」时间线');
+assert.ok(bridge.includes('isFreeWakeReason'), '桥接没有接「回复后回访不占次数」');
+assert.ok(bridge.includes('lastWakeBlock'), '桥接没有记录最近一次被拦（界面看不到额度用完）');
+assert.ok(bridge.includes('wakeGuard'), '桥接状态没有暴露今日唤醒额度');
+const pluginBridge = fs.readFileSync(new URL('../plugins/surfcore/lib/bridge.js', import.meta.url), 'utf8');
+assert.ok(pluginBridge.includes('wakeGuard: payload.wakeGuard'), '设置页拿不到桥接的今日唤醒额度');
+assert.ok(client.includes('今天叫不醒它'), '概览没有显示「唤醒额度已用完」');
+assert.ok(client.includes('replyCheckFree'), '设置页没有「回复后回访不占次数」开关');
 
 console.log('token guard tests OK');

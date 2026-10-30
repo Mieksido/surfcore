@@ -144,6 +144,9 @@ export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) 
     mode: payload.mode ?? payload.currentMode ?? null,
     dsh: payload.dsh ?? null,
     snowluma: payload.snowluma ?? null,
+    // 今日唤醒额度：设置页用它判断「今天还能不能叫醒它」。
+    // 以前 token-guard 拦下唤醒只写一行日志，界面上完全看不出来，表现就是「它不理我」。
+    wakeGuard: payload.wakeGuard ?? null,
     sessions: payload.sessions ?? null,
     // 对话收尾：设置页卡片读它（最近一次收在哪 / 下次怎么接 / 当前判断）。
     closure: payload.closure ?? null,

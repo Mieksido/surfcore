@@ -1300,8 +1300,12 @@ export function apply(ctx) {
     const all = readAll();
     const qqCfg = readQqConfig().config ?? {};
     const snow = qqCfg.snowluma ?? {};
+    // 体检以前把「配置」当成「桥接状态」喂给 diagnoseSnowLuma：函数第一行只看 .connected，
+    // 而配置里没有这个字段 → 只要 3001 在听就永远报 onebot-rejected（2026-10-30 用户实测误报）。
+    // 配置只回答「填没填」，连没连上必须问桥接自己。
+    const bridge = await bridgeStatus().catch(() => null);
     let snowState = { state: 'unknown', hint: '' };
-    try { snowState = await diagnoseSnowLuma(snow); } catch {}
+    try { snowState = await diagnoseSnowLuma(bridge?.snowluma ?? {}, { bridge }); } catch {}
     const bridgeSrc = path.join(QQBOT_ROOT, 'src', 'bridge.js');
     return buildInstallChecks({
       nodeVersion: process.versions.node,
@@ -1312,6 +1316,7 @@ export function apply(ctx) {
       privates: Array.isArray(qqCfg.allow?.private) ? qqCfg.allow.private : [],
       snow,
       snowState,
+      wakeGuard: bridge?.wakeGuard ?? null,
       bridgeSrc: fs.existsSync(bridgeSrc),
       bridgeMasked: maskPath(bridgeSrc),
       profile: dshProfileWithSurfcore(),
@@ -1696,15 +1701,28 @@ export function apply(ctx) {
 
   // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
   // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
-  async function diagnoseSnowLuma(bridgeSnow = {}) {
+  // 第二个参数是桥接自身的状态：桥接没在跑时，不能把锅甩给 SnowLuma 的 token。
+  async function diagnoseSnowLuma(bridgeSnow = {}, { bridge = null } = {}) {
     if (bridgeSnow.connected === true) return { state: 'ok', hint: '' };
+    if (bridge && bridge.running === false) {
+      return {
+        state: 'bridge-down',
+        hint: 'QQ 桥接没在跑：设置 → SurfCore → 概览 → 启动 QQ 桥接（桥接起来之后才轮到 SnowLuma）',
+      };
+    }
+    if (bridge && bridge.ok === false) {
+      return {
+        state: 'bridge-error',
+        hint: `桥接在跑但状态接口拒绝了：${bridge.error || '检查 consoleToken'} —— 重启桥接或重新读取 state/console-token`,
+      };
+    }
     const webui = snowLumaWebui();
     const onebot = (await portOpen(3000)) || (await portOpen(3001));
     const webuiUp = await portOpen(webui.port);
     if (onebot) {
       return {
         state: 'onebot-rejected',
-        hint: 'OneBot 端口在监听但桥接连不上：多半是 accessToken 不匹配（对齐 config.json 的 snowluma.accessToken），或 httpUrl 指到了 WebSocket 端口',
+        hint: 'OneBot 端口在监听但桥接连不上：看 state/bridge.log 里的 SnowLuma 错误行；再核对 config.json 的 accessToken（HTTP 与 WS 是两个 token）和 httpUrl/wsUrl 端口',
       };
     }
     if (webuiUp) {
