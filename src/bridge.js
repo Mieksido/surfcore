@@ -11563,16 +11563,46 @@ async function main() {
   // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。
   // 缓存 key 为两个文件的 mtime，mtime 未变时直接返回，避免每次同步读文件。
   let roleHintCache = { key: '', raw: '' };
+  // 贴吧语气画像：读 ~/.dsh/tieba-duty/style-lib.json，把刷贴吧学到的吧语气自动注入 QQ 提示词。
+  function tiebaStyleLibPath() {
+    return path.join(DSH_HOME, 'tieba-duty', 'style-lib.json');
+  }
+  function tiebaFingerprint() {
+    try {
+      const f = tiebaStyleLibPath();
+      if (!fs.existsSync(f)) return 'none';
+      const s = fs.statSync(f);
+      return `${s.mtimeMs}:${s.size}`;
+    } catch { return 'none'; }
+  }
+  function tiebaToneBlock() {
+    try {
+      const f = tiebaStyleLibPath();
+      if (!fs.existsSync(f)) return '';
+      const lib = JSON.parse(fs.readFileSync(f, 'utf8'));
+      const bars = Object.entries(lib || {}).filter(([, v]) => v && Array.isArray(v.samples) && v.samples.length >= 3);
+      if (!bars.length) return '';
+      const lines = [];
+      for (const [kw, v] of bars.slice(0, 4)) {
+        const st = v.stats || {};
+        const avg = Math.round(st.avgLen || (v.samples.reduce((a, s) => a + String(s.text || '').length, 0) / v.samples.length));
+        lines.push(`「${kw}」吧：平均句长 ${avg} 字，句号少、直接不客套、爱吐槽带梗`);
+      }
+      return `\n\n## 贴吧语气画像（刷贴吧自动学来）\n${lines.join('\n')}\n只在聊到相关话题时自然带出，日常还是你自己的样子。`;
+    } catch { return ''; }
+  }
   // 原始人格卡（按 mtime 缓存，不截断）。
   function roleRawContent() {
     try {
+      const tiebaKey = tiebaFingerprint();
+      const tiebaExtra = tiebaToneBlock();
       // 角色人格系统：当前角色包里的人格卡优先，不与 roles/*.md 混读。
       const characterPersona = activePersonaFile();
       if (characterPersona) {
         const stat = fs.statSync(characterPersona);
-        const cacheKey = `character:${characterPersona}:${stat.mtimeMs}:${stat.size}`;
+        const cacheKey = `character:${characterPersona}:${stat.mtimeMs}:${stat.size}:${tiebaKey}`;
         if (roleHintCache.key === cacheKey) return roleHintCache.raw;
-        const raw = fs.readFileSync(characterPersona, 'utf8');
+        const raw = fs.readFileSync(characterPersona, 'utf8') + tiebaExtra;
         roleHintCache = { key: cacheKey, raw };
         return raw;
       }
@@ -11589,15 +11619,9 @@ async function main() {
       if (!fs.existsSync(resolved)) return '';
       const stateStat = fs.statSync(ROLE_STATE_FILE);
       const roleStat = fs.statSync(roleFile);
-      // 缓存 key 必须带上**文件名与文件大小**，不能只看 mtime：
-      // ① 有些文件系统 mtime 只有秒级粒度（或时钟回拨），同一 tick 内把角色卡重写成新人格，
-      //    两个 mtime 完全相同 → 缓存命中 → 注入的还是旧人格，而且是每条提示词都错；
-      //    带上名字后，切换角色（例如 a.md → b.md）永远不会误命中。
-      // ② 同名的原地重写若长度变了（大多数编辑都会变），size 变化也能击穿缓存。
-      // 代价只是多几次 stat，比"热注入路径上一直发旧人格"划算得多。
-      const cacheKey = `${safeName}:${stateStat.mtimeMs}:${stateStat.size}:${roleStat.mtimeMs}:${roleStat.size}`;
+      const cacheKey = `${safeName}:${stateStat.mtimeMs}:${stateStat.size}:${roleStat.mtimeMs}:${roleStat.size}:${tiebaKey}`;
       if (roleHintCache.key === cacheKey) return roleHintCache.raw;
-      const raw = fs.readFileSync(roleFile, 'utf8');
+      const raw = fs.readFileSync(roleFile, 'utf8') + tiebaExtra;
       roleHintCache = { key: cacheKey, raw };
       return raw;
     } catch {
