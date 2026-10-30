@@ -1,11 +1,11 @@
 // Only the model-facing view is compacted. Stored messages and console/API data
 // retain the original fields for display, media retrieval and troubleshooting.
 const DEFAULT_FALSE_FIELDS = new Set([
-  'quoteTargetIsSelf', 'isOwner', 'isSelf', 'hasMedia', 'hasForward'
+  'quoteTargetIsSelf', 'isOwner', 'isSelf', 'hasMedia', 'hasLinks', 'hasForward'
 ]);
 const OPTIONAL_FIELDS = new Set([
   'seq', 'messageId', 'sender', 'userId', 'text', 'plain', 'tail', 'kind',
-  'ownerLabel', 'media', 'forwardIds', 'nestedForwardIds'
+  'ownerLabel', 'media', 'links', 'forwardIds', 'nestedForwardIds'
 ]);
 
 function isRecord(value) {

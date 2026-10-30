@@ -446,7 +446,7 @@ QQ 群「鱼群保护」纯函数层：只做判定，不碰网络/状态；冷�
 
 **规则与算法**
 - id 白名单 `^[\w:.\-/=+@]+$`，≤256 字，拒绝空白/控制字符（`src/forward.js:12-18`）。
-- 段文本：text 原样、at→`@QQ`/`@全体成员`、face→`[表情id]`、image→`[图片]`、record→`[语音]`、video→`[视频]`、file→`[文件名]`、reply→`[引用]`、forward→`[转发]`、json→`[卡片消息]`，未知→`[type]`（`src/forward.js:37-54`）。
+- 段文本：text 原样、at→`@QQ`/`@全体成员`、face→`[表情id]`、image→`[图片]`（动图/表情由桥接按证据标 `[动图]`/`[表情]`）、record→`[语音]`、video→`[视频]`、file→`[文件名]`、reply→`[引用]`、forward→`[转发]`、json/xml→`[链接卡片]标题 · 摘要 · URL`（解析失败才退回 `[卡片消息]`，见 `src/link-card.js`），未知→`[type]`（`src/forward.js:37-58`）。
 - 字符串内容里的 CQ 码统一替换成 `[媒体]`（`src/forward.js:56-59`）。
 - 节点兼容顶层 `message/content/text` 与 `data.*`，支持字符串、段数组、单 segment 对象（`src/forward.js:61-81`、`src/forward.js:126-142`）。
 - 发送者名优先 sender.nickname/card/user_id，再 data.name/nickname/card/uin/user_id，最后 node.name/nickname；统一截 100 字（`src/forward.js:83-95`）。

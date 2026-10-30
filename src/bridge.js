@@ -10,7 +10,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
@@ -35,6 +35,10 @@ import { synthesizeToFile } from './voice-tts.js';
 import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
+import { describeLink, linkItemsFromSegments } from './link-card.js';
+import {
+  PIL_PROBE_CODE, longImageSlicingEnabled, planLongImageSlices, pythonCandidatesFromEnv, sliceImageWithPillow,
+} from './long-image.js';
 import { buildProvenanceBlock, buildSelfIdentityBlock, selfIdentityPath } from './self-identity.js';
 import {
   GREETING_RETRY_MS, buildMorningGreetingPrompt, localDateKey, parseGreetingTime,
@@ -765,6 +769,20 @@ function normalizeIdList(value) {
   return value.map((v) => String(v).trim()).filter((v) => /^\d+$/.test(v));
 }
 
+// 媒体（图片/表情）唤醒模式归一化。**必须放在顶层**：loadConfig() 是顶层函数，
+// 在这里做配置收敛；而使用方（evaluateWakeTriggerV2）在 main() 里。
+//   probability（缺省）：所有人（含主人）的图片/表情按 mediaWakeProbability 概率唤醒（0.1）；
+//   owner：主人/管理员的图必醒，群友的图按 mediaWakeProbability 概率醒（折中）；
+//   any：任何人的图必醒；off：关掉媒体唤醒。
+function normalizeMediaWakeMode(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (v === 'owner') return 'owner';
+  if (v === 'any' || v === 'all') return 'any';
+  if (v === 'off' || v === 'none' || v === 'false' || v === '0') return 'off';
+  // 'probability' / 'prob' / 'chance' / 'random'，以及缺省/乱写的值，都走最温和的概率模式。
+  return 'probability';
+}
+
 // ── 配置 ────────────────────────────────────────────────────────────────────
 function loadConfig() {
   const p = path.join(ROOT, 'config.json');
@@ -1122,6 +1140,37 @@ function loadConfig() {
     maxCount: 5,
     ...((cfg.socialV2?.media && typeof cfg.socialV2.media === 'object' && !Array.isArray(cfg.socialV2.media)) ? cfg.socialV2.media : {})
   };
+  {
+    // 长图切段（2026-10-30）：QQ 长截图单边远超模型准入上限（DSH 默认 8192），
+    // 不切段模型只会看到"[image unavailable ... per-side pixel limit]"。这里是
+    // 用户可编辑配置的收敛层：坏值按默认处理，开关只认显式 false/'off'。
+    const media = cfg.socialV2.media;
+    const clampInt = (value, min, max, fallback) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+    };
+    media.sliceLongImages = longImageSlicingEnabled(media.sliceLongImages);
+    media.modelMaxSide = clampInt(media.modelMaxSide, 1024, 16384, 8192);
+    media.modelMaxPixels = clampInt(media.modelMaxPixels, 1_000_000, 64_000_000, 4_194_304);
+    media.sliceMaxHeight = clampInt(media.sliceMaxHeight, 600, 6000, 3000);
+    media.sliceMaxCount = clampInt(media.sliceMaxCount, 2, 20, 12);
+    media.pythonPath = typeof media.pythonPath === 'string' ? media.pythonPath.trim().slice(0, 512) : '';
+  }
+
+  // socialV2.wake 的媒体唤醒字段：config.json 是用户手编辑的，坏值要收敛。
+  //   mediaWake：probability（所有人按概率，默认值）/ owner（主人必醒、群友按概率）/ any / off
+  //   mediaWakeProbability：0~1，缺省 0.1（10%）
+  {
+    const wake = cfg.socialV2?.wake && typeof cfg.socialV2.wake === 'object' && !Array.isArray(cfg.socialV2.wake)
+      ? cfg.socialV2.wake
+      : {};
+    const prob = Number(wake.mediaWakeProbability);
+    cfg.socialV2.wake = {
+      ...wake,
+      mediaWake: normalizeMediaWakeMode(wake.mediaWake),
+      mediaWakeProbability: Number.isFinite(prob) && prob >= 0 && prob <= 1 ? prob : 0.1,
+    };
+  }
 
   // socialV2.history：上线补历史消息。旧 config.json 没有这一段时必须落默认值（默认开启），
   // 手写坏值（字符串/负数）也要收敛，不能把「没配」解释成「关闭」。
@@ -1506,6 +1555,23 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// 动图判定：QQ 侧没有统一字段，只能从三处拼证据——
+//   · file/url 的扩展名（.gif / .webp）；
+//   · summary（动画表情常见 `[动画表情]`）；
+//   · image 段的 sub_type=1（表情/动图；但收藏的静态表情也可能带 1，所以它只降级成「表情」）。
+function animatedMediaEvidence(data) {
+  const target = String(data?.file ?? data?.url ?? '');
+  if (/\.gif(?:[?#]|$)/i.test(target) || /\.webp(?:[?#]|$)/i.test(target)) return true;
+  const summary = String(data?.summary ?? '');
+  return /动画|动图/.test(summary);
+}
+
+function imageSegmentLabel(data) {
+  if (animatedMediaEvidence(data)) return '[动图]';
+  if (String(data?.sub_type ?? data?.subType ?? '') === '1') return '[表情]';
+  return '[图片]';
+}
+
 async function segmentsToText(segments, options = {}) {
   const { resolveAtName, resolveReply, includeReply = true } = options ?? {};
   // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
@@ -1529,7 +1595,9 @@ async function segmentsToText(segments, options = {}) {
       case 'face': out.push(`[表情${d.id ?? ''}]`); break;
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
-      case 'image': out.push('[图片]'); break;
+      // 动图（GIF/动画表情）必须单独标出来：模型收到的其实只有其中一帧，
+      // 标成 [图片] 会让它以为自己看的是静图，或者干脆按"图片"敷衍过去。
+      case 'image': out.push(imageSegmentLabel(d)); break;
       case 'record': out.push('[语音]'); break;
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
@@ -1552,7 +1620,15 @@ async function segmentsToText(segments, options = {}) {
         out.push(replyText || '[引用消息]');
         break;
       }
-      case 'json': out.push('[卡片消息]'); break;
+      // 链接卡片（json/xml 段）：以前只输出四个字「[卡片消息]」，模型看不到标题和 URL，
+      // 只能回「我点不开」。现在把解析出的标题/摘要/链接直接写进消息正文——
+      // 这样即使这条消息没按媒体概率唤醒，之后翻上下文时也仍然看得到链接。
+      case 'json':
+      case 'xml': {
+        const cards = linkItemsFromSegments([{ type: seg.type, data: d }], { max: 2, includeText: false });
+        out.push(cards.length ? `[链接卡片]${cards.map((card) => describeLink(card)).join(' / ')}` : '[卡片消息]');
+        break;
+      }
       // markdown：SnowLuma 1.14.9 的线上段落是 `{type:'markdown',data:{content}}`。
       // 上游 1.14.17+（commit 1934e4e7「include text alongside received markdown」）
       // 起还会带上 `data.text`。两个形状都读，这样将来升级 SnowLuma 运行时不会退化成
@@ -1605,6 +1681,7 @@ function extractMediaFromSegments(segments) {
         // 而 SDK 的类型描述的是**内部元素**、拼作 `subType`。两个都读，别只认一个
         // —— 只读 camelCase 的话这里会永远是空串，而且不会有任何报错。
         subType: (d.sub_type ?? d.subType) != null ? String(d.sub_type ?? d.subType) : '',
+        animated: animatedMediaEvidence(d),
         summary: sanitizeMediaSummary(d.summary),
         ...emojiFields
       });
@@ -8911,6 +8988,103 @@ async function main() {
     return Number.isFinite(n) && n > 0 ? Math.min(64_000_000, Math.max(1_000_000, Math.round(n))) : 64_000_000;
   })(); // 单张图片像素上限，防止“图片炸弹”解码拖垮 DSH
   const MAX_MEDIA_STORE_PER_KEY = 500; // 每个会话最多缓存多少条消息的媒体元数据，防止无限增长
+  // 长图切段后一次工具结果最多返回几张图：防止一条消息里的多张长图把模型上下文撑爆。
+  const MAX_LONG_IMAGE_SLICES_PER_RESULT = 12;
+
+  // ── 长图切段（2026-10-30）────────────────────────────────────────────────
+  // 为什么在桥接里切：DSH 给模型喂图前先过"单边 8192 / 归一化 4MP"两道闸。
+  // QQ 长截图（实测 1320x15378）单边直接超标被拒，模型只会收到
+  // "[image unavailable ... per-side pixel limit]"——用户看到的就是"bot 看不了长图"。
+  // 切段是唯一能看清的办法（缩小/整张放行都会让文字糊掉）。
+  // 切图用本机 Pillow（Python）：1320x15378 约 1.7s，纯 JS 解码+重编码要几十秒。
+  const execFilePromise = (file, args, options = {}) => new Promise((resolve, reject) => {
+    execFile(file, args, {
+      timeout: options.timeoutMs ?? 60000,
+      maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
+      windowsHide: true,
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+    }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+    });
+  });
+  // 解析结果缓存：成功 10 分钟内复用；失败 60 秒内不重试（避免每张图都 spawn 一遍探测）。
+  let imagePythonCache = { at: 0, path: null, probeTried: false };
+  async function resolveImagePython() {
+    const now = Date.now();
+    if (imagePythonCache.path && now - imagePythonCache.at < 10 * 60 * 1000) return imagePythonCache.path;
+    if (!imagePythonCache.path && imagePythonCache.probeTried && now - imagePythonCache.at < 60 * 1000) return null;
+    const candidates = pythonCandidatesFromEnv({
+      configuredPath: cfg.socialV2?.media?.pythonPath,
+      dshHome: process.env.DSH_HOME,
+      homeDir: os.homedir(),
+    });
+    for (const candidate of candidates) {
+      try {
+        const probe = await execFilePromise(candidate, ['-c', PIL_PROBE_CODE], { timeoutMs: 15000, maxBuffer: 1024 * 1024 });
+        if (/PIL_OK/.test(probe.stdout)) {
+          imagePythonCache = { at: now, path: candidate, probeTried: true };
+          log(`[media] 长图切段可用：${candidate}（Pillow）`);
+          return candidate;
+        }
+      } catch (error) {
+        // 失败原因要落日志：ENOENT（路径不对）、EPERM（被沙箱/策略拦）、
+        // 非 0 退出（Pillow 没装）在用户侧是完全不同的处理方式。
+        log(`[media] Pillow 探测失败 ${candidate}：${error?.code ?? ''} ${error?.message ?? error}`);
+      }
+    }
+    imagePythonCache = { at: now, path: null, probeTried: true };
+    log(`[media] 长图切段不可用：没找到带 Pillow 的 Python（试过 ${candidates.length} 个候选；`
+      + `DSH_HOME=${process.env.DSH_HOME || '(未设置)'}，home=${os.homedir()}）`);
+    return null;
+  }
+
+  /**
+   * 长图 → 多张可读图片。
+   * @returns {null | {slices: Array, plan: object} | {error: string}}
+   *   null = 不需要切；error = 需要切但切不了（调用方把错误文案交给模型，别静默）。
+   */
+  async function splitLongImageForModel(buffer, mimeType = 'image/jpeg') {
+    if (!cfg.socialV2?.media?.sliceLongImages) return null;
+    if (!Buffer.isBuffer(buffer) || !buffer.length) return null;
+    const dims = getImageDimensions(buffer);
+    if (!dims?.width || !dims?.height) return null;
+    const plan = planLongImageSlices(dims.width, dims.height, {
+      maxSide: cfg.socialV2?.media?.modelMaxSide,
+      maxPixels: cfg.socialV2?.media?.modelMaxPixels,
+      sliceMaxHeight: cfg.socialV2?.media?.sliceMaxHeight,
+      sliceMaxCount: cfg.socialV2?.media?.sliceMaxCount,
+    });
+    if (!plan) return null;
+    const pythonPath = await resolveImagePython();
+    if (!pythonPath) {
+      const short = `${plan.original.width}x${plan.original.height}`;
+      return {
+        error: `长图 ${short} 超过模型单边 ${plan.limits.maxSide} 上限，本机又没找到带 Pillow 的 Python，没法自动切段；请把长图截成两三段再发，或直接告诉我想看哪一段。`,
+      };
+    }
+    try {
+      const slices = await sliceImageWithPillow({
+        buffer,
+        mimeType,
+        plan,
+        pythonPath,
+        run: execFilePromise,
+      });
+      log(`[media] 长图切段：${plan.original.width}x${plan.original.height} → ${slices.length} 段（每段 ≤${plan.width}x${plan.slices[0]?.h ?? '?'}，原 ${Math.round(buffer.length / 1024)}KB）`);
+      return { slices, plan };
+    } catch (error) {
+      log(`[media] 长图切段失败（${plan.original.width}x${plan.original.height}）：${error?.message ?? error}`);
+      return {
+        error: `长图切段失败（${error?.message ?? error}），先把长图截成两三段再发吧。`,
+      };
+    }
+  }
 
   function isSafeLocalMediaPath(filePath) {
     try {
@@ -9078,6 +9252,7 @@ async function main() {
     const parts = [];
     let index = 0;
     let totalBytes = 0;
+    let sliceBudget = MAX_LONG_IMAGE_SLICES_PER_RESULT;
     for (const media of Array.isArray(mediaList) ? mediaList : []) {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
@@ -9101,9 +9276,32 @@ async function main() {
       } else {
         const img = await fetchOneBotImage(media);
         const sticker = media.kind === 'sticker';
+        const animated = media.kind === 'image' && media.animated;
         const summary = sticker && media.summary ? `:${String(media.summary).slice(0, 20)}` : '';
-        const label = sticker ? (summary ? `[表情${summary}]` : `[表情${index}]`) : `[图片${index}]`;
+        const label = sticker
+          ? (summary ? `[表情${summary}]` : `[表情${index}]`)
+          : (animated ? `[动图${index}]（只提供其中一帧）` : `[图片${index}]`);
         if (img?.buffer) {
+          const split = await splitLongImageForModel(img.buffer, img.mimeType || 'image/jpeg');
+          if (split && Array.isArray(split.slices) && split.slices.length) {
+            const slices = sliceBudget > 0 ? split.slices.slice(0, sliceBudget) : [];
+            sliceBudget -= slices.length;
+            if (!slices.length) {
+              parts.push({ type: 'text', text: `${label}（长图切段太多，本次已到 ${MAX_LONG_IMAGE_SLICES_PER_RESULT} 张上限）` });
+              continue;
+            }
+            for (const slice of slices) {
+              totalBytes += slice.buffer.length;
+              const sliceLabel = slices.length > 1 ? `${label}（长图第 ${slice.part.i}/${split.slices.length} 段）` : `${label}（长图已缩到可读尺寸）`;
+              parts.push({ type: 'text', text: sliceLabel });
+              parts.push({ type: 'image', mediaType: slice.mimeType, data: slice.buffer.toString('base64'), name: `qq-${sticker ? 'sticker' : 'image'}-${index}-${slice.part.i}.jpg` });
+            }
+            continue;
+          }
+          if (split?.error) {
+            parts.push({ type: 'text', text: `${label}（${split.error}）` });
+            continue;
+          }
           if (totalBytes + img.buffer.length > MAX_MEDIA_BYTES) {
             parts.push({ type: 'text', text: `${label}（图片总大小超限，已跳过）` });
             continue;
@@ -9123,6 +9321,7 @@ async function main() {
     const out = [];
     let index = 0;
     let totalBytes = 0;
+    let sliceBudget = MAX_LONG_IMAGE_SLICES_PER_RESULT;
     for (const media of Array.isArray(mediaList) ? mediaList : []) {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
@@ -9160,9 +9359,39 @@ async function main() {
           ...(media.url ? { url: String(media.url) } : {}),
           ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
           ...(media.summary ? { summary: String(media.summary) } : {}),
-          ...(media.subType ? { subType: String(media.subType) } : {})
+          ...(media.subType ? { subType: String(media.subType) } : {}),
+          ...(media.animated ? { animated: true } : {})
         };
         if (img?.buffer) {
+          // 长图切段：不切的话模型只会收到 "[image unavailable ... per-side pixel limit]"。
+          // 先于体积判断——原图可能很大，但切成几段后每段都在模型准入范围内。
+          const split = await splitLongImageForModel(img.buffer, img.mimeType || 'image/jpeg');
+          if (split && Array.isArray(split.slices) && split.slices.length) {
+            const slices = sliceBudget > 0 ? split.slices.slice(0, sliceBudget) : [];
+            sliceBudget -= slices.length;
+            if (!slices.length) {
+              out.push({ ...base, text: `（长图切段太多，本次已到 ${MAX_LONG_IMAGE_SLICES_PER_RESULT} 张上限，可稍后分段查看）` });
+              continue;
+            }
+            for (const slice of slices) {
+              totalBytes += slice.buffer.length;
+              out.push({
+                ...base,
+                mimeType: slice.mimeType,
+                data: slice.buffer.toString('base64'),
+                part: slice.part,
+                text: slices.length > 1 ? `长图第 ${slice.part.i}/${split.slices.length} 段` : '长图（已缩到可读尺寸）',
+              });
+            }
+            if (slices.length < split.slices.length) {
+              out.push({ ...base, text: `（长图共 ${split.slices.length} 段，本次只提供前 ${slices.length} 段）` });
+            }
+            continue;
+          }
+          if (split?.error) {
+            out.push({ ...base, text: `（${split.error}）` });
+            continue;
+          }
           if (totalBytes + img.buffer.length > MAX_MEDIA_BYTES) {
             out.push({ ...base, text: `（${noun}总大小超限，已跳过）` });
             continue;
@@ -9172,7 +9401,7 @@ async function main() {
             ...base,
             mimeType: img.mimeType || 'image/jpeg',
             data: img.buffer.toString('base64'),
-            text: ''
+            text: base.animated ? '（动图：只提供其中一帧）' : ''
           });
         } else {
           out.push({ ...base, text: `（${noun}获取失败）` });
@@ -9182,12 +9411,26 @@ async function main() {
     return out;
   }
 
-  function mediaHintFor(key, messageRef, mediaList) {
-    if (!Array.isArray(mediaList) || mediaList.length === 0 || !messageRef) return '';
-    if (currentMode === 'reserved2') {
-      return `\n【图片/表情】本条消息包含 ${mediaList.length} 个图片/表情（消息ID=${messageRef}）。如需要查看/识别，请调用 mcp__snowluma__qq_get_message_images，参数 key="${key}", messageId="${messageRef}"。`;
+  // 媒体/链接提示：图片靠 qq_get_message_images 取，链接把标题+URL 直接摊给模型
+  // （它自己用 mcp__web-search-safe__web_fetch 打开）。两类分开说，避免模型拿图片工具去"读"一个网页。
+  function mediaHintFor(key, messageRef, mediaList, links = []) {
+    const hints = [];
+    const visual = (Array.isArray(mediaList) ? mediaList : []).filter((m) => m && (m.kind === 'image' || m.kind === 'sticker' || m.kind === 'face'));
+    if (visual.length > 0 && messageRef) {
+      const animated = visual.filter((m) => m.kind === 'image' && m.animated).length;
+      const noun = animated === visual.length ? '动图/表情' : (animated > 0 ? '图片/动图/表情' : '图片/表情');
+      hints.push(currentMode === 'reserved2'
+        ? `【${noun}】本条消息包含 ${visual.length} 个${noun}（消息ID=${messageRef}）。如需要查看/识别，请调用 mcp__snowluma__qq_get_message_images，参数 key="${key}", messageId="${messageRef}"。`
+        : `【${noun}】本条消息包含 ${visual.length} 个${noun}（消息ID=${messageRef}）。`);
     }
-    return `\n【图片/表情】本条消息包含 ${mediaList.length} 个图片/表情（消息ID=${messageRef}）。`;
+    const linkList = Array.isArray(links) ? links.filter((link) => link && (link.url || link.title)) : [];
+    if (linkList.length > 0) {
+      const described = linkList.map((link, index) => `${index + 1}. ${describeLink(link) || '（无标题）'}`).join('；');
+      hints.push(currentMode === 'reserved2'
+        ? `【链接】本条消息包含 ${linkList.length} 个链接：${described}。要看内容就用 mcp__web-search-safe__web_fetch 打开 URL（打不开再用 mcp__web-search-safe__web_search 搜标题），别凭空猜。`
+        : `【链接】本条消息包含 ${linkList.length} 个链接：${described}。`);
+    }
+    return hints.length ? `\n${hints.join('\n')}` : '';
   }
 
   function findMessageMedia(key, ref) {
@@ -10680,7 +10923,7 @@ async function main() {
 
   function buildContextBlock(key) {
     const ctx = (social.recentMessages.get(key) ?? []).slice(-Number(cfg.social?.contextWindow ?? 15));
-    return ctx.map((m) => `${m.isOwner ? ownerMessageTag() : ''}${m.sender}：${m.text}${mediaHintFor(key, m.messageId, m.media)}`).join('\n') || '（无）';
+    return ctx.map((m) => `${m.isOwner ? ownerMessageTag() : ''}${m.sender}：${m.text}${mediaHintFor(key, m.messageId, m.media, m.links)}`).join('\n') || '（无）';
   }
 
   // 触发进入活跃（启动阶段 → 活跃阶段）
@@ -10745,7 +10988,7 @@ async function main() {
   // 活跃阶段：只贴"没给过 AI 的新消息"（上下文在会话历史里，不重复贴，不贴人格）
   // allowSilent=false 表示这条必须回（被 @/点名/私聊等），不提供 [SILENT] 出口。
   function buildBatchPrompt(key, newMsgs, allowSilent = true) {
-    const lines = newMsgs.map((m) => `${m.isOwner ? ownerMessageTag() : ''}${m.sender}：${m.text}${mediaHintFor(key, m.messageId, m.media)}`).join('\n');
+    const lines = newMsgs.map((m) => `${m.isOwner ? ownerMessageTag() : ''}${m.sender}：${m.text}${mediaHintFor(key, m.messageId, m.media, m.links)}`).join('\n');
     const directionHint = lines.includes('[引用') ? `${DIRECTION_HINT}\n` : '';
     if (!allowSilent) {
       return `【新消息】\n${lines}\n\n${directionHint}请回复消息。\n${SPACE_SPLIT_HINT}`;
@@ -11724,7 +11967,7 @@ async function main() {
     const targets = key ? (social.pendingSummaries.has(key) ? [[key, social.pendingSummaries.get(key)]] : []) : [...social.pendingSummaries.entries()];
     for (const [k, entry] of targets) {
       if (!entry.items.length) continue;
-      const lines = entry.items.map((m) => `${m.isOwner ? ownerMessageTag() : ''}${m.sender}：${m.text}${mediaHintFor(k, m.messageId, m.media)}`).join('\n');
+      const lines = entry.items.map((m) => `${m.isOwner ? ownerMessageTag() : ''}${m.sender}：${m.text}${mediaHintFor(k, m.messageId, m.media, m.links)}`).join('\n');
       const summaryMedia = entry.items.flatMap((m) => Array.isArray(m.media) ? m.media : []);
       let sessionId;
       try {
@@ -12349,10 +12592,11 @@ async function main() {
   }
 
   // ── 二代仿真模式（reserved2）唤醒调度 ──────────────────────────────────
-  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = []) {
+  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = [], options = {}) {
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(cfg.socialV2?.context?.unreadLimit) || 30;
+    // options.links：本条消息解析出的链接/卡片。链接与 media 分开存——取图工具读不了网页。
     // 存储层的归一化**不能只留 kind/file/url/faceId**：reserved2 的图片/表情工具
     // （findMessageMedia → fetchOneBotImage / fetchMediaData）只从这里的产物取字段。
     // 丢了 emojiId/subType，fetchOneBotImage 的 isSticker 判定为假 ⇒ 市场/收藏表情会先走
@@ -12368,9 +12612,21 @@ async function main() {
       if (m?.emojiId) item.emojiId = String(m.emojiId);
       if (m?.summary) item.summary = sanitizeMediaSummary(m.summary);
       if (m?.subType) item.subType = String(m.subType);
+      if (m?.animated) item.animated = true;
       return item;
     }).filter((m) => (m.kind === 'face' ? !!m.faceId : !!(m.file || m.url || m.emojiId))) : [];
     const safeForwardIds = (Array.isArray(forwardIds) ? forwardIds : []).map(sanitizeForwardId).filter(Boolean);
+    // 链接/卡片：只留模型真正用得上的四个字段（标题/摘要/URL/类型），且必须至少有一个 URL 或标题。
+    // 放在 media 之外：qq_get_message_images 只认图片/表情，链接要靠模型自己用 mcp__web-search-safe__web_fetch 打开。
+    const safeLinks = (Array.isArray(options.links) ? options.links : []).map((link) => {
+      if (!link || typeof link !== 'object') return null;
+      const item = { kind: 'link', source: link.source === 'text' ? 'text' : 'card' };
+      if (link.cardType) item.cardType = truncateText(String(link.cardType), 40);
+      if (link.title) item.title = truncateText(String(link.title), 120);
+      if (link.desc) item.desc = truncateText(String(link.desc), 200);
+      if (link.url) item.url = truncateText(String(link.url), 800);
+      return item.url || item.title ? item : null;
+    }).filter(Boolean).slice(0, 5);
     if (safeForwardIds.length) {
       let set = seenForwardIds.get(key);
       if (!set) {
@@ -12402,6 +12658,8 @@ async function main() {
       fish: !isOwner && isFishName(sender, cfg.fishGuard),
       media: safeMedia,
       hasMedia: safeMedia.length > 0,
+      links: safeLinks,
+      hasLinks: safeLinks.length > 0,
       forwardIds: safeForwardIds,
       hasForward: safeForwardIds.length > 0,
       time: Date.now()
@@ -12597,7 +12855,28 @@ async function main() {
     return text;
   }
 
-  function evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf) {
+  // 媒体唤醒概率（0~1）。只有 probability 模式，以及 owner 模式下"群友的图"用得到。
+  // 缺省 0.1：熟人发表情/截图时偶尔接一句，既不至于每条都回，也不会像旧版那样永远不回。
+  function mediaWakeProbabilityV2() {
+    const n = Number(cfg.socialV2?.wake?.mediaWakeProbability);
+    if (!Number.isFinite(n)) return 0.1;
+    return Math.min(1, Math.max(0, n));
+  }
+
+  // 有实际图像内容可看的媒体段：image（图片/截图/**动图**）、sticker（mface 市场表情）。
+  // QQ 小黄脸（face）没有可识别的画面内容，不值得单独为它烧一轮唤醒。
+  // 链接/链接卡片（2026-10-30 用户要求）走同一个概率：消息里带可打开的链接时也算"有内容"，
+  // 否则主人发来一张卡片，5% 普通概率根本看不到。
+  function hasVisualMedia(mediaList) {
+    return Array.isArray(mediaList) && mediaList.some((m) => m && (m.kind === 'image' || m.kind === 'sticker'));
+  }
+
+  function hasWakeableMedia(mediaList, links) {
+    if (hasVisualMedia(mediaList)) return true;
+    return Array.isArray(links) && links.some((link) => link && (link.url || link.title));
+  }
+
+  function evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf, context = {}) {
     if (kind === 'private') return 'private';
     const tr = st.wakeConfig?.triggers ?? {};
     if (tr.anyMessage) return 'anyMessage';
@@ -12630,6 +12909,21 @@ async function main() {
       if (speakerId && tr.speakerIds.some((id) => String(id) === speakerId)) {
         const senderLabel = event?.sender?.card || event?.sender?.nickname || speakerId;
         return `speaker:${senderLabel}`;
+      }
+    }
+    // 图片/表情/动图/链接唤醒：必须排在概率之前——否则主人的截图/卡片只有 5% 机会被看见。
+    // 放在文字触发之后：一条带 @/关键词的图文消息，仍按更明确的文字原因唤醒。
+    if (hasWakeableMedia(context.mediaList, context.links)) {
+      const mediaWake = normalizeMediaWakeMode(cfg.socialV2?.wake?.mediaWake);
+      if (mediaWake !== 'off') {
+        const ownerLike = Boolean(context.isOwner || context.isAdmin);
+        if (mediaWake === 'any') return 'media';
+        if (mediaWake === 'owner' && ownerLike) return 'media';
+        // probability：所有人（含主人）按概率；owner 模式下这段是群友的图。
+        if (Math.random() < mediaWakeProbabilityV2()) return 'media';
+        // 概率没中就结束，**不再落回下面的普通消息概率**——否则用户设的 0.1 会变成
+        // 10% + 90%×5% ≈ 14.5%，设多少都不可预测。
+        return null;
       }
     }
     if (Number(tr.probability) > 0 && Math.random() < Number(tr.probability)) return 'probability';
@@ -12889,6 +13183,15 @@ async function main() {
     if (Array.isArray(wcTr.speakerIds) && wcTr.speakerIds.length) wcTriggers.push(`指定成员(${wcTr.speakerIds.length}:${wcTr.speakerIds.join(',')})`);
     if (wcTr.anyMessage) wcTriggers.push('任意消息');
     if (Number(wcTr.probability) > 0) wcTriggers.push(`概率${wcTr.probability}`);
+    // 媒体唤醒是 config 级开关（socialV2.wake.mediaWake），不在 wakeConfig.triggers 里：
+    // 写进这一行，让她每次醒来都知道「图片/表情/动图/链接也会叫醒我」，不用猜。
+    {
+      const mediaWakeMode = normalizeMediaWakeMode(cfg.socialV2?.wake?.mediaWake);
+      const mediaChance = Math.round(mediaWakeProbabilityV2() * 100);
+      if (mediaWakeMode === 'owner') wcTriggers.push(`图片/表情/动图/链接(主人必醒/群友${mediaChance}%)`);
+      else if (mediaWakeMode === 'any') wcTriggers.push('图片/表情/动图/链接(所有人)');
+      else if (mediaWakeMode === 'probability') wcTriggers.push(`图片/表情/动图/链接(概率${mediaChance}%)`);
+    }
     const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
     // 操作者预写的「初始提示词」（圈子主题/群内氛围等）：**只在首次唤醒**注入。
     // 放在最前面几段（角色/令牌之后）而不是末尾，是为了让它在长 prompt 里足够显眼；
@@ -12925,6 +13228,11 @@ async function main() {
     }
     if (reason === 'poke') {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
+    }
+    if (String(reason ?? '').split(':')[0] === 'media') {
+      // 纯图片/表情/链接没有任何文字：模型如果不知道「这条有媒体、怎么看」，就会把 [图片]
+      // 当成一句无意义的话，要么不回、要么编一段和图无关的内容。
+      return `${base}【唤醒】${key}\n原因：有人发来图片/表情/动图/链接（消息里可能没有文字说明）。\n先看未读里那条 [图片]/[动图]/[表情]/[链接卡片] 是谁发的、前后在聊什么：\n· 图片/动图/表情：要识别图里到底是什么，调用 mcp__snowluma__qq_get_message_images（key="${key}"，messageId 用未读消息里那一条的 messageId）。动图模型只看到其中一帧，别按"看完了整段动画"描述；\n· 链接/链接卡片：消息里（或 links 字段）有标题和 URL，要看内容就用 mcp__web-search-safe__web_fetch 打开 URL，打不开再用 mcp__web-search-safe__web_search 搜标题/域名；打不开就说打不开，不要编内容。\n可能是截图提问、晒图分享、表情包斗嘴、分享文章——看懂再回一句自然的；图里/页面里没有的细节不要编，确实没话说就按收尾规则安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
     }
     return `${base}【唤醒】${key}\n原因：${reason}\n【行动前】先判断：群里在聊什么？热闹还是冷清？有没有人直接找你？对方说完了吗？你有没有真正想说的？\n如果群聊正热但没人叫你，可以插一句有趣的/相关的，插不上再看情况潜水；不要一上来就划走。\n【引用：只在必要时用】只有你这条消息指向的人或消息并非最新一条别人的消息，或者你连续的几句话中不同消息指代的是不同的消息或人时，才用 qq_reply 或 qq_send_message 的 replyToMessageId 指向具体那条；其他情况不要引用，别让对方猜。\n你可以调用工具查看未读消息、人设、状态，自行决定是否发言；决定潜水前必须按上面的【沉睡前强制等待】先等够观察窗口。开口前先看【对话收尾判断】：判断这段已自然结束时，不用再补一句，直接 qq_close_conversation 收尾。`;
   }
@@ -13174,6 +13482,9 @@ async function main() {
     nameMention: 70,
     keyword: 60,
     anyMessage: 50,
+    // 图片/表情：消息本身没文字，但比「普通消息按概率」确定得多 —— 主人的截图
+    // 不能被同一合并窗口里一条 5% 概率的闲聊降级掉。低于 at/提问/名字/关键词。
+    media: 45,
     replyCheck: 40,
     timeout: 30,
     // 上线补历史：比主动机会重要，但低于任何“有人正在说话”的原因；
@@ -13765,6 +14076,9 @@ async function main() {
     const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
+    // 链接/链接卡片：与图片/表情分开存（links），因为取图工具读不了网页；
+    // 但唤醒判定和提示词把两者当同一类"有内容可看"的媒体处理。
+    const linkList = linkItemsFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
     const refsToStore = [...new Set([messageRef, seqRef].filter(Boolean))];
@@ -13809,6 +14123,9 @@ async function main() {
     }
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    // 「管理员」可能是和 ownerQQ 不同的号（合体层 admin.qq 覆盖了 ownerQQ）：
+    // 媒体唤醒对两种身份都算「自己人」，别让换了号的管理员发图又回到静默。
+    const isAdminSender = !isOwner && String(event.user_id ?? '') === String(adminIdentity().qq || '');
     const displayName = kind === 'group'
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';
@@ -13974,7 +14291,7 @@ async function main() {
         await ensureFishGroupName(id);
       }
       const sender = displayName;
-      appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
+      appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []), { links: linkList });
       // 二代同样收集群聊黑话学习素材（AI 自主提交之外，桥接仍自动提取高频陌生词）
       if (kind === 'group') feedSlangWindow(key, sender, plainContent);
       if (socialV2.paused) {
@@ -14016,7 +14333,12 @@ async function main() {
         saveSocialV2State();
         scheduleWakeV2(key, 'bootstrap');
       } else {
-        const reason = evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf);
+        const reason = evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf, {
+          mediaList,
+          links: linkList,
+          isOwner,
+          isAdmin: isAdminSender,
+        });
         if (reason) {
           // 收尾后的软冷却只压普通概率唤醒；@/名字/提问/关键词/指定成员/私聊照常醒。
           if (closureSuppressesWake(st.closure, reason, Date.now())) {

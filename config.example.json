@@ -213,6 +213,7 @@
       "defaultMode": "diving",
       "preSleepWaitEnabled": true,
       "preSleepWaitMs": 300000,
+      "mediaWake": "probability",
       "recommendedDefaultInfinite": true,
       "sleepMinMs": 60000,
       "sleepMaxMs": 0,
@@ -246,7 +247,8 @@
       "maxWakePerMinute": 1,
       "maxWakePerHour": 12,
       "noActionLimit": 3,
-      "maxWakeConfigReminders": 2
+      "maxWakeConfigReminders": 2,
+      "mediaWakeProbability": 0.1
     },
     "closure": {
       "enabled": true,
@@ -367,7 +369,13 @@
     "media": {
       "maxBytes": 8388608,
       "maxPixels": 64000000,
-      "maxCount": 5
+      "maxCount": 5,
+      "sliceLongImages": true,
+      "modelMaxSide": 8192,
+      "modelMaxPixels": 4194304,
+      "sliceMaxHeight": 3000,
+      "sliceMaxCount": 12,
+      "pythonPath": ""
     }
   },
   "webSearch": {

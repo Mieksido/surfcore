@@ -8,6 +8,7 @@
 // - 只格式化，不访问网络；调用方负责“id 必须来自当前会话已见消息”的校验
 
 import { truncateText } from './md-to-plain.js';
+import { describeLink, linkItemsFromSegments } from './link-card.js';
 
 export function sanitizeForwardId(value) {
   const s = String(value ?? '').trim();
@@ -48,7 +49,12 @@ function segmentText(seg) {
     case 'file': return `[文件${d.name ?? ''}]`;
     case 'reply': return '[引用]';
     case 'forward': return '[转发]';
-    case 'json': return '[卡片消息]';
+    // 卡片：合并转发的聊天记录里也常有分享卡片，能解出标题/URL 就别只给四个字。
+    case 'json':
+    case 'xml': {
+      const cards = linkItemsFromSegments([{ type: seg.type, data: d }], { max: 2, includeText: false });
+      return cards.length ? `[链接卡片]${cards.map((card) => describeLink(card)).join(' / ')}` : '[卡片消息]';
+    }
     default: return `[${seg.type ?? '未知'}]`;
   }
 }

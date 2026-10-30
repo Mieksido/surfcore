@@ -263,9 +263,9 @@ await pumpMux();      // DSH 事件流主循环（永不返回）
 6. 鱼群保护：`blocked` → 记日志 `return`；`rawBlocked && bypass` → 落 `fishGuardBypass`（10 分钟窗口），让发送时也能放行（`src/bridge.js:13652-13664`）。
 7. `noteClosureReopenV2`：对方又开口时把「上次收尾」标记为重开（群聊只在直呼/引用/提问/道别时重开）（`src/bridge.js:13666-13669`、`src/bridge.js:10263-10274`）。
 8. 首次：`bootstrapSent=true` → `scheduleWakeV2(key,'bootstrap')`（`src/bridge.js:13670-13673`）。
-9. 之后：`evaluateWakeTriggerV2(...)` 求原因 → `closureSuppressesWake` 过滤普通概率唤醒 → `scheduleWakeV2(key, reason)`（`src/bridge.js:13674-13685`）。
+9. 之后：`evaluateWakeTriggerV2(...)` 求原因 → `closureSuppressesWake` 过滤普通概率唤醒 → `scheduleWakeV2(key, reason)`（`src/bridge.js:14336-14348`）。
 
-`evaluateWakeTriggerV2` 的判定顺序（`src/bridge.js:12345-12382`）：私聊恒 `private`；`anyMessage`；`atMention`（at 段命中 self，或引用自己）；`nameMention`（**用 plainContent**，防止引用了提到昵称的旧消息就误触）；`keywords`（≤4 位纯英文/数字用 `\b` 词边界，避免 `DS` 命中 `ADS`）；`question`（`isDirectedAtAi`）；`speakerIds`；最后才是 `probability`。
+`evaluateWakeTriggerV2` 的判定顺序（`src/bridge.js:12879`）：私聊恒 `private`；`anyMessage`；`atMention`（at 段命中 self，或引用自己）；`nameMention`（**用 plainContent**，防止引用了提到昵称的旧消息就误触）；`keywords`（≤4 位纯英文/数字用 `\b` 词边界，避免 `DS` 命中 `ADS`）；`question`（`isDirectedAtAi`）；`speakerIds`；**媒体/链接唤醒 `media`**（纯图片/表情/动图或带可打开链接的消息没有任何文字触发条件，按 `socialV2.wake.mediaWake` 决定：`probability` 默认按 `mediaWakeProbability`（0.1）摇一次，概率没中**不落回**普通概率；`owner` 只让 ownerQQ/admin 必醒、群友按比例；`any` 任何人；`off` 关闭；QQ 小黄脸 face 不算）；最后才是 `probability`。媒体唤醒的提示词会明确让模型调 `qq_get_message_images` 看图、`mcp__web-search-safe__web_fetch` 打开链接（见 PITFALLS #90、#93）。
 
 #### B. `chat` / `reserved`（一代）
 
@@ -410,6 +410,16 @@ await pumpMux();      // DSH 事件流主循环（永不返回）
 - 入站图片取字节 `fetchOneBotImage`（`src/bridge.js:8719-8797`）：表情优先 URL/CDN，普通图片优先 `get_image`；`get_image` 返回 `data`/`base64`/`file`（本地路径需在 `snowluma.homeDir` 内）/`url` 四路兜底；`file` 字段必须是「简单缓存文件名」（拒绝路径/盘符/协议/`..`）（`src/bridge.js:8677-8686`）。
 - 表情 CDN 兜底：只有**纯十六进制** `emoji_id` 才拼 URL（`src/bridge.js:8692-8696`）。
 - 每次取图都过格式 + 像素上限（防图片炸弹）（`src/bridge.js:8705-8717`）。
+- 动图（GIF/动画表情）在文本层标 `[动图]`、`media[].animated=true`；取图时说明「只提供其中一帧」，避免模型把一帧当成整段动画。
+- **长图切段**（`src/long-image.js` + `fetchMediaData()/resolveMediaList()`）：DSH 图像准入有
+  「单边 ≤8192 / 总像素 ≤64MP / 字节 ≤20MB」三道闸，归一化再把超过 4MP 的图等比缩小；
+  QQ 长截图（实测 1320×15378）会因单边超标被**整张拒收**（模型只看到 `[image unavailable ...]`）。
+  桥接在交给 MCP/DSH 之前按 `planLongImageSlices()` 纵向切段（每段 1320×≤3000，
+  落在归一化预算内所以不缩放、文字保持清晰；相邻重叠 80px、最多 12 段），
+  用本机带 Pillow 的 Python 执行 `sliceImageWithPillow()`（配置 `socialV2.media.pythonPath`
+  → DSH 自带运行时 → PATH 依次探测）。拿不到 Pillow 或切图失败时把可行动的原因写进工具结果，
+  不静默失败；`socialV2.media.sliceLongImages:false` 可整体关闭（见 PITFALLS #91）。
+
 
 ### 4.6 合并转发
 

@@ -2929,3 +2929,116 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 
 **验证**：`node scripts/test-gate-events.mjs`；`npm run test:audit` 88/88；
 `plugins/surfcore npm test`。
+
+## #90（2026-10-30）群里发图片不回复：纯图片消息永远不触发唤醒
+
+**现象**：用户反馈「surfcore的qqbot，我在群里发图片不回复我」。`state/qq-activity.log`
+里连续三条 `消息已入未读：[图片]` 之后没有任何唤醒/发送；`state/social-v2.json` 的
+`unread` 堆着这几条，`lastReadThroughSeq` 停在前一条。
+
+**根因**：`evaluateWakeTriggerV2()` 的所有触发条件都读**文字**（at 段、昵称字符串、
+关键词、提问、指定成员）。纯图片消息 `plainContent` 只有 `[图片]`，一条都命不中，
+只剩 5% 的概率唤醒 → 连发三张 85.7% 概率全哑，用户实感就是"永远不回"。
+`mediaList` 在 `handleIncoming` 里其实已经提取好了（入未读 + 存 messageMediaStore），
+只是没参与唤醒判定 —— **触发条件集合缺了一类输入**，不是某行写错。
+
+**修法**：新增 config 级 `socialV2.wake.mediaWake`（`probability` 默认，按 `mediaWakeProbability`（0.1）摇一次 / `owner` 主人必醒、群友按比例 / `any` / `off`），
+在 `evaluateWakeTriggerV2()` 里排在文字原因之后、概率之前：图片/mface 表情/动图/链接命中后
+→ 原因 `media`；概率没中时**不落回**普通消息概率（否则设 0.1 实际会变成 ~14.5%）。`WAKE_PRIORITY.media=45`；
+新增 `media` 专用唤醒提示词（明确告诉模型调 `qq_get_message_images` 看图，
+别对着 `[图片]` 编）；admin.qq 与 ownerQQ 不同号时也算"自己人"。
+**验证**：`scripts/test-media-wake.mjs`（20 条，已进 `test:audit`）：
+修前夹具 `pendingWake:false`，修后 `pendingWake:true / reason:media`；概率模式 p=0 时连普通概率也不摇（不双摇）。
+真机也已闭环（2026-10-30 11:48:50 重启后）：11:50:41 群里来图 → `暂存唤醒原因（media@seq2）`
+→ 模型调 `qq_get_message_images` → 11:51:04 发出回复。
+回滚：`mediaWake:"off"` + 重启桥接（代码不用动）。
+**教训**：「新消息类型」上线时必须问一句"它能不能把人叫醒"——入库链路和唤醒链路是
+两套判定，前者通不代表后者通。
+
+## #91（2026-10-30）bot 看不了 QQ 长图：DSH 图像准入按「单边像素」拒收长截图
+
+**现象**：修好图片唤醒后，用户在群里发一张长截图（实测 1320×15378 JPEG），bot 先是
+"有一张我这边没加载出来"，被追问后说"长图单边像素超了我这边的上限"，并建议用户自己截两段。
+
+**根因**：工具 `qq_get_message_images` 把原图交给 DSH，DSH 喂给模型前有两道闸
+（`app.asar` 里 `lib/types/...detectImage`）：
+1. **单边 > 8192** → 直接拒收（`IMAGE_DIMENSION_TOO_LARGE`），模型只看到
+   `[image unavailable: image/jpeg; image admission rejected the result: Image exceeds the
+   configured per-side pixel limit.]`；
+2. 总像素 > 4,194,304 → 归一化时等比缩小。长图哪怕放行，1320 宽也会被压到 400 多像素，
+   字全糊。
+桥接侧原来的检查只有"总像素 ≤ 64MP / 字节 ≤ 8MB"（`acceptImageBuffer`），**没有单边概念**，
+所以图被顺利抓下来、却死在 DSH 准入那一层，日志里连错误都没有（拒收发生在 DSH）。
+
+**修法**：新增 `src/long-image.js` + 桥接接线：把图交给模型前先判断/切段。
+- `planLongImageSlices()`：单边超 8192 或（像素超 4MP 且长宽比 ≥2.5）才切；纵向切，
+  每段 1320×≤3000（≤3.96MP，落在归一化预算内、不需要缩放，文字保持清晰），
+  相邻段重叠 80px 防切在字行中间；段数上限 12。
+- `sliceImageWithPillow()`：调本机带 Pillow 的 Python 执行（1320×15378 实测 0.9~1.7s；
+  纯 JS 解码+重编码要几十秒）。Python 来源按 配置 `socialV2.media.pythonPath` →
+  DSH 自带运行时（`$DSH_HOME/dsh-runtimes/.../dependencies/python/python.exe`，随 DSH 必带
+  Pillow）→ PATH 的顺序探测。
+- 工具结果里每段带"长图第 i/n 段"标签；一次工具调用最多 12 张（`MAX_LONG_IMAGE_SLICES_PER_RESULT`）。
+- 拿不到 Pillow/切图失败 → 明确告诉模型"本机没找到 Pillow，请让对方截两段"，**不静默**
+  （`tests` 里有一条失败分支断言）。
+- 普通照片（4:3、12MP）不切；开关 `socialV2.media.sliceLongImages:false` 可整体回退。
+
+**验证**：`scripts/test-long-image.mjs` 16 条（纯计划 11 条 + 假 Python 接线 5 条，已进
+`test:audit`）；用真实 Pillow 跑 `PILLOW_SLICE_SCRIPT`：1320×15378 → 6 段
+（479/586/468/463/531/110KB），0.87s；每段 1320×3000 全部落在 DSH 准入/归一化预算内。
+**真机已闭环**（12:42，正常守护窗口启动的桥接）：`[media] 长图切段可用` →
+`[media] 长图切段：1320x15378 → 6 段`；`qq_get_message_images` 返回 6 张带"长图第 i/6 段"
+标签的图片，全部通过 DSH 准入且文字清晰可读。
+
+**开发中二次踩的坑（同一件事的两个次生故障，都记下来）**：
+1. **探针脚本写错**：第一版探针是 `python -c "import PIL; ...; print(PIL_OK)"`——`PIL_OK`
+   漏了引号，Python 抛 `NameError`、退出码非 0 → 被判定"没有 Pillow" → 真机仍报看不了长图。
+   修法：抽成常量 `PIL_PROBE_CODE = "... print('PIL_OK')"`，并加单测钉住
+   "PIL_OK 必须是字符串字面量、禁止 print(PIL_OK)"。
+   教训：**能力探测的失败原因必须落日志**（ENOENT/EPERM/非 0 退出是完全不同的处置），
+   只写"不可用"会把自家脚本的语法错误伪装成"环境缺失"。
+2. **`/api/restart` 依赖守护窗口**：它只是 `process.exit(0)`，由 `start.bat` 的 loop 拉起；
+   如果桥接是手动/插件裸起的，调它会留下停机（调试中真停过一次）。重启前先确认守护窗口在跑，
+   或直接双击 `restart.bat`。
+
+**教训**：跨进程交接图片时，**上游的大小检查 ≠ 下游的准入规则**。DSH 的图上有"单边"
+这道闸，桥接只查了总像素，等于没查。以后加任何"把外部内容喂给模型"的链路，都要按
+**下游**的准入参数（单边/像素/字节/张数）验一遍。
+
+## #92（2026-10-30）链接卡片只渲染成「[卡片消息]」：结构化段被拍平成一个占位符
+
+**现象**：主人私聊发来 QQ 链接卡片，`state/qq-activity.log` 只有
+`消息已入未读：[卡片消息]`，模型回「我点不开，只有四个字」——标题/摘要/URL 全丢。
+正文里的普通 URL 也不参与媒体唤醒，用户把 `mediaWakeProbability` 调到 0.3 也看不到卡片。
+
+**根因**：OneBot 的分享卡片是 `json` 段（`data.data` 是 `meta.news` / `meta.detail_1` /
+`meta.music` / `meta.mini_app_ark` / `meta.ark` 等模板的 JSON），部分实现是 `xml` 段
+（`<msg brief=...><item><title>/<url>`）。`src/bridge.js` 的 `segmentsToText()`
+对 `json` 一律输出 `'[卡片消息]'`、对 `xml` 落到 default 输出 `'[xml]'`；
+`extractMediaFromSegments()` 只收 image/mface/face。于是卡片既没有文字触发条件，
+也不在 `mediaList` 里 —— **卡在"文字"和"媒体"两个集合之间**，只剩 5% 普通概率。
+
+**修法**：新增 `src/link-card.js`（纯函数）解析卡片 JSON/XML 与正文 URL，桥接落 `links` 字段；
+`segmentsToText()` 输出 `[链接卡片]标题 · 摘要 · URL`；`evaluateWakeTriggerV2()` 的媒体分支改为
+「图片/表情/动图 **或** 链接」共用 `mediaWakeProbability`；提示词分别给出
+「看图用 `qq_get_message_images` / 链接用 `mcp__web-search-safe__web_fetch`」。
+**坑**：`compactMedia()` 会在可本地解析时删掉 `file`/`url`（防止 token 泄漏），
+所以链接**不能塞进 `media`**，必须是独立字段，否则模型看到的链接没有 URL。
+**验证**：`scripts/test-link-media.mjs`（22 组，含 p=0 不双摇、落库字段、提示词）。
+
+## #93（2026-10-30）动图在文本层只标「[图片]」：模型以为自己在看静图/看完了整段
+
+**现象**：QQ 动图（GIF/动画表情）能进 `media`、DSH 也会把动画归一化成静图，
+但消息文本只有 `[图片]`；模型不知道"这是动图、只提供一帧"，
+要么描述成看完整段动画，要么按普通图片敷衍。
+
+**根因**：`segmentsToText()` 的 `image` 分支写死 `'[图片]'`，而 QQ 侧没有统一的 `animated`
+字段——证据分散在 `file/url` 扩展名（`.gif`/`.webp`）、`summary`（`[动画表情]`）、
+`sub_type=1`（表情/动图，但静态收藏表情也常见 1）。只读其中一个都会误判。
+
+**修法**：抽 `animatedMediaEvidence(data)`：扩展名或 summary 命中才算动图（
+`sub_type=1` 只降级成 `[表情]`，不冒充动图）；`extractMediaFromSegments()` 记录 `animated`，
+落库/取图结果都保留；`resolveMediaList`/`fetchMediaData` 给动图加
+「只提供其中一帧」说明；唤醒提示词明确禁止说"看完了整段动画"。
+**教训**：模型看到的"媒体类型"必须由桥接显式标注，不能指望它从图片本身推断——
+一帧 GIF 和一张 PNG 在视觉上完全一样。
