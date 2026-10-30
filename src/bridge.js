@@ -762,6 +762,58 @@ function normalizeIdList(value) {
   return value.map((v) => String(v).trim()).filter((v) => /^\d+$/.test(v));
 }
 
+// 优先规则：
+//   forceReplyAtGroups       这些群里任何人 @ 机器人 → 必回一条（优先于唤醒上限）
+//   privateAlwaysReplyUsers  这些 QQ 的私聊 → 必回一条（优先于唤醒上限）
+//   groupRates               群号:QQ号:概率；这个 QQ 在该群的发言按独立概率回复
+// 同时兼容对象形式 { users: { QQ: { privateAlwaysReply, groupRates: { G: 0.3 } } } }。
+function normalizePriority(value) {
+  const src = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const forceReplyAtGroups = normalizeIdList(src.forceReplyAtGroups ?? []);
+  const privateAlwaysReplyUsers = normalizeIdList(src.privateAlwaysReplyUsers ?? []);
+  const groupRates = [];
+  const pushRate = (groupId, qq, rate) => {
+    const g = String(groupId ?? '').trim();
+    const u = String(qq ?? '').trim();
+    const n = Number(rate);
+    if (!/^\d+$/.test(g) || !/^\d+$/.test(u) || !Number.isFinite(n)) return;
+    groupRates.push({ groupId: g, qq: u, rate: Math.max(0, Math.min(1, n)) });
+  };
+  for (const item of Array.isArray(src.groupRates) ? src.groupRates : []) {
+    if (typeof item === 'string') {
+      const m = item.trim().match(/^(\d+)\s*:\s*(\d+)\s*:\s*([0-9]*\.?[0-9]+)\s*$/);
+      if (m) pushRate(m[1], m[2], m[3]);
+    } else if (item && typeof item === 'object') {
+      pushRate(item.groupId ?? item.group, item.qq ?? item.userId ?? item.user, item.rate ?? item.probability);
+    }
+  }
+  if (src.users && typeof src.users === 'object' && !Array.isArray(src.users)) {
+    for (const [qq, p] of Object.entries(src.users)) {
+      if (!p || typeof p !== 'object') continue;
+      if (p.privateAlwaysReply === true && !privateAlwaysReplyUsers.includes(String(qq))) {
+        privateAlwaysReplyUsers.push(String(qq));
+      }
+      if (p.groupRates && typeof p.groupRates === 'object') {
+        for (const [groupId, rate] of Object.entries(p.groupRates)) pushRate(groupId, qq, rate);
+      }
+    }
+  }
+  const seenRates = new Set();
+  const uniqueRates = [];
+  for (const r of groupRates) {
+    const key = `${r.groupId}:${r.qq}`;
+    if (seenRates.has(key)) continue;
+    seenRates.add(key);
+    uniqueRates.push(r);
+  }
+  return {
+    forceReplyAtGroups: [...new Set(forceReplyAtGroups)],
+    privateAlwaysReplyUsers: [...new Set(privateAlwaysReplyUsers)],
+    groupRates: uniqueRates,
+    fallbackText: String(src.fallbackText ?? '').trim()
+  };
+}
+
 // ── 配置 ────────────────────────────────────────────────────────────────────
 function loadConfig() {
   const p = path.join(ROOT, 'config.json');
@@ -805,6 +857,8 @@ function loadConfig() {
       private: normalizeIdList(file.deny?.private ?? file.deny?.privates ?? []),
       groups: normalizeIdList(file.deny?.groups ?? file.deny?.group ?? [])
     },
+    // 优先规则：指定群 @ 必回、指定 QQ 私聊必回、指定 QQ 在指定群的独立回复概率。
+    priority: normalizePriority(file.priority),
     // 私聊/群聊均未配置白名单时是否放行所有（true 时启动会打警告）
     allowAllWhenEmpty: file.allowAllWhenEmpty === true,
     ackMessage: file.ackMessage ?? '🤔 收到，正在思考…',
@@ -8393,12 +8447,64 @@ async function main() {
         })
         .then(() => sleep(cfg.sendDelayMs));
     }
-    return sendChain;
+    return sendChain.then(() => {
+      noteSuccessfulSend(key);
+    });
   }
 
   /** 上一批发往该会话的消息是否全部成功。 */
   function lastSendSucceeded(key) {
     return lastSendFailed.get(key) !== true;
+  }
+
+  // 优先规则的“保底回复”：模型如果在 90 秒内没有真正发出消息，由桥接补一句，
+  // 保证“指定群 @ 必回 / 指定人私聊必回”不是空承诺。正常模型回复会先清掉 forceReply。
+  function noteSuccessfulSend(key) {
+    try {
+      if (!lastSendSucceeded(key)) return;
+      const st = getSocialV2State(key);
+      st.lastSendAt = Date.now();
+      if (st.forceReply) {
+        st.forceReply = null;
+        saveSocialV2State();
+      }
+    } catch { /* 状态尚未初始化时忽略 */ }
+  }
+
+  function schedulePriorityReplyFallback(key, since, reason) {
+    const st = getSocialV2State(key);
+    st.forceReply = { since: Number(since), reason };
+    saveSocialV2State();
+    let attempts = 0;
+    const check = async () => {
+      const s = getSocialV2State(key);
+      if (!s.forceReply || Number(s.forceReply.since) !== Number(since)) return;
+      if (Number(s.lastSendAt) >= since || Number(s.lastAiReplyAt) >= since) {
+        s.forceReply = null;
+        saveSocialV2State();
+        return;
+      }
+      // 模型仍在跑就再等，避免保底句和正常回复同时出现。
+      if (isConversationBusyV2(key, s) && attempts < 4) {
+        attempts += 1;
+        setTimeout(check, 30000).unref?.();
+        return;
+      }
+      const fallback = cfg.priority?.fallbackText
+        || (reason === 'priorityPrivate'
+          ? '我在，看到你的消息了。'
+          : reason === 'priorityGroup'
+            ? '我在，看到你说话了。'
+            : '我在，刚刚看到你 @ 我了。');
+      try {
+        await sendToQQ(key, fallback);
+        s.lastAiReplyAt = Date.now();
+      } catch { /* 发送失败时保持 forceReply，下一次优先消息再补 */ }
+      s.forceReply = null;
+      saveSocialV2State();
+      log(`[优先规则] 已补发保底回复 ${key}（${reason}）`);
+    };
+    setTimeout(check, 90000).unref?.();
   }
 
   // ── 真人式分条发送 ──────────────────────────────────────────────────────
@@ -12481,14 +12587,48 @@ async function main() {
     return text;
   }
 
+  // ── 优先规则（群 @ 必回 / 指定人私聊必回 / 指定人在指定群的独立概率） ──────
+  function priorityPrivateAlways(qq) {
+    const id = String(qq ?? '');
+    return Boolean(id) && (cfg.priority?.privateAlwaysReplyUsers ?? []).includes(id);
+  }
+
+  function priorityGroupRateFor(qq, groupId) {
+    const id = String(qq ?? '');
+    const gid = String(groupId ?? '');
+    if (!id || !gid) return null;
+    const hit = (cfg.priority?.groupRates ?? []).find((r) => r.qq === id && r.groupId === gid);
+    return hit ? Number(hit.rate) : null;
+  }
+
+  function forceReplyAtGroup(groupId) {
+    return (cfg.priority?.forceReplyAtGroups ?? []).includes(String(groupId ?? ''));
+  }
+
+  function isAtSelfEvent(event, quoteTargetIsSelf) {
+    const atSelf = Array.isArray(event?.message) && event.message.some(
+      (seg) => seg?.type === 'at' && String(seg.data?.qq) === String(event?.self_id ?? '')
+    );
+    return atSelf || Boolean(quoteTargetIsSelf);
+  }
+
   function evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf) {
-    if (kind === 'private') return 'private';
+    const senderId = String(event?.user_id ?? event?.sender?.user_id ?? '');
+    if (kind === 'private') {
+      return priorityPrivateAlways(senderId) ? 'priorityPrivate' : 'private';
+    }
+    const groupId = String(key ?? '').startsWith('group:') ? String(key).slice(6) : '';
+    // 指定群 @：不管原 wakeConfig 是否开 atMention，都强制命中。
+    if (forceReplyAtGroup(groupId) && isAtSelfEvent(event, quoteTargetIsSelf)) return 'atMention';
+    // 指定人在指定群：按独立概率，命中后覆盖普通 probability/speakerIds。
+    const priorityRate = priorityGroupRateFor(senderId, groupId);
+    if (priorityRate !== null) {
+      if (priorityRate <= 0) return null;
+      return Math.random() < priorityRate ? 'priorityGroup' : null;
+    }
     const tr = st.wakeConfig?.triggers ?? {};
     if (tr.anyMessage) return 'anyMessage';
-    if (tr.atMention) {
-      const atSelf = Array.isArray(event?.message) && event.message.some((seg) => seg?.type === 'at' && String(seg.data?.qq) === String(event?.self_id ?? ''));
-      if (atSelf || quoteTargetIsSelf) return 'atMention';
-    }
+    if (tr.atMention && isAtSelfEvent(event, quoteTargetIsSelf)) return 'atMention';
     if (tr.nameMention && selfNickname) {
       // 用 plainContent（当前消息自己的文字）：textContent 含 `[引用 某人：原文]`，
       // 引用一条恰好提到机器人昵称的旧消息不该算「叫了名字」（那是被动触发的付费回合）。
@@ -12831,6 +12971,10 @@ async function main() {
       return;
     }
     const st = getSocialV2State(key);
+    const forceAt = reason === 'atMention' && forceReplyAtGroup(String(key).startsWith('group:') ? String(key).slice(6) : '');
+    const priorityPrivate = reason === 'priorityPrivate';
+    const priorityGroup = reason === 'priorityGroup';
+    const priorityWake = forceAt || priorityPrivate || priorityGroup;
     // 鱼群保护：定时器/主动机会在保护期内不唤醒；只有人类 @/名字/提问/拍一拍且已记录 bypass 才放行。
     const bypass = st.fishGuardBypass && Number(st.fishGuardBypass.until) > Date.now()
       && Date.now() - Number(st.fishGuardBypass.at || 0) < 10 * 60 * 1000
@@ -12839,13 +12983,13 @@ async function main() {
       directAddress: Boolean(bypass),
       isOwner: Boolean(st.fishGuardBypass?.owner && bypass),
     });
-    if (fishWake.blocked) {
+    if (fishWake.blocked && !priorityWake) {
       log(`[鱼群保护] 跳过唤醒 ${key}（${reason}）：${fishGuardReasonText(fishWake) || '保护冷却中'}`);
       return;
     }
     // Token 防爆破：鱼群守则之后、真正投递之前。被拦时消息保留在未读，不烧模型回合。
     const directWake = isDirectFishGuardWake(reason) || fishGuardDirectUnread(st) || fishGuardOwnerUnread(st) || Boolean(bypass);
-    const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake });
+    const tokenWake = priorityWake ? null : tokenGuardWakeBlock(key, st, { direct: directWake });
     if (tokenWake) {
       log(`[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
       if (tokenWake.retryAfterMs > 0 && !st.tokenRetryTimer) {
@@ -12886,7 +13030,7 @@ async function main() {
     // 被直接 @ / 叫到 / 引用 / 拍一拍时，强制实时唤醒：越过 2 分钟间隔和旧的 1 分钟/12 小时限频。
     // 仍然受 Token 的每日次数与近 24h 花费上限约束，不能靠 @ 无限烧。
     const directBypass = directWake && tokenGuardCfg().enabled !== false && tokenGuardCfg().directBypassGap !== false;
-    if (!directBypass && ((maxPerMinute > 0 && recentMinute >= maxPerMinute) || (maxPerHour > 0 && recentHour >= maxPerHour))) {
+    if (!priorityWake && !directBypass && ((maxPerMinute > 0 && recentMinute >= maxPerMinute) || (maxPerHour > 0 && recentHour >= maxPerHour))) {
       let retryAfterMs = 0;
       if (maxPerMinute > 0 && recentMinute >= maxPerMinute) {
         const times = (st.wakeTimes || []).filter((t) => now - t < 60000).sort((a, b) => a - b);
@@ -12936,7 +13080,10 @@ async function main() {
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
     saveSocialV2State();
-    const promptText = buildWakePromptV2(key, reason);
+    let promptText = buildWakePromptV2(key, reason);
+    if (priorityWake) {
+      promptText += '\n\n【优先强制回复】这条消息属于优先规则：必须至少调用一次发送工具回一条，不能只 mark_read / close_conversation 就结束。若内容不适合展开，也发一句简短回应。';
+    }
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
@@ -12965,6 +13112,8 @@ async function main() {
         // 入队而非真正在途：保留 pendingWakeKeys，等 DSH 恢复后真正投递的 turn/end 再触发收尾保护；
         // 不能在这里删除，否则补投的唤醒回合会丢失“未设置唤醒配置”的安全兜底。
         log(`[reserved2] 唤醒已入队 ${key}（${reason}），等待 DSH 恢复后补投`);
+      } else if (priorityWake) {
+        schedulePriorityReplyFallback(key, now, reason);
       }
     } catch (error) {
       pendingWakeKeys.delete(key);

@@ -9,6 +9,8 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -23,6 +25,7 @@ import { EMOTION_LABELS } from './sticker-semantics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+const execFileAsync = promisify(execFile);
 
 function loadConfig() {
   try {
@@ -1412,5 +1415,69 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
     }
   );
 }
+
+// ── B站视频内容查看（安全只读）─────────────────────────────────────────────
+// QQ preset 默认禁止本地 shell / read_image，所以群里的 agent 只能看到 B站
+// 记忆卡里的标题/简介，看不到画面。这里把 B站 的 debrief 包装成一个窄工具：
+// 只接受 BV 号，只读公开视频，返回文字 + 抽帧图；不暴露任意路径/命令。
+server.tool(
+  'bili_video',
+  '查看一条 B站视频的真实内容：下载视频、抽帧九宫格和底部字幕条，并把画面直接返回给视觉模型。当用户给出 BV 号或 B站视频链接、问“视频里讲了什么/画面是什么”时调用。只读，不会在 B站发评论或动态。',
+  {
+    bvid: z.string().describe('B站 BV 号，例如 BV15nxL6NE1y；也可以直接传视频链接')
+  },
+  async ({ bvid }) => {
+    try {
+      const match = String(bvid ?? '').match(/BV[0-9A-Za-z]{10}/);
+      if (!match) {
+        return { content: [{ type: 'text', text: '没有识别到 BV 号。请传 BV15nxL6NE1y 这种格式，或完整的 B站视频链接。' }], isError: true };
+      }
+      const id = match[0];
+      const bili = path.join(ROOT, 'plugins', 'surfcore', 'tools', 'bili.mjs');
+      if (!fs.existsSync(bili)) {
+        return { content: [{ type: 'text', text: `找不到 B站工具：${bili}` }], isError: true };
+      }
+      let output = '';
+      try {
+        const r = await execFileAsync(process.env.DSH_NODE || process.execPath, [bili, 'debrief', id, '--no-history'], {
+          cwd: ROOT,
+          timeout: 300000,
+          maxBuffer: 32 * 1024 * 1024,
+          windowsHide: true,
+          env: process.env
+        });
+        output = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.trim();
+      } catch (error) {
+        output = `${error?.stdout ?? ''}\n${error?.stderr ?? ''}\n${error?.message ?? error}`.trim();
+      }
+      const pick = (label) => {
+        const m = output.match(new RegExp(`^${label}:\\s*(.+)$`, 'm'));
+        return m?.[1]?.trim() ?? '';
+      };
+      const sheet = pick('SHEET');
+      const subs = pick('SUBS');
+      const content = [{
+        type: 'text',
+        text: `B站视频 ${id} 的内容素材如下。SHEET 是视频抽帧九宫格，SUBS 是底部字幕条；图片已经直接附在本次工具结果里，不需要再调用 read_image。请结合画面和文字回答，不要只复述标题。\n\n${output}`
+      }];
+      const seen = new Set();
+      for (const file of [sheet, subs]) {
+        if (!file || seen.has(file)) continue;
+        seen.add(file);
+        try {
+          const data = fs.readFileSync(file);
+          if (data.length > 8 * 1024 * 1024) continue;
+          content.push({ type: 'image', mimeType: 'image/jpeg', data: data.toString('base64') });
+        } catch { /* 图片不存在时保留文字结果 */ }
+      }
+      if (content.length === 1) {
+        content.push({ type: 'text', text: '（这次没有生成画面：可能视频没有直链、下载失败，或 ffmpeg 抽帧失败。）' });
+      }
+      return { content };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `查看 B站视频失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
 
 await server.connect(new StdioServerTransport());
