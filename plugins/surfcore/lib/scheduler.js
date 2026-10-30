@@ -817,7 +817,9 @@ export function startScheduler(ctx, opts) {
       if (!fresh.length) { listening = false; return }
       fresh.sort((a, b) => a.t - b.t)
       const who = fresh.map((x) => `${x.who}（${x.kind === 'at' ? '@' : '回复'}）`).join('、')
-      const L = limitsNow()
+      // 注意：这里不能叫 L —— 上面 try 块里的 L 是 cfg.listen，同一个块里再 `const L` 会让前面对 L 的读取全部落进暂时性死区，
+      // 整条监听每 5 分钟抛一次 `Cannot access 'L' before initialization`（并且已经白拉了一次收件箱）。
+      const limits = limitsNow()
       await ensureSession()
       await promptBili(
         {
@@ -839,10 +841,10 @@ export function startScheduler(ctx, opts) {
               '3) ⭐ **谁找你都直接回**（2026-10-20 用户改：不再走草稿 ✓）：',
               // mid 动态读配置 ✓（别把 uid 写死进代码 ✗ 开源版会带出去 ✗）
               `   · 对方是**主人**（mid ${cfg.owner?.mid ?? '（未配置）'}）→ 直接回 ✓，而且要比平时更温柔（先谢谢/回应关心，不抬杠、不回嘴）`,
-              `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${L.replyDaily} 条/天）`,
+              `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${limits.replyDaily} 条/天）`,
               '     `comment --oid … --root … --parent … --message "…" --auto --once-per-person（仅当开关=开 ✓） --dry` → `--go` → `thread` 复核 ✓',
               '     ⚠️ 别带 --ta —— 那是"我去搭热评"，两本账分开记 ✗',
-              `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${L.mineDaily} 条/天 · 每人 ${L.minePerPerson} 条 ✓`,
+              `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${limits.mineDaily} 条/天 · 每人 ${limits.minePerPerson} 条 ✓`,
               '     ⚠️ oid 必须用 comment-digest 打印的坐标（19 位动态 id 不能手抄：JS 数字会丢末几位）',
               '4) 吵架 / 要隐私 / 要你代表主人承诺 → 一条都不回 ✗（直接不理，别解释）',
               '5) 别贪多：这一批处理完就停 ✓（**只有设置页「同一个人最多只回一条」= 开时**才加 --once-per-person ✓；关掉就别加 ✗）',

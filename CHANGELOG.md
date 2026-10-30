@@ -4,6 +4,17 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [未发布]
+
+### 修复（B站评论区监听每 5 分钟报 `Cannot access 'L' before initialization`）
+
+- **现象**：插件日志每 5 分钟一条 `[bili-whale] 监听失败：Cannot access 'L' before initialization`；B站「回找我的人 / @我」的监听实际上从没工作过，而且每次失败前还白拉了一次收件箱。
+- **根因**：`scheduler.js` 的 `listenTick` 里，外层 `const L = cfg.listen ?? {}`，同一个 `try` 块后半段又写 `const L = limitsNow()`。块级 `const` 作用域是整个块，前面的 `L.scope` / `L.onlyOwner` 读到的是后面那个还没初始化的 `L`（暂时性死区）。
+- **修法**：后面那个改名 `limits`（提示词里的 `L.replyDaily` / `L.mineDaily` / `L.minePerPerson` 同步改）。
+
+> 调查记录：[评论监听暂时性死区](docs/cases/2026-10-30-listen-tdz.md)
+
+
 ## [0.7.19] - 2026-10-30
 
 ### 新增（插件冲突体检）
