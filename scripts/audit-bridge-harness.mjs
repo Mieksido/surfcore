@@ -37,6 +37,8 @@ import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
 import * as conversationClosure from '../src/conversation-closure.js';
+import * as longImage from '../src/long-image.js';
+import * as linkCard from '../src/link-card.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { createBiliMemory } from '../src/bili-memory.js';
@@ -195,7 +197,10 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
     initialPrompts, initialPromptMaxChars,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
+    mediaHintFor, hasVisualMedia, hasWakeableMedia, linkItemsFromSegments, describeLink,
     emojiCdnCandidates, getImageDimensions, acceptImageBuffer, MAX_MEDIA_BYTES, bot,
+    // 长图切段（2026-10-30）：stub 掉真实 Pillow 进程，只断言"计划→切段→多张图"接线。
+    splitLongImageForModel, resolveImagePython, execFilePromise, MAX_LONG_IMAGE_SLICES_PER_RESULT,
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
     settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
     getMode() { return currentMode; },
@@ -226,6 +231,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
     execFileSync: () => '',
+    // 长图切段用（src/long-image.js 走注入的 run）；默认桩成"没有这个进程"，
+    // 需要断言切段行为的用例通过 opts.globals.execFile 覆盖成假进程。
+    execFile: (file, args, options, callback) => {
+      const error = new Error(`harness 没有注入 execFile 桩（${file}）`);
+      error.code = 'ENOENT';
+      setImmediate(() => callback(error, '', ''));
+    },
     // process 桩要带 env：voice-core / bridge 会读 process.env.FFMPEG_PATH、FFPROBE_PATH 等。
     // 之前只给 pid/platform/kill/exit，导致 `process.env.FFMPEG_PATH` 直接抛 TypeError。
     // DSH_HOME 指向临时目录：记忆卡的 inbox / 注入块只能写在 fixture 里，绝不能碰真实用户数据。
@@ -249,6 +261,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...conversationClosure,
+    ...longImage,
+    ...linkCard,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
     readCurrentCharacter: () => null,

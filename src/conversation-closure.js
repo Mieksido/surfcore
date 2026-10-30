@@ -76,7 +76,7 @@ export function classifyMessage(msg) {
   const raw = typeof msg === 'string' ? msg : (msg?.plain ?? msg?.text ?? msg?.tail ?? '');
   const t = text(raw).replace(/\s+/g, ' ');
   const length = [...t].length;
-  const hasMedia = Boolean(Array.isArray(msg?.media) && msg.media.length) || /\[(图片|表情|视频|语音|文件)\]/i.test(t);
+  const hasMedia = Boolean(Array.isArray(msg?.media) && msg.media.length) || /\[(图片|动图|表情|视频|语音|文件|链接)/i.test(t);
   const atSelf = Boolean(msg?.atSelf);
   const quoteSelf = Boolean(msg?.quoteSelf);
   if (!t) {

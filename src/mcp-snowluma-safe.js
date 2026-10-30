@@ -552,7 +552,7 @@ server.tool(
 
 server.tool(
   'qq_get_unread_messages',
-  '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。',
+  '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。消息里的 media 是图片/动图/表情（用 qq_get_message_images 看），links 是已解析的链接/卡片（标题+URL，用 mcp__web-search-safe__web_fetch 打开）。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -571,7 +571,7 @@ server.tool(
 
 server.tool(
   'qq_get_recent_messages',
-  '查看指定会话的最近消息（只读），支持 offset 扩大范围。',
+  '查看指定会话的最近消息（只读），支持 offset 扩大范围。消息里的 media 是图片/动图/表情（用 qq_get_message_images 看），links 是已解析的链接/卡片（标题+URL，用 mcp__web-search-safe__web_fetch 打开）。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1040,7 +1040,7 @@ server.tool(
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
     'qq_get_message_images',
-    '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；二代模式下必须携带会话令牌。看图时先认人再聊内容：图里如果出现你自己的账号、主页、资料卡、头像或动态，那就是你自己，先认出来再说，别当成别人的页面。',
+    '获取指定 QQ 消息中的图片/表情/动图，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[动图]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；动图只提供其中一帧，别当成看完整段动画。links 字段里的链接/卡片不要用这个工具，用 mcp__web-search-safe__web_fetch 打开 URL。二代模式下必须携带会话令牌。看图时先认人再聊内容：图里如果出现你自己的账号、主页、资料卡、头像或动态，那就是你自己，先认出来再说，别当成别人的页面。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可为负数；二代也可用本地 seq）'),

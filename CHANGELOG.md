@@ -4,6 +4,31 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [未发布]
+
+### 新增（QQ 媒体：概率唤醒 + 长图切段 + 动图/链接卡片对模型可见）
+
+- **媒体唤醒**：`socialV2.wake.mediaWake`（缺省 `probability`，按 `mediaWakeProbability` 摇一次；
+  `owner`/`any`/`off` 可选）。纯图片/表情/动图/链接消息没有任何文字触发条件，以前只剩 5%
+  普通概率，用户实感「发图不回」；现在命中即按 `media` 唤醒，且概率没中**不落回**普通概率
+  （避免设 0.1 实际变成 ~14.5%）。
+- **长图切段**：DSH 图像准入单边上限 8192，QQ 长截图（实测 1320×15378）会被整张拒收，
+  模型只看到 `[image unavailable ...]`。新增 `src/long-image.js`：交给模型前按 Pillow 纵向切段
+  （每段 ≤3000 高、重叠 80px、最多 12 段），拿不到 Pillow 时给出可行动说明；
+  `socialV2.media.sliceLongImages:false` 可整体关闭。
+- **链接 / 链接卡片**：`json`/`xml` 卡片段以前只渲染成 `[卡片消息]`，模型回「我点不开」。
+  新增 `src/link-card.js` 解析卡片 JSON/XML 与正文 URL，文本层输出
+  `[链接卡片]标题 · 摘要 · URL`，消息落 `links` 字段（与图片 `media` 分开：取图工具读不了网页），
+  提示词引导模型用 `mcp__web-search-safe__web_fetch` 打开链接。
+- **动图**：GIF/动画表情在文本层标 `[动图]`、`media[].animated=true`；取图结果注明
+  「只提供其中一帧」，避免模型把一帧当成整段动画描述。
+- 测试：新增 `scripts/test-media-wake.mjs`（20 条）、`test-long-image.mjs`（16 条）、
+  `test-link-media.mjs`（22 条），均登记进 `test:audit`。
+
+> 案例：[媒体唤醒](docs/cases/2026-10-30-media-wake.md) ·
+> [长图](docs/cases/2026-10-30-qq-long-image.md) ·
+> [动图/链接/卡片](docs/cases/2026-10-30-link-card-and-animated-media.md)
+
 ## [0.7.19] - 2026-10-30
 
 ### 新增（插件冲突体检）

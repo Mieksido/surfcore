@@ -132,7 +132,7 @@
 | --- | --- | --- |
 | 总开关 | `enabled`、`autoReplyCheckMs`、`agentPreset`（`qq-chat-v2`）、`provideRecommendations` | 二代是"一切皆工具"，文本不自动发送 |
 | `tools` | 31 个布尔开关 | **逐个工具的开关**：发消息/引用/分条/等待/表情/语音/记忆/黑话/收尾…默认全开，`setStickerRemark` 与 `sendVoice` 默认**关** |
-| `wake` | `defaultMode`（diving）、`preSleepWaitEnabled`、`preSleepWaitMs`（300000）、`batchWindowMs`、`maxWakePerMinute/Hour`、`noActionLimit`、`recommended*` | 唤醒调度与"沉睡前观察"的强制窗口 |
+| `wake` | `defaultMode`（diving）、`preSleepWaitEnabled`、`preSleepWaitMs`（300000）、`mediaWake`（`probability` 缺省 / `owner` / `any` / `off`）、`mediaWakeProbability`（0.1）、`batchWindowMs`、`maxWakePerMinute/Hour`、`noActionLimit`、`recommended*` | 唤醒调度与"沉睡前观察"的强制窗口；媒体唤醒：`probability`=所有人（含主人）的**图片/表情/动图/链接卡片/正文 URL**按 `mediaWakeProbability` 概率醒（概率没中**不落回**普通消息概率，保证设的 0.1 就是 0.1）；`owner`=主人必醒、群友按比例；`any`=必醒；`off`=关闭（见 PITFALLS #90、#92） |
 | `closure` | `enabled`、`cooldownMs`（20 分钟）、`requireNoOpenQuestion`、`promptInWake`、`maxSummaryChars`、`maxNextOpeningChars` | 对话收尾：冷却只压普通概率唤醒，@/提问/私聊不压 |
 | `send` | `burstMaxMessages`（8）、`maxSendPerMinute/Hour`、`maxMessageChars`（500）、`gap*` | 发送节流与硬上限（超长 400、超条数 429） |
 | `tokenGuard` | `maxWakesPerDay`（群 20 / 私聊 10）、`minWakeGapMs`（2 分钟）、`directBypassGap`、`maxOutboundPerTurn`、`maxDailyCostCNY` | 防爆破：@/引用/拍一拍可越过 2 分钟间隔，但每日次数仍生效 |
@@ -144,7 +144,7 @@
 | `context` | `recentLimit`、`unreadLimit`、`contextWindow`、`inlineWakeMessages`、`wakeMessageLimit`、`wakeRecentLimit`、`wakeMaxChars`、`wakeFoldOld` | 注入多少上下文（token 成本的主要旋钮）。`wakeFoldOld`（默认 `true`）= 唤醒只带**最近一窗**、更早未读折叠成计数（PITFALLS #76）；设 `false` 恢复"从最早未读开始塞"的旧行为 |
 | `history` | `enabled`、`limit`、`maxAgeMinutes`、`wake`、`includePrivate` | 上线补历史 |
 | `initialPromptMaxChars` | `2000` | 每会话首次唤醒的"环境说明"上限 |
-| `media` | `maxBytes`（8MB）、`maxPixels`（64MP）、`maxCount`（5） | 图片/表情/动图限制 |
+| `media` | `maxBytes`（8MB）、`maxPixels`（64MP）、`maxCount`（5）、`sliceLongImages`（true）、`modelMaxSide`（8192）、`modelMaxPixels`（4194304）、`sliceMaxHeight`（3000）、`sliceMaxCount`（12）、`pythonPath`（''） | 图片/表情/动图限制；`sliceLongImages` 控制**长图切段**（QQ 长截图单边超 DSH 准入 8192 会被整张拒收，桥接用本机 Pillow 切成多张可读图，见 PITFALLS #91） |
 
 #### 1.11.1 语音（`socialV2.voice`）
 
