@@ -11,6 +11,7 @@
 | 2026-10-31 | [一键启动 SurfCore + 一键停止](2026-10-31-one-click-launch-stop.md) | QQ/B站/桌宠/语音多选；语音本地/云端；每项结果与停止；状态统一 | 待发布 |
 | 2026-10-30 | [语音包被误放进 zip 自动更新](2026-10-30-voice-pack-no-auto-update.md) | 语音包没有 package.json/清单 → 从自动更新移除，改语音页手动重新导入 | 待发布 |
 | 2026-10-30 | [SnowLuma 断线时主动唤醒空烧](2026-10-30-snowluma-channel-gate.md) | 唤醒前查发送通道；断开/连续失败不创建 DSH 会话；L2 事件 + 建议 | 待发布 |
+| 2026-10-30 | [QQ 工作区不跟随 DSH 默认模型](2026-10-30-qq-workspace-follow-default-model.md) | `ensureChatModel` 只读 config.json（且 selectModel 会后台改写全局默认）→ 跟随 `modelCatalog.default` + 可关开关 | 待发布 |
 | 2026-10-30 | [闸门事件中心 + 单轮 L3 止血](2026-10-30-gate-events-turn-guard.md) | 重复 compress / 步数 / 回合内额度到顶 → cancel-only + 直接通知；L0-L3 事件中心 | 待发布 |
 | 2026-10-30 | [插件冲突体检](2026-10-30-plugin-compat-check.md) | 第三方 compress 被 QQ 白名单拒 → 只读体检报工具/压缩冲突；未知插件标 unknown | 待发布 |
 | 2026-10-29 | [设置称呼「弥叭」仍叫管理员](2026-10-29-admin-display-name-projection.md) | QQ 投影只写 ownerQQ，桥接兜底把「管理员」当称呼 → 完整投影 + 空串兜底 | 待发布 |

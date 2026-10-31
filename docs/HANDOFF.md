@@ -6,6 +6,70 @@
 ---
 
 ## 快照：2026-10-31 09:55（对齐 v0.7.22 + 人格分层）
+## 快照：2026-10-30 20:00–21:40（QQ 工作区跟随 DSH 默认模型）
+
+### 当前事实
+
+- **HEAD**：`bc851a9 release: v0.7.19（插件冲突体检 + 闸门事件中心 + 放行上下文工具）`
+- **package.json version**：`0.7.19`（编辑会话未改版本）
+- **工作区**：本段改动未提交 —— `M public/console.html`、`M src/bridge.js`、`M scripts/test-audit.mjs`、
+  `?? src/dsh-model-follow.js`、`?? scripts/test-dsh-model-follow.mjs`、`?? docs/cases/2026-10-30-qq-workspace-follow-default-model.md`。
+  （`M plugins/surfcore/presets/qq-chat-v2.patch.yml` 只是 CRLF 换行噪音，`?? plugins/surfcore/lib/package.json`
+  是既有的 qq-mode 包边界文件，都不是本段产物。）
+
+### 本段做了什么
+
+1. **根因**：`src/bridge.js` 的 `ensureChatModel()` 以前只读 `config.json → dsh.{provider,model,reasoningEffort}`，
+   而 DSH 的 `session.selectModel` 会在后台 `agentDefaultModel.saveSelection()` 写回全局默认 →
+   用户在 Web GUI 改的默认模型对 QQ 两个工作区无效，且 QQ 每说一句话就把默认改回 config 值（双向拉锯）。
+2. **新增 `src/dsh-model-follow.js`**（纯逻辑）：`defaultSelectionOf(catalog)`、`effectiveChatModel({...})`，
+   导出 `SOURCE_DSH_DEFAULT` / `SOURCE_CONFIG`。
+3. **`ensureChatModel` 改为跟随**：`resolveDefaultModel()`（15s 缓存 / 3s 超时，失败只记一次日志）读
+   `session.modelCatalog.default`；跟不到就退 config，并把 `defaultError` 一路带到日志与接口。
+4. **配置开关**：`config.json` 新增 `dsh.followDefaultModel`（默认 `true`）；新增
+   `POST /api/dsh/follow-default`（写盘失败回 `code:'config-write-failed'` + `hint`）。
+5. **控制台**：模型卡片加「跟随 DSH 默认模型」勾选 + 来源说明（关闭 / 正在跟随 / 想跟没读到+原因）。
+6. **测试**：新增 `scripts/test-dsh-model-follow.mjs`（**11 项**，含接线断言），已注册进 `scripts/test-audit.mjs`。
+6b. **修 `globalSideEffect` 误报**：原实现直接比 `followed.reasoningEffort === effectiveEffort`，
+    而跟随来的默认值通常没有 `reasoningEffort`（`agentOptions()` 只回传 provider/model），
+    于是「跟随成功」也被报成「会改全局默认」。现抽成纯函数 `writesGlobalDefault()`：
+    只有 provider/model 真不同、或默认值**显式**给了强度且不同，才为 `true`。
+7. **文档**：`docs/cases/2026-10-30-qq-workspace-follow-default-model.md` + 案例索引一行。
+
+### 验证了什么
+
+- `node scripts/test-dsh-model-follow.mjs` → **11/11 通过**；`node --check` 两个文件通过。
+- `npm run test:audit` → **86/89**，3 个失败（test-audit-setup / test-voice-pack-import / test-release-manifest）
+  在干净 HEAD 上同样失败，属既有环境问题（dsh plugin install 退出码 1、临时目录含 `&`/`%`、CRLF）。
+- **真机（DSH 重启后，bridge 与 DSH 同进程 pid 88268，控制台 3100）**：
+  - `GET /api/dsh/model` → `followDefault:true`、`modelSource:"dsh-default"`、
+    `defaultModel:{dfy,deepseek-v4.1-flash-1017}`，而 `configModel` 仍是同一个值（说明读的是 DSH 默认，不是 config）；
+  - 把 DSH 默认改成 `deepseek-account/deepseek-flash` 后，同一接口立刻变成 `deepseek-account/deepseek-flash`，
+    `configModel` 依旧是 `deepseek-v4.1-flash-1017` —— 跟随链路端到端成立；改回后 15s 缓存到期自动恢复。
+  - QQ 侧的 `ensureChatModel` 真机日志（「（跟随 DSH 默认模型）」）**仍未拍到**：要等一条 QQ 消息触发建会话。
+
+### 没验证什么（老实写）
+
+- QQ 消息触发的真机日志没拍到（本次重启后没有新 QQ 消息进入 `ensureChatModel`）。
+- 控制台勾选的真实点击（浏览器交互）未点过，只做了静态接线断言；新 `writesGlobalDefault()` 的效果
+  要等**下次重启 DSH** 才会体现在接口返回值上（bridge 跑在 DSH 进程内，不支持热重载）。
+
+### 下一步（按顺序）
+
+1. ~~收 audit 结果~~ 已收：86/89，3 个既有环境失败。
+2. 发一条 QQ 消息，确认 `state/bridge.log` 出现「（跟随 DSH 默认模型）」（需下次重启 DSH 后）。
+3. 本段的发布交接块已追加到 `docs/RELEASE-QUEUE.md`「待发布」。
+
+### 关联的另一半（不在本仓库）
+
+- `D:\Deepseek\工作区\dsh-default-model`（「默认模型」DSH 插件）本段同时修了一个 BOM 读取 bug：
+  状态文件被 PowerShell `Set-Content -Encoding UTF8` 写成带 U+FEFF，`JSON.parse` 抛错被 catch 吞掉 →
+  `pinned=null` → 覆写从未装上（真机上一直表现为 `attached:false`）。修法是读取侧 `.replace(/^\uFEFF/,'')`。
+  该插件改动**需要重启 DSH** 才生效（新壳宿主插件不支持热重载，toggle 会返回 `application:"restart-required"`）。
+
+---
+
+## 快照：2026-10-30 14:15–14:50（对齐 v0.7.18 现状）
 
 ### 当前事实
 

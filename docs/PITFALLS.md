@@ -3069,3 +3069,27 @@ B站/桌宠被迫读 QQ 规则；核心和日常没有边界。
 - **修法**（0.7.23）：close 加 15 秒去抖窗口；open 时 `ackByDedupe` 自动确认旧断线事件；
   文案改为“恢复前跳过主动唤醒”；UI 在 connected=true 时过滤并自动确认旧事件。
 - **教训**：断线是事件、不可用是状态；告警要看状态并带去抖，恢复要结掉旧事件。
+---
+
+## #95（2026-10-30）会话内换一次模型，就悄悄改掉了全局「默认模型」
+
+**现象**：用户在 DSH 设置里把默认模型改成 A；进任意会话手动换成 B，回到设置里看，默认模型已变成 B。
+更隐蔽的一半：SurfCore 的 QQ 聊天 / QQ 黑话学习两个工作区每一轮都用 `config.json` 里写死的模型调
+`selectModel`，于是「Web GUI 改默认 → QQ 说一句话 → 默认变回 config 值」，看起来像默认模型设置根本不生效。
+
+**根因**：
+1. `@deepseek-ai/dsh-api-session-controller/lib/index.js:793-821` 的 `selectModel()` 在切完会话模型后
+   **后台**执行 `this.ctx.agentDefaultModel.saveSelection(selected).catch(...)` —— 会话级操作带全局副作用；
+2. `src/bridge.js` 的 `ensureChatModel()` 只读 `config.json`，不读 `session.modelCatalog.default`，
+   所以用户的默认模型对 QQ 侧完全无效，反而每轮都被写回 config 值。
+
+**处置**：
+- 桥接侧改为跟随 `session.modelCatalog.default`（`src/dsh-model-follow.js` 的 `effectiveChatModel`），
+  跟不到才退 `config.json`；开关是 `config.json → dsh.followDefaultModel`（默认 `true`），控制台可勾。
+- **不要去拦别人的 `saveSelection`**：那是 DSH 的契约，拦下来会连「在控制台只想给 QQ 换个模型」一起废掉。
+
+**契约备忘**：`agentDefaultModel.currentSelection()` 是「默认模型」的唯一读口；`session.modelCatalog.default`
+就是它。任何需要「管理员当前想要的模型」的地方都应该读这里，而不是自己读配置文件。
+
+**验证**：`node scripts/test-dsh-model-follow.mjs`（9 项，含接线断言）；案例
+`docs/cases/2026-10-30-qq-workspace-follow-default-model.md`。

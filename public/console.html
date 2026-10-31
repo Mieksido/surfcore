@@ -2567,6 +2567,11 @@ button:active:not(:disabled) {
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
       <div class="meta">模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
       <div class="row" style="margin-top:10px">
+        <label style="flex:1"><input type="checkbox" id="dshFollowDefault" style="width:auto"> 跟随 DSH 默认模型（QQ 聊天 / QQ 黑话学习）</label>
+        <span class="meta" id="dshFollowMsg"></span>
+      </div>
+      <div class="meta" id="dshFollowNote"></div>
+      <div class="row" style="margin-top:10px">
         <label style="flex:0 0 auto">思考强度</label>
         <select id="dshEffortSelect" style="flex:0 1 220px"></select>
         <button id="dshEffortSave">保存</button>
@@ -3054,6 +3059,20 @@ async function refreshDshModel() {
     const r = await api('/api/dsh/model');
     document.getElementById('dshModelText').textContent = r.model || '-';
     document.getElementById('dshProviderText').textContent = r.provider || '-';
+    document.getElementById('dshFollowDefault').checked = r.followDefault !== false;
+    // 「这个模型是从哪来的」必须写在脸上：跟随默认时改 config.json 是没用的。
+    const followParts = [];
+    if (r.followDefault === false) {
+      followParts.push('已关闭跟随：QQ 工作区用 config.json 里写死的 dsh.provider / dsh.model。');
+    } else if (r.modelSource === 'dsh-default') {
+      followParts.push('正在跟随 DSH 默认模型：在 DSH 的「默认模型」页改一次，QQ 聊天 / QQ 黑话学习下一条消息就换。');
+    } else {
+      followParts.push(`想跟随 DSH 默认模型，但没读到：${r.defaultModelError || 'DSH 没有返回默认模型'}。当前用 config.json 的兜底值。`);
+    }
+    if (r.modelSource === 'dsh-default' && r.effectiveReasoningEffort && r.effectiveReasoningEffort !== r.reasoningEffort) {
+      followParts.push(`思考强度跟的是默认模型给的 ${r.effectiveReasoningEffort}（config.json 里存的是 ${r.reasoningEffort}）。`);
+    }
+    document.getElementById('dshFollowNote').textContent = followParts.join('');
     const select = document.getElementById('dshEffortSelect');
     const labels = r.labels || {};
     select.replaceChildren();
@@ -3253,6 +3272,25 @@ document.getElementById('dshEffortSave').addEventListener('click', async () => {
   msg.textContent = r.ok ? `✅ 已设为 ${r.reasoningEffort}，下一条消息生效` : ('❌ ' + (r.error || '保存失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) refreshDshModel();
+});
+// 跟随 DSH 默认模型：勾了就用用户在「默认模型」里固定的那个，不再用 config.json 写死的模型。
+document.getElementById('dshFollowDefault').addEventListener('change', async (event) => {
+  const box = event.target;
+  const msg = document.getElementById('dshFollowMsg');
+  const next = box.checked;
+  msg.textContent = '保存中…';
+  msg.className = 'meta';
+  const r = await api('/api/dsh/follow-default', 'POST', { follow: next });
+  if (!r.ok) {
+    // 失败必须看得见，而且要把勾弹回去：界面显示的状态不能和真实配置不一致。
+    box.checked = !next;
+    msg.textContent = `❌ ${r.error || '保存失败'}${r.hint ? `（${r.hint}）` : ''}`;
+    msg.className = 'meta err';
+    return;
+  }
+  msg.textContent = r.followDefaultModel ? '✅ 已开启跟随，下一条消息生效' : '✅ 已关闭跟随，下一条消息生效';
+  msg.className = 'meta ok';
+  refreshDshModel();
 });
 document.getElementById('silentOn').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'silent' }); refresh(); });
 document.getElementById('silentOff').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'active' }); refresh(); });

@@ -26,6 +26,7 @@ import {
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoicePacks } from './voice-packs.js';
@@ -783,6 +784,11 @@ function loadConfig() {
       // 旧默认 deepseek-v4-flash-vision-exp 已被取代；config.json 未配置时用此兜底。
       model: 'deepseek-flash',
       reasoningEffort: 'max',
+      // 跟随 DSH 的「默认模型」（`session/modelCatalog` 的 `default`，也就是 agentDefaultModel
+      // 的当前值；装了默认模型插件时就是它固定下来的那个）。开着的话 QQ 聊天 / QQ 黑话学习
+      // 两个工作区的会话都用这份默认值，用户在 Web GUI 改一次就跟着变；关掉则用下面的
+      // provider/model 写死（老行为）。读不到 DSH 默认值时无论如何都会退回这里。
+      followDefaultModel: true,
       // 兼容新版 DSH 的 API 鉴权：如果 DSH 升级后要求非浏览器客户端带 token，
       // 在这里配置 token；默认走 Authorization: Bearer <token>。
       authToken: '',
@@ -3068,6 +3074,47 @@ async function main() {
       return api.callUnary('session.models', {});
     }
   }
+  // ── 跟随 DSH 的默认模型（QQ 聊天 / QQ 黑话学习共用的那条）───────────────────
+  // `session/modelCatalog` 的 `default` 就是 agentDefaultModel.currentSelection()：
+  // 装了「默认模型」插件时是用户固定下来的值，没装时是 DSH 自己的默认。两个工作区的
+  // 每个会话都走 ensureChatModel，所以在这里统一取值，用户改一次默认模型、QQ 侧下一条
+  // 消息就跟着换。读不到就退回 config.json（老行为），并把这个原因带给控制台。
+  //
+  // 缓存 15s：ensureChatModel 每条消息都会调用一次，而 modelCatalog 会把所有 provider
+  // 的模型目录都列一遍（几十个 provider 时并不便宜）；15s 足够「改完就生效」的体感。
+  const DEFAULT_MODEL_TTL_MS = 15 * 1000;
+  let defaultModelCache = { at: 0, selection: null, error: '' };
+  let defaultModelInFlight = null;
+  function invalidateDefaultModel() {
+    defaultModelCache = { at: 0, selection: null, error: '' };
+  }
+  async function resolveDefaultModel() {
+    if (Date.now() - defaultModelCache.at < DEFAULT_MODEL_TTL_MS) return defaultModelCache.selection;
+    if (defaultModelInFlight === null) {
+      defaultModelInFlight = (async () => {
+        try {
+          const catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session/modelCatalog');
+          const selection = defaultSelectionOf(catalog);
+          if (selection === null) return { selection: null, error: 'DSH 的模型目录没有给出默认模型' };
+          return { selection, error: '' };
+        } catch (error) {
+          return { selection: null, error: String(error?.message ?? error) };
+        }
+      })().finally(() => { defaultModelInFlight = null; });
+    }
+    const result = await defaultModelInFlight;
+    defaultModelCache = { at: Date.now(), selection: result.selection, error: result.error };
+    // 同一条失败原因只记一次：每条 QQ 消息都会重新取，不能把日志刷爆。
+    if (result.error !== '' && !modelCatalogErrorLogged.has(result.error)) {
+      modelCatalogErrorLogged.add(result.error);
+      log(`读取 DSH 默认模型失败，QQ 工作区先用 config.json 的模型：${result.error}`);
+    }
+    return defaultModelCache.selection;
+  }
+  /** 当前「是否跟随 DSH 默认模型」。config.json 里只有显式写 false 才算关。 */
+  function followsDefaultModel() {
+    return cfg.dsh?.followDefaultModel !== false;
+  }
   const collectors = new Map(); // sessionId -> turn collector
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
   const v2TurnStartAt = new Map(); // sessionId -> timestamp：reserved2 turn 开始时间，用于判断是否“无行动”
@@ -5141,8 +5188,19 @@ async function main() {
 
         // ── DSH 模型与思考强度 ───────────────────────────────────────────────
         if (req.method === 'GET' && url.pathname === '/api/dsh/model') {
-          const provider = String(cfg.dsh?.provider || 'deepseek-official');
-          const model = String(cfg.dsh?.model || 'deepseek-flash');
+          // 先算「现在到底用哪个模型」：跟随 DSH 默认时以默认模型为准，
+          // config.json 的 provider/model 只是关掉跟随后（或读不到默认时）的兜底。
+          const followDefault = followsDefaultModel();
+          const followed = followDefault ? await resolveDefaultModel() : null;
+          const chosen = effectiveChatModel({
+            followDefault,
+            config: cfg.dsh,
+            defaultSelection: followed,
+            defaultError: defaultModelCache.error,
+          });
+          const provider = chosen.provider || 'deepseek-official';
+          const model = chosen.model || 'deepseek-flash';
+          const effectiveEffort = String(chosen.reasoningEffort || REASONING_EFFORT_DEFAULT);
           // 档位优先取 DSH 实际公布的能力（DSH 换档位词汇或换 provider 时自动跟随），失败退回内置白名单。
           let options = REASONING_EFFORT_OPTIONS.slice();
           let labels = {};
@@ -5181,9 +5239,28 @@ async function main() {
             default: REASONING_EFFORT_DEFAULT,
             providerDefault,
             catalogSource,
+            // ── 跟随 DSH 默认模型的状态（控制台据此解释「模型从哪来」）──────────
+            // followDefault=true 但 modelSource='config' 时说明想跟但没跟成，
+            // defaultModelError 就是原因（旧版 DSH 没这个 RPC / 没有默认模型）。
+            followDefault,
+            modelSource: chosen.source,
+            effectiveReasoningEffort: effectiveEffort,
+            configProvider: String(cfg.dsh?.provider || ''),
+            configModel: String(cfg.dsh?.model || ''),
+            defaultModel: followed ?? null,
+            defaultModelError: chosen.defaultError ?? '',
             // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
             // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
-            globalSideEffect: true,
+            // 但若这次写的正是当前默认值（跟随成功时就是），那就等于没改，不必吓唬人。
+            // 强度只在默认模型**显式**给了档位时才参与比较：跟随来的默认值经常没有
+            // reasoningEffort（继承会话/配置），此时沿用 config 的强度并不算「改了默认模型」，
+            // 早先直接比 `followed.reasoningEffort === effectiveEffort` 会把它误报成有全局副作用。
+            globalSideEffect: writesGlobalDefault({
+              followed,
+              provider,
+              model,
+              reasoningEffort: effectiveEffort,
+            }),
           });
           return;
         }
@@ -5202,6 +5279,34 @@ async function main() {
           modelSelectionEpoch += 1;
           log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
           sendJson({ ok: true, reasoningEffort: effort });
+          return;
+        }
+        // 开关「QQ 工作区跟随 DSH 默认模型」。默认开；关掉就退回 config.json 的 provider/model。
+        if (req.method === 'POST' && url.pathname === '/api/dsh/follow-default') {
+          const body = await readBody();
+          const follow = body?.follow !== false;
+          const configFile = path.join(ROOT, 'config.json');
+          try {
+            // fail-fast：配置损坏时直接报错，绝不覆盖写（与白名单/强度接口同语义）
+            const file = readConfigObject(configFile);
+            file.dsh = { ...(file.dsh ?? {}), followDefaultModel: follow };
+            atomicWriteJson(configFile, file);
+          } catch (error) {
+            sendJson({
+              ok: false,
+              code: 'config-write-failed',
+              error: `保存失败：${error?.message ?? error}`,
+              hint: `手动把 ${configFile} 里的 dsh.followDefaultModel 改成 ${follow}，或检查该文件是否只读`,
+            }, 500);
+            return;
+          }
+          cfg.dsh = { ...(cfg.dsh ?? {}), followDefaultModel: follow };
+          // 立刻丢掉缓存的默认模型：改完开关，下一条消息就该按新语义走。
+          invalidateDefaultModel();
+          // 已在运行的会话在下一条消息重新 selectModel（与强度热切换同一套机制）。
+          modelSelectionEpoch += 1;
+          log(`控制台：QQ 工作区${follow ? '跟随' : '不再跟随'} DSH 默认模型（下一条消息生效）`);
+          sendJson({ ok: true, followDefaultModel: follow });
           return;
         }
 
@@ -9589,24 +9694,52 @@ async function main() {
   // 四种 QQ 模式共用 DSH 会话，统一强制使用多模态模型 DeepSeek-V41-Flash（id: deepseek-flash）；
   // 它同时支持 text/image 输入，取代已下线的 deepseek-v4-flash-vision-exp。
   const modelAppliedSessions = new Map(); // sessionId -> 已应用的 modelSelectionEpoch
+  // 已经证实「不认 reasoningEffort」的 provider/model：DSH 对这类模型会直接抛
+  // session/model-unavailable（provider "dfy" model "deepseek-v4.1-flash-1017"
+  // does not support reasoning effort "max"）。记下来后只传 provider/model，
+  // 否则每次重启都会先失败一轮再退避重试。
+  const modelsWithoutEffort = new Set(); // provider/model
   // 返回 'applied' | 'not-found' | 'failed'。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
   // 本地映射已失效，调用方必须退役重建，否则每条消息都会对着一个不存在的会话重试。
   async function ensureChatModel(sessionId) {
     if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch) return 'applied';
-    const provider = String(cfg.dsh?.provider || 'deepseek-official');
-    const model = String(cfg.dsh?.model || 'deepseek-flash');
-    const effort = String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    // 用哪份模型：默认跟随 DSH 的默认模型（也就是 Web GUI 里「默认模型」插件固定下来的那个），
+    // 这样 QQ 聊天 / QQ 黑话学习两个工作区会跟着用户改；读不到或控制台关了跟随才退回 config.json。
+    const followed = followsDefaultModel() ? await resolveDefaultModel() : null;
+    const chosen = effectiveChatModel({
+      followDefault: followsDefaultModel(),
+      config: cfg.dsh,
+      defaultSelection: followed,
+      defaultError: followed === null ? defaultModelCache.error : '',
+    });
+    const provider = chosen.provider;
+    const model = chosen.model;
+    const effort = String(chosen.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    // 只有「跟随成功」才值得在日志里点明来源，否则每条消息都会多一段噪音。
+    const sourceNote = chosen.source === SOURCE_DSH_DEFAULT ? '（跟随 DSH 默认模型）' : '';
+    const effortKey = `${provider}/${model}`;
     let lastError = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        const result = unwrap(await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort }), 'session.selectModel');
+        const request = { sessionId, provider, model };
+        // 不传 reasoningEffort 时 DSH 用模型自己的默认档位；支持思考强度的模型照旧带上管理员设置。
+        if (!modelsWithoutEffort.has(effortKey)) request.reasoningEffort = effort;
+        const result = unwrap(await api.sessions.selectModel(request), 'session.selectModel');
         modelAppliedSessions.set(sessionId, modelSelectionEpoch);
-        log(`已设置会话模型 ${sessionId} -> ${result.selected.provider}/${result.selected.model} (${result.selected.reasoningEffort ?? '默认'})`);
+        log(`已设置会话模型 ${sessionId} -> ${result.selected.provider}/${result.selected.model} (${result.selected.reasoningEffort ?? '默认'})${sourceNote}`);
         return 'applied';
       } catch (error) {
         lastError = error;
-        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${error?.message ?? error}`);
+        const message = String(error?.message ?? error);
+        // 第一次失败若是「模型不支持这个思考强度」，去掉该参数立刻重试一次：
+        // 模型不认 efforts 时传了只会被拒，而档位并非会话模型的必要条件。
+        if (attempt === 1 && /does not support reasoning effort/i.test(message) && !modelsWithoutEffort.has(effortKey)) {
+          modelsWithoutEffort.add(effortKey);
+          log(`模型 ${effortKey} 不支持思考强度 ${effort}，改用模型默认档位（本进程内不再传 reasoningEffort）`);
+          continue;
+        }
+        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${message}`);
         if (attempt < 2) await sleep(1000);
       }
     }
