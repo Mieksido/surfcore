@@ -145,6 +145,75 @@ B站/桌宠各用各的场景；全部手动编辑；角色页醒目说明本次
 重启 DSH/桥接后生效；真实停 SnowLuma 观察零 token 增长需手测。
 
 ---
+### 批次 2026-10-30 21:00 · QQ 工作区跟随 DSH 默认模型
+<!-- release-batch: start=2026-10-30T20:00+08:00 end=2026-10-30T21:15+08:00 commits=未提交（基于 bc851a9） -->
+
+**覆盖提交**：本批尚未提交（编辑会话只改工作区，未 commit）
+**建议**：patch → **0.7.20**（或发布会话当前版本号 +1）
+
+**问题**：`src/bridge.js` 的 `ensureChatModel()` 只读 `config.json → dsh.{provider,model,reasoningEffort}`，
+所以「QQ 聊天」「QQ 黑话学习」两个工作区完全不跟随用户在 DSH 里设的默认模型；更糟的是
+`session.selectModel` 会在后台 `agentDefaultModel.saveSelection()`，于是 QQ 每说一句话就把全局默认改回
+config 值 —— Web GUI 与 QQ 双向拉锯，用户看到的是「默认模型改了等于没改」。
+
+**新增**：
+- `src/dsh-model-follow.js`：`defaultSelectionOf()` / `effectiveChatModel()` 纯逻辑（跟随 / 退 config / 失败原因）；
+- `bridge.ensureChatModel` 跟随 `session.modelCatalog.default`（15s 缓存、3s 超时、失败只记一次日志），
+  日志末尾标「（跟随 DSH 默认模型）」；
+- `config.json → dsh.followDefaultModel`（默认 `true`）+ `POST /api/dsh/follow-default`（写盘失败带
+  `code:'config-write-failed'` 与 `hint`）；
+- `GET /api/dsh/model` 增 `followDefault / modelSource / effectiveReasoningEffort / configProvider /
+  configModel / defaultModel / defaultModelError`；
+- 控制台模型卡片「跟随 DSH 默认模型」勾选 + 来源说明（关闭 / 正在跟随 / 想跟没读到并给原因）。
+
+**未做**：真机日志验证（需重启 QQ 桥接并向机器人发消息）；控制台勾选的真实点击。
+
+**case**：[docs/cases/2026-10-30-qq-workspace-follow-default-model.md](cases/2026-10-30-qq-workspace-follow-default-model.md)
+**坑**：`docs/PITFALLS.md` #90
+**验证**：`node scripts/test-dsh-model-follow.mjs`（9/9，含接线断言）；`npm run test:audit`（本批已加入清单）。
+**交接**：同步 `src/dsh-model-follow.js`、`src/bridge.js`、`public/console.html`、`scripts/test-dsh-model-follow.mjs`、
+`scripts/test-audit.mjs`、`docs/cases/*`、`docs/HANDOFF.md`、`docs/PITFALLS.md`。
+**生效**：`src/bridge.js` 是长驻进程 → **必须重启 QQ 桥接**（`node src/bridge.js`）；`public/console.html` 刷新即可；
+DSH 侧不需要重启。
+
+**可直接转发的交接块**：
+
+```text
+批次 2026-10-30 21:00 · QQ 工作区跟随 DSH 默认模型（建议 0.7.20）
+
+一、改了什么
+1) 新文件 src/dsh-model-follow.js（纯逻辑）
+   - defaultSelectionOf(catalog)：只认 provider+model 都非空，否则 null
+   - effectiveChatModel({followDefault, config, defaultSelection, defaultError})
+     → {provider, model, reasoningEffort, source, overridesConfig, defaultError?}
+   - 常量 SOURCE_DSH_DEFAULT='dsh-default'、SOURCE_CONFIG='config'
+2) src/bridge.js
+   - ensureChatModel：followsDefaultModel() ? await resolveDefaultModel() : null → effectiveChatModel
+   - resolveDefaultModel：session.modelCatalog 的 default，TTL 15s、超时 3s、失败只记一次日志
+   - 日志成功行加「（跟随 DSH 默认模型）」
+   - GET /api/dsh/model 增 followDefault/modelSource/effectiveReasoningEffort/configProvider/configModel/defaultModel/defaultModelError
+   - 新增 POST /api/dsh/follow-default（写 config.json，失败 code:'config-write-failed' + hint）
+3) public/console.html：模型卡片「跟随 DSH 默认模型」勾选 + 来源说明
+4) scripts/test-dsh-model-follow.mjs（9 项）+ 注册进 scripts/test-audit.mjs
+5) 文档：docs/cases/2026-10-30-qq-workspace-follow-default-model.md、案例索引、HANDOFF、PITFALLS #90
+
+二、测了什么、结果
+- node scripts/test-dsh-model-follow.mjs → 9/9
+- node --check src/bridge.js / src/dsh-model-follow.js → 通过
+- npm run test:audit → 见工作区实际输出（本批已加入清单）
+
+三、改动层级与兼容
+- 实现层，无接口语义变化；config.json 新增可选字段 dsh.followDefaultModel（默认 true，缺省即跟随）
+- 关掉开关 = 老的「只读 config」行为，纯回滚
+
+四、失败路径
+- 跟随失败：桥接日志警告带 defaultError，控制台「想跟随但没读到：<原因>」，继续用 config 值
+- 写 config 失败：ok:false + code + hint，控制台勾选弹回并显示红字
+- 以上分支均有断言
+
+五、没验证
+- 真机重启桥接后的日志与控制台勾选点击
+```
 
 ### 批次 2026-10-30 17:20 · 闸门事件中心 + 单轮 L3 止血
 <!-- release-batch: start=2026-10-30T17:20+08:00 end=2026-10-30T17:35+08:00 commits=3a82618 -->

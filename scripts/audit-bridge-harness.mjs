@@ -29,6 +29,10 @@ import * as tokenGuard from '../src/token-guard.js';
 import * as tokenBudget from '../src/token-budget.js';
 import * as turnGuard from '../src/turn-guard.js';
 import * as gateEvents from '../src/gate-events.js';
+// bridge 源码是整段丢进 vm 里跑的：它的 `import` 行被剥掉，靠这里展开成全局名字。
+// 漏加一行的表现是「xxx is not defined」——不是测试断言失败，而是**整条投递链路静默失败**
+// （2026-10-30 加了 dsh-model-follow.js 就踩过：purpose-wiring 等 8 个脚本全红）。
+import * as dshModelFollow from '../src/dsh-model-follow.js';
 import * as adminIdentity from '../src/admin-identity.js';
 import * as questionAnswers from '../src/question-answers.js';
 import * as ownerAudit from '../src/owner-audit.js';
@@ -254,6 +258,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...tokenBudget,
     ...adminIdentity, ...roleCard, ...personaLayers, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
+    ...dshModelFollow,
     ...purposeEngine,
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。

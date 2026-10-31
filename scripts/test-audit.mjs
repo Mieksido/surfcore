@@ -190,6 +190,10 @@ const tests = [
   'test-context-telemetry.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
+  // QQ 工作区跟随 DSH 默认模型（2026-10-30）：跟随 / 读不到退 config / 显式关闭三条分支、
+  // 失败原因必须可见，以及 bridge 的 ensureChatModel 与控制台开关的接线
+  // （否则「Web GUI 改了默认模型，QQ 聊天和黑话学习没反应」会复发）。
+  'test-dsh-model-follow.mjs',
 ];
 let failed = 0;
 for (const test of tests) {
