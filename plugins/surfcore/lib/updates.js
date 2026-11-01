@@ -1191,8 +1191,27 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     };
   }
 
+  /** 清理 N 天前的 staging 残留（成功更新后 helper 只删解压目录，外层 pkg.zip 会留下）。 */
+  function cleanupStaleStaging(maxAgeMs = 3 * 24 * 3600_000) {
+    const root = path.join(stateDir, 'staging');
+    let removed = 0;
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const full = path.join(root, entry.name);
+        try {
+          const st = fs.statSync(full);
+          if (Date.now() - st.mtimeMs > maxAgeMs) { fs.rmSync(full, { recursive: true, force: true }); removed += 1; }
+        } catch {}
+      }
+    } catch {}
+    if (removed) pluginLog(`[updates] 清理 ${removed} 个过期 staging 目录`);
+    return removed;
+  }
+
   async function check({ fetch = true } = {}) {
     if (checking) return status();
+    cleanupStaleStaging();
     try { setGitHubToken(githubToken()); } catch {}
     checking = true;
     try {
@@ -1614,7 +1633,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       for (const item of all) {
         if (!wanted.has(String(item.id))) continue;
         const report = (state.results ?? []).find((row) => row.id === item.id);
-        if (!report?.available) { results.push({ id: item.id, ok: false, error: report?.reason ?? '不可用' }); continue; }
+        if (!report?.available) { results.push({ id: item.id, ok: false, code: 'apply.not-available', error: report?.reason ?? '不可用', hint: '先点「检查更新」确认远端可达' }); continue; }
         if (!report.updateAvailable) { results.push({ id: item.id, ok: true, skipped: true, message: '已是最新' }); continue; }
         if (report.blocked) {
           results.push({
@@ -1626,9 +1645,10 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           continue;
         }
         const blocked = blockedReason(item);
-        if (blocked) { results.push({ id: item.id, ok: false, error: blocked }); continue; }
+        if (blocked) { results.push({ id: item.id, ok: false, code: 'apply.blocked', error: blocked, hint: '按提示处理后再试' }); continue; }
 
-        if (report.channel === 'version') {
+        if (report.channel === 'version' || report.channel === 'dev') {
+          // dev 构建也是 tag 归档：和稳定版走同一条 zip 流水线（校验/暂存/回滚都复用）。
           const done = await updateFromZip(item, report);
           results.push({ id: item.id, ...done });
           continue;
@@ -1674,13 +1694,34 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           continue;
         }
 
-        const merged = await fastForwardComponent({ ...item, branch: report.branch });
-        if (!merged.ok) { results.push({ id: item.id, ok: false, error: merged.error }); continue; }
+        // 兼容非常老的检查结果（没有 channel 字段）：那时只有 git 组件。
+        if (!report.channel) {
+          const merged = await fastForwardComponent({ ...item, branch: report.branch });
+          if (!merged.ok) {
+            results.push({
+              id: item.id, ok: false, code: 'apply.git-failed',
+              error: merged.error,
+              hint: /ENOENT/.test(String(merged.error))
+                ? '本机没有 git 命令：zip 安装不该走 git 更新（插件缺陷，请反馈）；可手动下载 zip 覆盖'
+                : '先处理本地改动/网络后重试',
+            });
+            continue;
+          }
+          results.push({
+            id: item.id, ok: true, from: report.local, to: merged.head,
+            message: `${report.name} 已更新（${report.behind} 个提交）`,
+            restart: String(item.id).startsWith('surfvoice') ? '重启对应语音服务' : (item.id === 'surfcore' ? '重启 DSH' : '重启对应组件'),
+          });
+          continue;
+        }
+
+        // 有 channel 但没有对应应用逻辑 = 插件缺陷；绝不能猜成 git merge。
         results.push({
-          id: item.id, ok: true, from: report.local, to: merged.head,
-          message: `${report.name} 已更新（${report.behind} 个提交）`,
-          restart: String(item.id).startsWith('surfvoice') ? '重启对应语音服务' : (item.id === 'surfcore' ? '重启 DSH' : '重启对应组件'),
+          id: item.id, ok: false, code: 'apply.unknown-channel',
+          error: `更新通道「${report.channel}」没有对应的应用逻辑`,
+          hint: '这是插件缺陷：请把这条诊断反馈开发者；可先手动下载该版本 zip 覆盖',
         });
+        continue;
       }
       // 更新完再体检一次，让界面拿到最新状态
       await check({ fetch: false });

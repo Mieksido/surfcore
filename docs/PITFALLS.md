@@ -3262,3 +3262,12 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **修法**（0.8.7 前 dev）：新增 `--qbw-*` 语义层映射 DSH light/dark token；弹窗成对声明 surface/text；
   状态色用 color-mix 与正文色混合；补 hover/focus/disabled；新增 `test-theme-tokens` 约束。
 - **教训**：有 light/dark 主题就必须成对声明“表面 + 前景”；引用 token 前先确认它真实存在。
+
+## dev 通道点更新 → spawn git ENOENT（apply 不认 dev channel）
+
+- **现象**：dev 包点「立即更新」1 秒失败，`apply.failed` / `spawn git ENOENT` / hint 为空。
+- **根因**：check 返回 `channel:"dev"`，apply 的 if 链只认 version/release/git → 落到 git merge 兜底；
+  失败对象没 code/hint，记账回落 `apply.failed`。
+- **修法**（0.8.6-dev.4）：dev 与 version 共用 zip 流水线；未知 channel 明确 `apply.unknown-channel`；
+  git 失败补 `apply.git-failed`；helper 清理外层 staging（pkg.zip 残留）。
+- **教训**：多态字段（channel）必须在“检查侧 + 应用侧”同时扩展；兜底不能选破坏性最强的分支。

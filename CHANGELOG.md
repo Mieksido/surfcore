@@ -1,3 +1,9 @@
+## [0.8.6-dev.4] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 ## [0.8.6-dev.3] - 2026-11-01
 
 ### dev 测试构建
@@ -51,6 +57,16 @@
 - 76 个硬编码色 token 化；状态文字用 `color-mix(状态色, 正文色)` 保证可读；
 - 补 `qbw-btn2/btn3` hover、按钮 focus-visible、统一 disabled、`select option` 主题色；
 - 新增 `scripts/test-theme-tokens.mjs`：token 白名单、禁止空变量、弹窗成对颜色、WCAG fallback 计算。
+
+## [Unreleased]
+
+### 修复（dev 通道点更新报 spawn git ENOENT）
+
+- `apply()` 支持 `channel: "dev"`：与稳定版共用 zip 流水线（下载 tag 归档 → 清单校验 → 暂存 → 回滚）；
+- 未知 channel 返回 `apply.unknown-channel`（带 hint），只有旧数据（没有 channel）才走 git 兜底；
+- git 失败补 `apply.git-failed`；`not-available` / `blocked` 也补 code/hint；
+- 成功更新后 helper 删除外层 `staging/<id>-<stamp>/`（不再每次残留 7~12.5MB 的 pkg.zip）；
+- `check()` 清理 3 天前的 staging。
 
 ## [0.8.6] - 2026-11-01
 

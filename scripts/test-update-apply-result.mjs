@@ -22,12 +22,12 @@ function makeTarget(name, version = '0.6.22', { withMeta = false } = {}) {
   return dir;
 }
 
-function makeZip({ withManifest = true, extraMissing = [], corrupt = [] } = {}) {
+function makeZip({ withManifest = true, extraMissing = [], corrupt = [], version = '0.7.0' } = {}) {
   const src = path.join(base, 'zip-src', 'surfcore-main');
   fs.rmSync(path.join(base, 'zip-src'), { recursive: true, force: true });
   fs.mkdirSync(path.join(src, 'plugins', 'surfcore'), { recursive: true });
-  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ name: 'surfcore', version: '0.7.0' }));
-  fs.writeFileSync(path.join(src, 'plugins', 'surfcore', 'package.json'), JSON.stringify({ name: 'surfcore-plugin', version: '0.7.0' }));
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ name: 'surfcore', version }));
+  fs.writeFileSync(path.join(src, 'plugins', 'surfcore', 'package.json'), JSON.stringify({ name: 'surfcore-plugin', version }));
   if (withManifest) {
     const files = {};
     const walk = (dir, rel = '') => {
@@ -41,7 +41,7 @@ function makeZip({ withManifest = true, extraMissing = [], corrupt = [] } = {}) 
     fs.mkdirSync(path.join(src, 'release'), { recursive: true });
     for (const rel of extraMissing) files[rel] = '0'.repeat(64);
     for (const rel of corrupt) if (files[rel]) files[rel] = 'f'.repeat(64);
-    fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), JSON.stringify({ schemaVersion: 1, version: '0.7.0', files }));
+    fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), JSON.stringify({ schemaVersion: 1, version, files }));
   }
   const zip = path.join(base, 'pkg.zip');
   execFileSync('powershell', ['-NoProfile', '-Command',
@@ -627,6 +627,67 @@ try {
       await svc.check({ fetch: true });
       ok(devProbes === 0, 'main 通道不探测 dev 预发布（不会被 dev 弹窗打扰）', String(devProbes));
     } finally { restore(); }
+  }
+
+
+  // 12) dev 通道必须走 zip，不能落到 git merge（2026-11-01 测试机反馈 spawn git ENOENT）
+  {
+    const dir = makeTarget('dev-apply', '0.8.6-dev.2', { withMeta: true });
+    const devZip = makeZip({ version: '0.8.6-dev.3' });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([{ tag_name: 'v0.8.6-dev.3', prerelease: true }]), { status: 200 });
+      }
+      if (u.includes('/zip/refs/tags/') || u.includes('/archive/')) return new Response(devZip, { status: 200 });
+      if (u.includes('/contents/package.json')) {
+        const content = Buffer.from(JSON.stringify({ version: '0.8.6-dev.3' }), 'utf8').toString('base64');
+        return new Response(JSON.stringify({ content }), { status: 200 });
+      }
+      return undefined;
+    });
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const r = await svc.apply(['surfcore']);
+      const row = r.results[0];
+      ok(row.ok === true && row.staged === true, 'dev 通道走 zip 并成功排队', JSON.stringify(row));
+      ok(row.code !== 'apply.git-failed', '不再走 git merge', String(row.code));
+      const last = svc.status().lastApply;
+      ok(!last || last.code !== 'apply.failed', '不再回落 apply.failed', JSON.stringify(last));
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
+  // 13) 未知 channel 必须有结构化分支（apply 会先重新检查，直接构造 results 会被覆盖，
+  //     这里用静态契约 + 运行时代码检查，防止以后又落到 git merge）
+  {
+    const source = fs.readFileSync(path.resolve('plugins/surfcore/lib/updates.js'), 'utf8');
+    ok(source.includes("code: 'apply.unknown-channel'"), '未知 channel 有 apply.unknown-channel');
+    ok(source.includes("if (report.channel === 'version' || report.channel === 'dev')"), 'dev 和 version 共用 zip 流水线');
+    ok(source.includes('if (!report.channel) {'), '只有旧数据（没有 channel）才走 git 兜底');
+  }
+
+  // 14) 3 天前的 staging 会被清理（pkg.zip 残留）
+  {
+    const dir = makeTarget('staging-clean', '0.8.6', { withMeta: true });
+    const stateDir = path.join(dir, '.state');
+    const old = path.join(stateDir, 'staging', 'surfcore-old');
+    fs.mkdirSync(old, { recursive: true });
+    fs.writeFileSync(path.join(old, 'pkg.zip'), 'x');
+    const past = Date.now() - 4 * 24 * 3600_000;
+    fs.utimesSync(old, new Date(past), new Date(past));
+    const svc = createUpdatesService({
+      stateDir,
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+    });
+    await svc.check({ fetch: false });
+    ok(!fs.existsSync(old), '过期 staging 目录被清理');
   }
 
 } finally {

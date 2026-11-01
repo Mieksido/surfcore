@@ -37,6 +37,8 @@
 - **公开仓库/镜像只同步 `main`**：zip 用户不会拿到半成品；`dev` 留在本地（需要给志愿者测试时发 **GitHub Pre-release**，`/releases/latest` 天然忽略它）。
 - **发 dev 构建**：在 `dev` 上运行 `GH_TOKEN=... node scripts/publish-dev.mjs --yes`（版本 `X.Y.Z-dev.N`，只发 Pre-release，不碰 main）；
   测试机切通道与验收清单见 [`docs/guides/DEV-TESTING.md`](docs/guides/DEV-TESTING.md)。
+- **任何发布前必须先问用户（含 dev Pre-release）**：把「版本号 / 改了什么 / 影响谁 / 验证结果」列出来，
+  等用户明确说“发”再执行；**不允许**自己决定发版或用 `--yes` 跳过确认（2026-11-01 用户要求）。
 - 两边不要同时跑 `git` 写操作（会撞 `index.lock`）。
 
 **判断标准**：用户可见的行为变化才需要进稳定版；纯重构/文档/实验性改动留在 dev 攒着。

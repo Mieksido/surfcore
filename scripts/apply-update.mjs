@@ -171,6 +171,13 @@ try {
   }
   log(`[apply-update] 完成并验证：${pending.component} → v${actualVersion}`);
   try { fs.rmSync(pending.staging, { recursive: true, force: true }); } catch {}
+  // 外层 staging/<id>-<stamp>/ 里还有 pkg.zip：只删解压目录会每次成功更新残留 7~12.5MB
+  // （2026-11-01 用户反馈）。只删 stateDir/staging 直接子目录，防止误删别处。
+  try {
+    const stagingRoot = path.resolve(path.join(path.dirname(pendingFile), 'staging'));
+    const parent = path.resolve(path.dirname(pending.staging));
+    if (parent.startsWith(stagingRoot + path.sep)) fs.rmSync(parent, { recursive: true, force: true });
+  } catch {}
   try { fs.rmSync(pendingFile, { force: true }); } catch {}
   try { fs.rmSync(`${pendingFile}.started`, { force: true }); } catch {}
   try {
