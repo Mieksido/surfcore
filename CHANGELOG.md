@@ -1,8 +1,21 @@
+## [0.8.6-dev.2] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 # 更新日志
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
+
+## [0.8.6-dev.1] - 2026-11-01
+
+### dev 测试构建
+
+- 首个 dev 构建（Pre-release）：更新通道 stable/dev、DSH 注册修复按钮、dev 发布链路；
+- 仅测试机使用；稳定用户不受影响。
 
 ## [Unreleased]
 
@@ -12,8 +25,6 @@
   后端执行 `scripts/setup-dsh.mjs` 并回显输出；**不会自动重启 DSH**，点完需完全退出重开；
 - L2 `dsh-profile-mcp-missing` 弹窗直接带「修复 DSH 注册」按钮；
 - 失败路径结构化（METHOD/BODY/PROFILE/SCRIPT_MISSING/FAILED，均带 hint）；只接受 POST、只由点击触发。
-
-## [Unreleased]
 
 ### 新增（更新通道 stable / dev + 测试版发布链路）
 

@@ -35,6 +35,8 @@
   2. 热修（安全/数据丢失/完全不可用）从 `main` 切 `hotfix/*`，修完立即 patch，再回并 `dev`。
 - **发布会话流程**：`git checkout main` → 合并 dev → **现读** `git status/log/package.json` → 跑三条门禁（见 §1.8）→ bump/commit/tag/Release → **把 main 合回 dev**。
 - **公开仓库/镜像只同步 `main`**：zip 用户不会拿到半成品；`dev` 留在本地（需要给志愿者测试时发 **GitHub Pre-release**，`/releases/latest` 天然忽略它）。
+- **发 dev 构建**：在 `dev` 上运行 `GH_TOKEN=... node scripts/publish-dev.mjs --yes`（版本 `X.Y.Z-dev.N`，只发 Pre-release，不碰 main）；
+  测试机切通道与验收清单见 [`docs/guides/DEV-TESTING.md`](docs/guides/DEV-TESTING.md)。
 - 两边不要同时跑 `git` 写操作（会撞 `index.lock`）。
 
 **判断标准**：用户可见的行为变化才需要进稳定版；纯重构/文档/实验性改动留在 dev 攒着。

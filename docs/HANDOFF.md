@@ -5,6 +5,39 @@
 
 ---
 
+## 快照：2026-11-01 14:10（dev/main 双分支 + dev 更新通道）
+
+### 当前事实
+
+- **分支**：`dev` 是集货区（日常提交）；`main` 固定为已发布的 `0.8.6`。
+- **稳定版**：`0.8.6`（Release 标题 `SurfCore v0.8.6`）；`/releases/latest` 仍是它。
+- **dev 构建**：`0.8.6-dev.1` 已发为 **Pre-release**（tag `v0.8.6-dev.1`，commit `5a74a32`），
+  公开仓库新增 `dev` 分支；稳定用户不受影响。
+- **本地 dev HEAD**：`1cf84fd build(dev): v0.8.6-dev.1`；版本号 `0.8.6-dev.1`。
+- **测试**：`npm run test:audit` **109/109**；插件测试全绿；清单 570 files、`--verify-ref HEAD` 问题 0。
+
+### 本批内容（都在 dev，未进稳定版）
+
+- 更新器 `updates.channel`：`stable`（默认，只跟正式 Release）/ `dev`（只跟 `-dev.N` Pre-release）；
+- 设置页「检查更新」下面单选 **main / dev**；切回 main 会清空旧检查结果，不被 dev 弹窗打扰；
+- 版本规则 `X.Y.Z-dev.N`（同号下低于正式版；正式版切 dev 允许一次 `channel-switch`）；
+- `scripts/publish-dev.mjs`：dev 分支 tag + Pre-release，过清单门禁，不碰 main；
+- 控制台「DSH 注册（MCP / bundle）」修复按钮 + L2 弹窗按钮（`POST /dsh/repair`）；
+- 缺 MCP 的建议改为“宿主机终端执行（模型没有本地工具）”。
+
+### 下一批发布（稳定版）
+
+- 建议 **0.8.7（patch）**：`git checkout main && git merge --no-ff dev` → 三条门禁 → bump/tag/Release → main 合回 dev；
+- 发布前先让测试机用 dev 通道跑一轮（清单见 `docs/guides/DEV-TESTING.md`）。
+
+### 未验证 / 风险
+
+- dev 通道从 **0.8.6 正式版切到 0.8.6-dev.1** 的实际安装路径尚未在真实测试机跑过（第一次要手测）；
+- `publish-dev.mjs` 目前是**全量上传**（627 个 blob，约 1 分钟），后续可做增量；
+- 公开 `dev` 分支会随每次 dev 构建出现，但没有 Release，稳定用户看不到。
+
+---
+
 ## 快照：2026-10-31 09:55（对齐 v0.7.22 + 人格分层）
 
 ### 当前事实

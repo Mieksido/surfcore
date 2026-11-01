@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
-const SEMVER = /^\d+\.\d+\.\d+(?:-(?:rc|beta|alpha)\.\d+)?$/;
+const SEMVER = /^\d+\.\d+\.\d+(?:-(?:rc|beta|alpha|dev)\.\d+)?$/;
 
 const pkg = read(path.join(root, 'package.json'));
 assert.match(pkg.version, SEMVER, `根 package.json 版本不是 semver：${pkg.version}`);

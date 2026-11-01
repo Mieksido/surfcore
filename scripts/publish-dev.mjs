@@ -50,6 +50,7 @@ if (git('status', '--porcelain')) fail('工作区不干净：先提交或 stash�
 
 const rootPkgPath = path.join(dir, 'package.json');
 const pluginPkgPath = path.join(dir, 'plugins', 'surfcore', 'package.json');
+const readmePath = path.join(dir, 'README.md');
 const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, 'utf8'));
 const core = String(rootPkg.version || '').split('-')[0];
 if (!/^\d+\.\d+\.\d+$/.test(core)) fail(`当前版本不是 x.y.z：${rootPkg.version}`);
@@ -72,7 +73,22 @@ fs.writeFileSync(rootPkgPath, `${JSON.stringify(rootPkg, null, 2)}\n`, 'utf8');
 const pluginPkg = JSON.parse(fs.readFileSync(pluginPkgPath, 'utf8'));
 pluginPkg.version = devVersion;
 fs.writeFileSync(pluginPkgPath, `${JSON.stringify(pluginPkg, null, 2)}\n`, 'utf8');
-git('add', 'package.json', 'plugins/surfcore/package.json');
+// README 顶部版本也要跟着走，否则 test-version 会拦（0.8.6 → 0.8.6-dev.N）
+try {
+  const readme = fs.readFileSync(readmePath, 'utf8');
+  const nextReadme = readme.replace(/(\|\s*版本\s*\|\s*`)[^`]+(`\s*\|)/, `$1${devVersion}$2`);
+  if (nextReadme !== readme) fs.writeFileSync(readmePath, nextReadme, 'utf8');
+} catch {}
+// CHANGELOG 也要为 dev 版本建小节，否则 test-version 会拦（它要求当前版本有记录）
+try {
+  const changelogPath = path.join(dir, 'CHANGELOG.md');
+  const cl = fs.readFileSync(changelogPath, 'utf8');
+  if (!cl.includes(`## [${devVersion}]`)) {
+    const section = `## [${devVersion}] - ${new Date().toLocaleDateString('sv-SE')}\n\n### dev 测试构建\n\n- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。\n\n`;
+    fs.writeFileSync(changelogPath, section + cl, 'utf8');
+  }
+} catch {}
+git('add', 'package.json', 'plugins/surfcore/package.json', 'README.md', 'CHANGELOG.md');
 git('-c', 'core.safecrlf=false', 'commit', '-q', '-m', `build(dev): ${tag}`);
 execFileSync(process.execPath, ['scripts/release-manifest.mjs'], { cwd: dir, stdio: 'inherit' });
 git('add', 'release/install-manifest.json');
