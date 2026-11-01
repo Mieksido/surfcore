@@ -12472,7 +12472,7 @@ async function main() {
     return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
   }
 
-  function roleHintForMode(mode, key = '', personaMode = 'full') {
+  function roleHintForMode(mode, key = '', personaMode = 'full', opts = {}) {
     const core = roleRawContent();
     const sceneId = personaSceneFromKey(key);
     const scene = sceneId ? readPersonaLayerText('scene', sceneId) : '';
@@ -12483,6 +12483,9 @@ async function main() {
       core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
     });
     const base = composed.text || '';
+    // personaOnly：只要人格卡正文（唤醒提示词用）。管理员规则 / B站简报 / 记忆卡
+    // 唤醒侧自己已经各拼过一遍，这里再拼会让同一段内容在一张纸条上出现两次。
+    if (opts.personaOnly) return base;
     // B站记忆单独追加：不受人格卡 6000 字上限影响（上限只保护角色卡本身）。
     // 这样群友问起 B 站经历时，她知道那就是自己的 B站账号，而不是“另一个人”。
     const biliBrief = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
@@ -13513,9 +13516,32 @@ async function main() {
     }
   }
 
+  // 唤醒提示词里的「随身身份证」。
+  // 背景（2026-11-01）：以前这里只有一句「完整角色卡请调用 qq_get_prompt 查看」，
+  // 实测模型几乎不调这个工具（state/tool-calls.jsonl：1830 次工具调用里只有 10 次，
+  // 2026-11-01 当天 0 次），于是「她不知道自己是谁」成了常态。
+  // 现在改走 A1：唤醒侧直接印一份人格卡正文，和 qq_get_prompt 同源
+  // （都经 composePersonaLayers 组装），不是手抄两遍 —— 改卡不会漂。
+  // 预算沿用 role.maxInjectChars（默认 6000 字）；全量 / 场景语气 / 推荐值仍由工具提供。
+  function personaWakeBlockV2(key) {
+    const roleState = readRoleState();
+    let card = '';
+    try {
+      card = roleHintForMode('v2', key, 'full', { personaOnly: true });
+    } catch (error) {
+      log(`唤醒人格卡组装失败（降级为指针）：${error?.message ?? error}`);
+    }
+    if (!card) {
+      // 没有卡（角色名为空 / 文件读不到）时保持旧行为，至少给个指针。
+      return roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    }
+    const name = roleState.role || '（未命名角色）';
+    return `【当前角色】${name}\n${card}\n（完整角色卡 / 场景语气 / 推荐值 / 可用工具：可调用 qq_get_prompt 查看）\n\n`;
+  }
+
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    const roleLine = personaWakeBlockV2(key);
     // B站 记忆简报关掉时（biliBridge.memory.enabled=false），B站 侧的自我锚点会整段消失；
     // 那时补一份自我卡，保证「认得自己的 B站 主页」不依赖记忆同步开关。
     const biliMemoryOn = Boolean(cfg.biliBridge?.enabled) && cfg.biliBridge?.memory?.enabled !== false;
@@ -13598,7 +13624,8 @@ async function main() {
     // 后续唤醒不再带它 —— 那时它已经在这条 DSH 会话的上下文里了。
     const initialPromptText = reason === 'bootstrap' ? formatInitialPromptV2(key) : '';
     const initialPromptLine = initialPromptText ? `${initialPromptText}\n\n` : '';
-    // 二代模式不自动注入完整角色卡（让 AI 调 qq_get_prompt），但 B 站记忆必须每轮都在：
+    // 人格卡正文由 personaWakeBlockV2 在最前统一注入（2026-11-01 改：以前只给指针，
+    // 模型基本不调 qq_get_prompt，等于不知道自己是谁）；这里仍保证 B 站记忆每轮都在：
     // 否则群友问起「B站那个号」时，它会把自己当成另一个人。
     const biliBrief = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.briefBlock()
@@ -13662,8 +13689,7 @@ async function main() {
   }
 
   function buildWakeReminderPromptV2(key) {
-    const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    const roleLine = personaWakeBlockV2(key);
     const identityLine = selfIdentityTextV2();
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;

@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 const args = process.argv.slice(2);
 const repoArg = args.find((a) => a.includes('/')) || 'Mieksido/surfcore';
 const yes = args.includes('--yes');
+const existing = args.includes('--existing'); // 重试上传时用：HEAD 已是 build(dev)
 const token = process.env.GH_TOKEN;
 if (!token) { console.error('缺少 GH_TOKEN'); process.exit(2); }
 
@@ -24,7 +25,7 @@ const dir = process.cwd();
 const git = (...argv) => execFileSync('git', argv, { cwd: dir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).trim();
 const gitBuf = (...argv) => execFileSync('git', argv, { cwd: dir, maxBuffer: 256 * 1024 * 1024 });
 
-async function api(method, urlPath, body) {
+async function apiOnce(method, urlPath, body) {
   const res = await fetch(`https://api.github.com${urlPath}`, {
     method,
     headers: {
@@ -43,6 +44,23 @@ async function api(method, urlPath, body) {
   return json;
 }
 
+async function api(method, urlPath, body) {
+  let lastError = null;
+  const MAX = 6;
+  for (let attempt = 1; attempt <= MAX; attempt += 1) {
+    try { return await apiOnce(method, urlPath, body); }
+    catch (error) {
+      lastError = error;
+      const msg = String(error?.message ?? error);
+      if (/already exists/i.test(msg)) throw error;
+      const secondary = /secondary rate limit|abuse detection/i.test(msg);
+      console.log(`  ! ${method} ${urlPath} 第 ${attempt}/${MAX} 次失败：${msg.slice(0, 120)}`);
+      if (attempt < MAX) await new Promise((r) => setTimeout(r, secondary ? 60_000 : 2_000 * attempt));
+    }
+  }
+  throw lastError;
+}
+
 function fail(msg) { console.error(`✗ ${msg}`); process.exit(1); }
 
 if (git('rev-parse', '--abbrev-ref', 'HEAD') !== 'dev') fail('必须在 dev 分支上发布 dev 构建');
@@ -53,6 +71,10 @@ const pluginPkgPath = path.join(dir, 'plugins', 'surfcore', 'package.json');
 const readmePath = path.join(dir, 'README.md');
 const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, 'utf8'));
 const core = String(rootPkg.version || '').split('-')[0];
+if (existing) {
+  const verifyExisting = execFileSync(process.execPath, ['scripts/release-manifest.mjs', '--verify-ref', 'HEAD'], { cwd: dir, encoding: 'utf8' });
+  if (!/问题 0 个/.test(verifyExisting)) fail(`清单校验失败：\n${verifyExisting}`);
+}
 if (!/^\d+\.\d+\.\d+$/.test(core)) fail(`当前版本不是 x.y.z：${rootPkg.version}`);
 
 const releases = await api('GET', `/repos/${repoArg}/releases?per_page=100`);
@@ -62,12 +84,13 @@ for (const r of Array.isArray(releases) ? releases : []) {
   if (m) maxN = Math.max(maxN, Number(m[1]));
 }
 const nextN = maxN + 1;
-const devVersion = `${core}-dev.${nextN}`;
+const devVersion = existing ? String(rootPkg.version) : `${core}-dev.${nextN}`;
 const tag = `v${devVersion}`;
 console.log(`将发布 ${tag}（base ${core}，上一个 dev #${maxN}）`);
 if (!yes) console.log('（加 --yes 直接执行；本脚本会改 package.json 并提交到 dev）');
 
-// 1) 改版本 → 提交 → 从 HEAD 生成清单 → amend
+// 1) 改版本 → 提交 → 从 HEAD 生成清单 → amend（--existing 时跳过）
+if (!existing) {
 rootPkg.version = devVersion;
 fs.writeFileSync(rootPkgPath, `${JSON.stringify(rootPkg, null, 2)}\n`, 'utf8');
 const pluginPkg = JSON.parse(fs.readFileSync(pluginPkgPath, 'utf8'));
@@ -97,6 +120,7 @@ git('-c', 'core.safecrlf=false', 'commit', '-q', '--amend', '--no-edit');
 // 2) 本地校验
 const verify = execFileSync(process.execPath, ['scripts/release-manifest.mjs', '--verify-ref', 'HEAD'], { cwd: dir, encoding: 'utf8' });
 if (!/问题 0 个/.test(verify)) fail(`清单校验失败：\n${verify}`);
+}
 
 // 3) 全量上传（dev 分支不走 --since：本地没有远端 dev 树对象）
 const refMain = await api('GET', `/repos/${repoArg}/git/ref/heads/main`).catch(() => null);
@@ -106,15 +130,24 @@ if (!parent) fail('远端既没有 dev 也没有 main 分支');
 
 const files = git('-c', 'core.quotePath=false', 'ls-files').split(/\r?\n/).filter(Boolean);
 console.log(`上传 ${files.length} 个文件…`);
-const entries = [];
-let i = 0;
-for (const rel of files) {
-  const buf = gitBuf('show', `HEAD:${rel}`);
-  const blob = await api('POST', `/repos/${repoArg}/git/blobs`, { content: buf.toString('base64'), encoding: 'base64' });
-  entries.push({ path: rel, mode: '100644', type: 'blob', sha: blob.sha });
-  i += 1;
-  if (i % 100 === 0) console.log(`  …${i}/${files.length}`);
+const entries = new Array(files.length);
+let doneCount = 0;
+let cursor = 0;
+async function uploadOne() {
+  while (true) {
+    const i = cursor;
+    cursor += 1;
+    if (i >= files.length) return;
+    const rel = files[i];
+    const buf = gitBuf('show', `HEAD:${rel}`);
+    const blob = await api('POST', `/repos/${repoArg}/git/blobs`, { content: buf.toString('base64'), encoding: 'base64' });
+    entries[i] = { path: rel, mode: '100644', type: 'blob', sha: blob.sha };
+    await new Promise((r) => setTimeout(r, 150));
+    doneCount += 1;
+    if (doneCount % 50 === 0) console.log(`  …${doneCount}/${files.length}`);
+  }
 }
+await Promise.all(Array.from({ length: 2 }, () => uploadOne()));
 const tree = await api('POST', `/repos/${repoArg}/git/trees`, { tree: entries });
 const commit = await api('POST', `/repos/${repoArg}/git/commits`, {
   message: `build(dev): ${tag}`,

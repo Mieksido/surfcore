@@ -221,6 +221,8 @@ const tests = [
   'test-billing-service.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
+  // 唤醒人格卡注入：二代唤醒必须带人格卡正文，且与 qq_get_prompt 同源（2026-11-01 A1）。
+  'test-persona-wake-injection.mjs',
 ];
 let failed = 0;
 for (const test of tests) {
