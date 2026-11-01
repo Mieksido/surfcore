@@ -482,6 +482,13 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
   };
 }
 
+function sameDirectory(left, right) {
+  try {
+    const a = fs.realpathSync(left), b = fs.realpathSync(right);
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch { return false; }
+}
+
 export async function inspectComponent(component, opts = {}) {
   const kind = String(component?.kind ?? '').trim();
   if (kind === 'release') return inspectReleaseComponent(component, opts);
@@ -498,7 +505,7 @@ export async function inspectComponent(component, opts = {}) {
     const inside = await runGit(['-C', dir, 'rev-parse', '--is-inside-work-tree']);
     const top = inside.ok ? await runGit(['-C', dir, 'rev-parse', '--show-toplevel']) : { ok: false };
     const isOwnRepo = inside.ok && inside.stdout.trim() === 'true'
-      && top.ok && path.resolve(top.stdout.trim()).toLowerCase() === path.resolve(dir).toLowerCase();
+      && top.ok && sameDirectory(top.stdout.trim(), dir);
     if (isOwnRepo) return inspectGitComponent(component, opts);
   }
   if (component?.versionUrl) return inspectReleaseComponent(component, opts);
@@ -547,7 +554,7 @@ export async function inspectGitComponent(component, { fetch = true } = {}) {
   // 必须要求“仓库根就是这个目录”，否则会把语音包当成本体仓库、显示同样的提交列表（2026-10-28 反馈）。
   const top = await runGit(['-C', dir, 'rev-parse', '--show-toplevel']);
   const topDir = top.ok ? path.resolve(top.stdout.trim()) : '';
-  if (!topDir || topDir.toLowerCase() !== path.resolve(dir).toLowerCase()) {
+  if (!topDir || !sameDirectory(topDir, dir)) {
     return { ...base, available: false, reason: '目录在别的 git 仓库里（不是它自己的仓库），改用版本/提交比对' };
   }
   const remoteUrl = await runGit(['-C', dir, 'remote', 'get-url', 'origin']);
@@ -1353,8 +1360,12 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       pluginLog(`[updates] 下载完成：${(downloaded.bytes / 1024 / 1024).toFixed(2)} MB，${(downloaded.elapsedMs / 1000).toFixed(1)} 秒（${downloaded.url}）`);
       try {
         await new Promise((resolve, reject) => {
-          execFile('powershell', ['-NoProfile', '-Command',
-            `Expand-Archive -LiteralPath '${zipFile}' -DestinationPath '${stagingRoot}' -Force`],
+          const windows = process.platform === 'win32';
+          const command = windows ? 'powershell' : 'unzip';
+          const args = windows
+            ? ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${zipFile.replaceAll("'", "''")}' -DestinationPath '${stagingRoot.replaceAll("'", "''")}' -Force`]
+            : ['-o', '-q', zipFile, '-d', stagingRoot];
+          execFile(command, args,
           { windowsHide: true, timeout: 120_000 }, (error) => (error ? reject(error) : resolve()));
         });
       } catch (error) {

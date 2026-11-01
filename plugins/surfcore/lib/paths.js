@@ -11,7 +11,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const HOME = process.env.USERPROFILE || os.homedir();
+export const HOME = process.platform === 'win32'
+  ? (process.env.USERPROFILE || os.homedir())
+  : os.homedir();
 export const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh');
 export const STATE_DIR = path.join(DSH_HOME, 'surfcore');
 export const BACKUP_DIR = path.join(STATE_DIR, 'backups');
@@ -87,8 +89,9 @@ export const PLATFORM_DIR = path.join(PLUGIN_ROOT, 'platforms');
 export const EXTENSIONS_DIR = path.join(PLUGIN_ROOT, 'extensions');
 
 export function ensureDirs() {
-  for (const dir of [STATE_DIR, BACKUP_DIR, MEMORY_DIR, MEMORY_DIR, QQ_STATE_DIR, BILI_DIR]) {
-    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  for (const dir of [STATE_DIR, BACKUP_DIR, MEMORY_DIR, QQ_STATE_DIR, BILI_DIR]) {
+    // 新目录私有化；不强制 chmod 已存在的目录。
+    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
   }
 }
 
@@ -110,7 +113,9 @@ export function maskPath(input) {
   let text = String(input ?? '');
   try {
     if (DSH_HOME) text = text.split(DSH_HOME).join('$DSH_HOME');
-    if (HOME) text = text.split(HOME).join('%USERPROFILE%');
+    if (HOME) text = text.split(HOME).join(
+      process.platform === 'win32' ? '%USERPROFILE%' : '$HOME'
+    );
     text = text.replace(/[A-Za-z]:\\Users\\[^\\/]+/g, '%USERPROFILE%');
   } catch {}
   return text;

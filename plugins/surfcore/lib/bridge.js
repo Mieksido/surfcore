@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { spawnDetached } from './spawn-detached.js';
+import { inspectLinuxBridgePid } from './linux-bridge-identity.js';
 import {
   BRIDGE_SUPERVISOR_LOG, QQBOT_ROOT, QQ_CONFIG, QQ_LOCK_FILE, QQ_STATE_DIR,
   findNodeExe,
@@ -178,15 +180,28 @@ export async function start({ dshWebUrl = '' } = {}) {
   if (!/^node(\.exe)?$/i.test(path.basename(String(nodeExe)))) {
     return { ok: false, error: `找不到真正的 node.exe（当前解析到 ${nodeExe}）` };
   }
-  const child = spawn(nodeExe, [path.join(QQBOT_ROOT, 'src', 'bridge.js')], {
-    cwd: QQBOT_ROOT,
-    env,
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.unref();
-  appendSupervisorLog(`已请求启动 bridge.js（无窗口，pid ${child.pid ?? '?'}，DSH=${env.DSH_WEB_URL ?? 'config'}）`);
+  const launch = await spawnDetached(
+    nodeExe,
+    [path.join(QQBOT_ROOT, 'src', 'bridge.js')],
+    {
+      cwd: QQBOT_ROOT,
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }
+  );
+
+  if (!launch.ok) {
+    const error = `无法启动 QQ 桥接进程：${launch.error}`;
+    appendSupervisorLog(error);
+    return { ok: false, error, log: BRIDGE_SUPERVISOR_LOG };
+  }
+
+  appendSupervisorLog(
+    `已请求启动 bridge.js（无窗口，pid ${launch.pid ?? '?'}，DSH=${env.DSH_WEB_URL ?? 'config'}）`
+  );
+
   // 等最多 12 秒
   for (let i = 0; i < 24; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -234,15 +249,80 @@ export async function stop() {
     }
     return { ok: stopped, ...result, stopped, message: stopped ? '桥接已停止' : '停止脚本跑完了，但端口仍在监听' };
   }
-  const pid = lockPid();
-  if (pid && pidAlive(pid)) {
-    try { process.kill(pid); } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
+  // Windows 停止逻辑在前面保留原样。
+  // Linux 必须确认锁文件 PID 的身份才能发送 SIGTERM。
+  if (process.platform !== 'linux') {
+    return {
+      ok: false,
+      error: '当前平台尚未实现安全停止流程',
+    };
   }
+
+  const pid = lockPid();
+  if (!pid) {
+    return {
+      ok: false,
+      error: '缺少桥接锁文件 PID，拒绝停止未知进程',
+    };
+  }
+
+  const options = {
+    root: QQBOT_ROOT,
+    nodeExecutable: findNodeExe(),
+  };
+
+  const identity = inspectLinuxBridgePid(pid, options);
+
+  if (!identity.ok) {
+    return {
+      ok: false,
+      error: `拒绝停止：无法确认桥接进程身份（${identity.reason}）`,
+    };
+  }
+
+  // 发送信号前再次验证，降低锁文件变化及 PID 复用风险。
+  if (lockPid() !== pid) {
+    return {
+      ok: false,
+      error: '桥接锁文件已变化，取消停止操作',
+    };
+  }
+
+  const latest = inspectLinuxBridgePid(pid, options);
+
+  if (!latest.ok || latest.startTicks !== identity.startTicks) {
+    return {
+      ok: false,
+      error: '桥接进程身份或启动时间已变化，取消停止操作',
+    };
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (error) {
+    return {
+      ok: false,
+      error: `SIGTERM 发送失败：${String(error?.message ?? error)}`,
+    };
+  }
+
   for (let i = 0; i < 10; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 400));
-    if (!(await portOpen())) return { ok: true, stopped: true, message: '桥接已停止' };
+
+    if (!(await portOpen()) && lockPid() !== pid) {
+      return {
+        ok: true,
+        stopped: true,
+        message: '桥接已停止',
+      };
+    }
   }
-  return { ok: false, error: '进程没有在预期时间内退出' };
+
+  return {
+    ok: false,
+    error: '发送 SIGTERM 后，尚未确认桥接完全停止',
+  };
+
 }
 
 export async function restart(options = {}) {

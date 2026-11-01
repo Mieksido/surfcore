@@ -44,8 +44,15 @@ function makeZip({ withManifest = true, extraMissing = [], corrupt = [] } = {}) 
     fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), JSON.stringify({ schemaVersion: 1, version: '0.7.0', files }));
   }
   const zip = path.join(base, 'pkg.zip');
-  execFileSync('powershell', ['-NoProfile', '-Command',
-    `Compress-Archive -Path '${src}' -DestinationPath '${zip}' -Force`], { windowsHide: true });
+  if (process.platform === 'win32') {
+    execFileSync('powershell', ['-NoProfile', '-Command',
+      `Compress-Archive -Path '${src.replaceAll("'", "''")}' -DestinationPath '${zip.replaceAll("'", "''")}' -Force`], { windowsHide: true });
+  } else {
+    // zip updates an existing archive; remove the disposable fixture first so
+    // a previous scenario cannot leak entries into the next fixture.
+    fs.rmSync(zip, { force: true });
+    execFileSync('zip', ['-q', '-r', zip, path.basename(src)], { cwd: path.dirname(src) });
+  }
   return fs.readFileSync(zip);
 }
 
@@ -325,6 +332,41 @@ try {
     } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
   }
 
+  // POSIX compatibility with the upstream streaming updater: a failed body
+  // must fall back to a valid multi-chunk ZIP and discard the partial file.
+  {
+    const dir = makeTarget('stream-body-fallback', '0.6.22', { withMeta: true });
+    const svc = mkService(dir, { archiveUrl: '' });
+    const seen = [];
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases/latest')) return new Response(null, { status: 302, headers: { location: 'https://github.com/Mieksido/surfcore-test/releases/tag/v0.7.0' } });
+      if (!u.includes('/zip/') && !u.includes('/archive/')) return undefined;
+      seen.push(u);
+      const stream = new ReadableStream({
+        start(controller) {
+          if (seen.length === 1) {
+            controller.enqueue(ZIP.subarray(0, 4));
+            queueMicrotask(() => controller.error(new Error('fixture interrupted body')));
+          } else {
+            for (let i = 0; i < ZIP.length; i += 73) controller.enqueue(ZIP.subarray(i, i + 73));
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-length': String(ZIP.length) } });
+    });
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const result = await svc.apply(['surfcore']);
+      ok(seen.length >= 2, '流式 body 失败后尝试下一个候选');
+      ok(result.results[0].ok === true && result.results[0].status === 'pending_restart', '多块有效 ZIP 能完成校验和暂存', JSON.stringify(result.results[0]));
+      const progress = svc.status().download;
+      ok(progress?.active === false && progress.bytes === ZIP.length, '重试下载丢弃残片，字节数等于完整 ZIP', JSON.stringify(progress));
+      ok(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version === '0.6.22', '暂存阶段不提前覆盖安装目标');
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
   // 3.56) 助手过期：.failed(code=stage.expired) 要被 status 读出来并给“重新下载”建议
   {
     const dir = makeTarget('expired', '0.6.22', { withMeta: true });
@@ -452,6 +494,21 @@ try {
       fs.mkdirSync(path.join(staging, 'release'), { recursive: true });
       fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify({ name: 'surfcore', version: stagedVersion }));
       fs.writeFileSync(path.join(staging, 'release', 'install-manifest.json'), JSON.stringify({ version: stagedVersion, files: {} }));
+      // Package attempts to overwrite private data; helper must preserve it.
+      for (const rel of ['config.json', 'bili.config.json', 'state/private.json', 'node_modules/private.json', 'tmp-update-old/private.json']) {
+        for (const [root, value] of [[target, 'PRIVATE'], [staging, 'PACKAGE']]) {
+          fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+          fs.writeFileSync(path.join(root, rel), value);
+        }
+      }
+      fs.writeFileSync(path.join(target, 'user-extra.txt'), 'KEEP');
+      if (name === 'verify-target-link') {
+        fs.unlinkSync(path.join(target, 'package.json'));
+        fs.symlinkSync(path.join(base, 'outside-not-created.json'), path.join(target, 'package.json'));
+      }
+      if (name === 'verify-link') {
+        fs.symlinkSync(path.join(base, 'outside'), path.join(staging, 'escape'));
+      }
       const stateDir = path.join(base, `${name}-state`);
       fs.mkdirSync(stateDir, { recursive: true });
       const pendingFile = path.join(stateDir, 'updates-pending.json');
@@ -480,6 +537,22 @@ try {
     const rec = JSON.parse(fs.readFileSync(path.join(okRun.stateDir, 'updates-applied', applied[0]), 'utf8'));
     ok(rec.verified === true && rec.version === '9.9.9', '助手：记录带 verified 与版本', JSON.stringify(rec));
     ok(fs.existsSync(path.join(okRun.target, '.installed-manifest.json')), '助手：写入安装清单副本');
+    for (const rel of ['config.json', 'bili.config.json', 'state/private.json', 'node_modules/private.json', 'tmp-update-old/private.json']) {
+      ok(fs.readFileSync(path.join(okRun.target, rel), 'utf8') === 'PRIVATE', `助手：保护 ${rel}`);
+    }
+    ok(fs.readFileSync(path.join(okRun.target, 'user-extra.txt'), 'utf8') === 'KEEP', '助手：保留目标额外文件');
+    if (process.platform !== 'win32') {
+      const linked = runHelper('verify-link', '9.9.9', '9.9.9');
+      const failure = JSON.parse(fs.readFileSync(`${linked.pendingFile}.failed`, 'utf8'));
+      ok(linked.code !== 0 && failure.code === 'apply.copy-failed' && Boolean(failure.hint), '助手：符号链接拒绝带 code/hint');
+      ok(JSON.parse(fs.readFileSync(path.join(linked.target, 'package.json'), 'utf8')).version === '0.7.0', '助手：拒绝链接前没有覆盖目标');
+      const targetLink = runHelper('verify-target-link', '9.9.9', '9.9.9');
+      const targetFailure = JSON.parse(fs.readFileSync(`${targetLink.pendingFile}.failed`, 'utf8'));
+      ok(targetLink.code !== 0 && targetFailure.code === 'apply.copy-failed' && Boolean(targetFailure.hint), '助手：拒绝目标悬空链接并报告 code/hint');
+      ok(!fs.existsSync(path.join(base, 'outside-not-created.json')), '助手：没有经悬空链接写出目录');
+
+    }
+
   }
 
   // 5.6) 磁盘版本变了 → 旧的检查结果要丢弃（否则弹窗显示 v0.7.3→旧提交）

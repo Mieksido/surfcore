@@ -79,6 +79,40 @@ function copyZip(staging, target) {
   // /MIR 会删掉"源里没有"的文件，连用户自建文件一起删；现在宁可留旧文件也不误删。
   const exDirs = ['state', 'backups', 'node_modules', '.git', 'logs', 'staging', 'pet', 'characters', 'voice-packs', 'tmp-update*'];
   const exFiles = ['config.json', 'bili.config.json', 'updates-pending.json'];
+  if (process.platform !== 'win32') {
+    try {
+      // Refuse links on both sides: copying must never escape staging/target.
+      // Validate the whole copy plan before overwriting any target file.
+      const plan = [];
+      function isLink(file) {
+        try { return fs.lstatSync(file).isSymbolicLink(); }
+        catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+      }
+      function walk(src, dest) {
+        if (isLink(src) || isLink(dest)) {
+          throw new Error('更新目录包含符号链接，请手动核查');
+        }
+        if (fs.lstatSync(src).isDirectory()) {
+          plan.push([src, dest, true]);
+          for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+            if (exDirs.some(d => d.endsWith('*') ? entry.name.startsWith(d.slice(0, -1)) : entry.name === d) || exFiles.includes(entry.name)) continue;
+            walk(path.join(src, entry.name), path.join(dest, entry.name));
+          }
+        } else {
+          if (!fs.lstatSync(src).isFile()) throw new Error('更新包包含非普通文件');
+          plan.push([src, dest, false]);
+        }
+      }
+      walk(staging, target);
+      for (const [src, dest, dir] of plan) {
+        if (dir) fs.mkdirSync(dest, { recursive: true });
+        else fs.copyFileSync(src, dest);
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: `文件复制失败：${error.message}` };
+    }
+  }
   const argv = [
     staging, target,
     '/E',
@@ -131,7 +165,7 @@ try {
 
   if (!result.ok) {
     log(`[apply-update] 失败：${result.error}`);
-    fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({ ...pending, error: result.error, at: new Date().toISOString() }, null, 2));
+    fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({ ...pending, error: result.error, code: 'apply.copy-failed', hint: '检查安装目录权限和符号链接；保留备份并手动下载更新', at: new Date().toISOString() }, null, 2));
     process.exit(4);
   }
 
