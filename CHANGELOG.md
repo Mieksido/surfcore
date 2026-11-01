@@ -1,3 +1,9 @@
+## [0.8.6-dev.5] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 ## [0.8.6-dev.4] - 2026-11-01
 
 ### dev 测试构建
@@ -67,6 +73,18 @@
 - git 失败补 `apply.git-failed`；`not-available` / `blocked` 也补 code/hint；
 - 成功更新后 helper 删除外层 `staging/<id>-<stamp>/`（不再每次残留 7~12.5MB 的 pkg.zip）；
 - `check()` 清理 3 天前的 staging。
+
+## [Unreleased]
+
+### 修复（更新生命周期与通道显示：A–H）
+
+- UI 正确显示 `dev` 通道（不再当 git、不再显示 `undefined 个提交`）；
+- helper 校验任务 `kind`：未知类型 → `apply.unknown-kind`（不再默认 copyZip）；
+- 失败删 pending / 成功清 `.failed` / 新排队清旧 `.failed` / 校验失败也删 pending；
+- staging 清理跳过待重启的 pending 引用；
+- `apply.unknown-channel / unknown-kind / git-failed` 进 30 分钟退避；
+- release 通道失败补 `code/hint`；更新中禁止切通道（`UPDATE_CHANNEL_BUSY`）；
+- helper 超时/失败清理 `.started`。
 
 ## [0.8.6] - 2026-11-01
 

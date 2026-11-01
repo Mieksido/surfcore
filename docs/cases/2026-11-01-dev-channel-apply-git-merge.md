@@ -35,3 +35,25 @@
 - dev 包约 12.5MB，慢网络仍可能触发 `download.timeout`（已有空闲超时 + 镜像回退）；
 - 旧版本（dev.3 之前）没有这个修复，测试机需要先装一次 dev.4 才能自动更新；
 - 更新器仍是 if 链而不是表驱动；这次加了 unknown 兜底，但下次再加 channel 仍要记得改两处。
+
+## 同类漏洞收口（A–H，2026-11-01 一次性修完）
+
+| # | 修复 |
+| --- | --- |
+| A | UI 正确显示 dev 通道：`v旧 → v新（测试通道）`，脚注“测试通道（Pre-release）”，不再当成 git / 显示 `undefined 个提交` |
+| B | 更新助手校验 `kind`（只允许 zip / git）；未知 kind → `apply.unknown-kind`，不再默认 copyZip |
+| C | 失败生命周期：失败时删 pending、只留 `.failed`；成功时清 `.failed`；新的排队（stageDeferredApply）先清旧 `.failed`；版本校验失败也删 pending |
+| D | staging 清理跳过 `updates-pending.json` 正在引用的目录（待重启的包不会被 3 天清理误删） |
+| E | `apply.unknown-channel / unknown-kind / git-failed` 也进 30 分钟退避，不再每次检查反复弹 |
+| F | release 通道下载/安装失败补 `code/hint` |
+| G | 更新进行中不允许切通道：`UPDATE_CHANNEL_BUSY`（409 + hint） |
+| H | helper 等待超时/失败时清 `.started`，避免残留误判 |
+
+## 验证（A–H）
+
+- `test-update-apply-result`：
+  - 失败后 pending 被删除；成功清旧 `.failed`；未知 kind 结构化失败；
+  - 待重启 staging 不被清理，无引用的过期 staging 仍会清；
+  - 原有 dev 通道/zip/版本排序用例全通过；
+- `test-client-contract`：通道单选与文案；
+- `npm run test:audit` 110/110；插件测试 0 失败。

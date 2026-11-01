@@ -3271,3 +3271,13 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **修法**（0.8.6-dev.4）：dev 与 version 共用 zip 流水线；未知 channel 明确 `apply.unknown-channel`；
   git 失败补 `apply.git-failed`；helper 清理外层 staging（pkg.zip 残留）。
 - **教训**：多态字段（channel）必须在“检查侧 + 应用侧”同时扩展；兜底不能选破坏性最强的分支。
+
+## 更新生命周期残留：旧 .failed 永远显示 / staging 被清理 / kind 兜底
+
+- **现象**：一次更新失败后，之后成功仍显示旧失败；待重启的 staging 被 3 天清理删掉；
+  新增 kind/channel 时静默落到破坏性兜底（git merge / copyZip）。
+- **根因**：失败文件没人清、成功没清旧 `.failed`；清理不看 pending 引用；多态字段用 if 链 + 默认分支。
+- **修法**：失败删 pending、成功删 `.failed`、新排队清旧 `.failed`；清理跳过 pending 引用；
+  helper 校验 kind；unknown channel/kind 结构化报错；插件缺陷类失败进退避。
+- **教训**：**状态文件是有生命周期的**：谁写、谁清、谁优先读，必须画清楚；
+  兜底分支要选“拒绝并说明”，不能选“继续做点什么”。

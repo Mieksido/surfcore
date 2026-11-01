@@ -109,6 +109,20 @@ function gitPull(target, branch) {
   }
 }
 
+const jobKind = String(pending.kind ?? '');
+if (jobKind !== 'git' && jobKind !== 'zip') {
+  const reason = `未知更新任务类型「${jobKind || '(空)'}」：更新助手不认识`;
+  log(`[apply-update] ${reason}`);
+  try {
+    fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
+      ...pending, error: reason, code: 'apply.unknown-kind', at: new Date().toISOString(),
+    }, null, 2));
+    fs.rmSync(pendingFile, { force: true });
+    fs.rmSync(`${pendingFile}.started`, { force: true });
+  } catch {}
+  process.exit(4);
+}
+
 try {
   log(`[apply-update] 等待 DSH 退出（pid=${pending.waitPid ?? '?'}）…`);
   const exited = await waitExit(pending.waitPid);
@@ -120,18 +134,25 @@ try {
         ...pending, error: reason, code: 'stage.expired', at: new Date().toISOString(),
       }, null, 2));
       fs.rmSync(pendingFile, { force: true });
+      fs.rmSync(`${pendingFile}.started`, { force: true });
     } catch {}
     process.exit(3);
   }
   log(`[apply-update] 宿主已退出，开始应用 ${pending.kind} → ${pending.target}`);
 
-  const result = pending.kind === 'git'
+  const result = jobKind === 'git'
     ? gitPull(pending.target, pending.branch)
     : copyZip(pending.staging, pending.target);
 
   if (!result.ok) {
     log(`[apply-update] 失败：${result.error}`);
-    fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({ ...pending, error: result.error, at: new Date().toISOString() }, null, 2));
+    try {
+      fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
+        ...pending, error: result.error, code: result.code || 'apply.failed', at: new Date().toISOString(),
+      }, null, 2));
+      fs.rmSync(pendingFile, { force: true });
+      fs.rmSync(`${pendingFile}.started`, { force: true });
+    } catch {}
     process.exit(4);
   }
 
@@ -166,6 +187,8 @@ try {
       fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({
         ...pending, error: reason, code: 'verify.version-mismatch', at: new Date().toISOString(),
       }, null, 2));
+      fs.rmSync(pendingFile, { force: true });
+      fs.rmSync(`${pendingFile}.started`, { force: true });
     } catch {}
     process.exit(4);
   }
@@ -179,6 +202,7 @@ try {
     if (parent.startsWith(stagingRoot + path.sep)) fs.rmSync(parent, { recursive: true, force: true });
   } catch {}
   try { fs.rmSync(pendingFile, { force: true }); } catch {}
+  try { fs.rmSync(`${pendingFile}.failed`, { force: true }); } catch {}
   try { fs.rmSync(`${pendingFile}.started`, { force: true }); } catch {}
   try {
     const doneDir = path.join(path.dirname(pendingFile), 'updates-applied');

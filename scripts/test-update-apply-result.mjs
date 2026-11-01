@@ -446,7 +446,7 @@ try {
   {
     const { execFileSync } = await import('node:child_process');
     const helper = path.resolve('scripts/apply-update.mjs');
-    const runHelper = (name, stagedVersion, toVersion) => {
+    const runHelper = (name, stagedVersion, toVersion, opts = {}) => {
       const target = makeTarget(name, '0.7.0', { withMeta: true });
       const staging = path.join(base, `${name}-staging`);
       fs.mkdirSync(path.join(staging, 'release'), { recursive: true });
@@ -460,6 +460,7 @@ try {
         waitPid: 999999, txn: name, from: '0.7.0', logFile: path.join(stateDir, 'apply.log'),
         meta: { version: toVersion, sha: REMOTE_SHA },
       }));
+      if (opts.staleFailed) fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({ component: 'surfcore', error: '旧失败', code: 'apply.failed', at: '2020-01-01T00:00:00.000Z' }));
       let code = 0;
       try {
         execFileSync(process.execPath, [helper, '--pending', pendingFile], { stdio: 'ignore' });
@@ -472,14 +473,57 @@ try {
     ok(fs.existsSync(`${bad.pendingFile}.failed`), '助手：写 .failed 证据');
     const jf = JSON.parse(fs.readFileSync(`${bad.pendingFile}.failed`, 'utf8'));
     ok(jf.code === 'verify.version-mismatch', '助手：code=verify.version-mismatch', String(jf.code));
+    ok(!fs.existsSync(bad.pendingFile), '助手：失败后删掉 pending（.failed 才是唯一真相）');
 
-    const okRun = runHelper('verify-ok', '9.9.9', '9.9.9');
+    const okRun = runHelper('verify-ok', '9.9.9', '9.9.9', { staleFailed: true });
     ok(okRun.code === 0, '助手：版本一致时成功退出', String(okRun.code));
     const applied = fs.readdirSync(path.join(okRun.stateDir, 'updates-applied')).filter((f) => f.endsWith('.json'));
     ok(applied.length === 1, '助手：写应用记录');
     const rec = JSON.parse(fs.readFileSync(path.join(okRun.stateDir, 'updates-applied', applied[0]), 'utf8'));
     ok(rec.verified === true && rec.version === '9.9.9', '助手：记录带 verified 与版本', JSON.stringify(rec));
     ok(fs.existsSync(path.join(okRun.target, '.installed-manifest.json')), '助手：写入安装清单副本');
+    ok(!fs.existsSync(`${okRun.pendingFile}.failed`), '助手：成功后清掉旧 .failed（不会永远显示旧失败）');
+  }
+
+  // 5.55) 未知 kind：结构化失败，不默认当 zip
+  {
+    const { execFileSync } = await import('node:child_process');
+    const helper = path.resolve('scripts/apply-update.mjs');
+    const target = makeTarget('unknown-kind', '0.7.0', { withMeta: true });
+    const stateDir = path.join(base, 'unknown-kind-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const pendingFile = path.join(stateDir, 'updates-pending.json');
+    fs.writeFileSync(pendingFile, JSON.stringify({ kind: 'weird', component: 'surfcore', target, to: '0.7.0', waitPid: 999999 }));
+    let code = 0;
+    try { execFileSync(process.execPath, [helper, '--pending', pendingFile], { stdio: 'ignore' }); } catch (e) { code = e.status ?? 1; }
+    ok(code !== 0, '助手：未知 kind 非 0 退出', String(code));
+    const jf = JSON.parse(fs.readFileSync(`${pendingFile}.failed`, 'utf8'));
+    ok(jf.code === 'apply.unknown-kind', '助手：code=apply.unknown-kind', String(jf.code));
+    ok(!fs.existsSync(pendingFile), '助手：未知 kind 也清掉 pending');
+  }
+
+  // 5.57) 清理 staging 时必须跳过 pending 正在用的目录
+  {
+    const dir = makeTarget('staging-pending', '0.8.6', { withMeta: true });
+    const stateDir = path.join(dir, '.state');
+    const keep = path.join(stateDir, 'staging', 'surfcore-keep');
+    const drop = path.join(stateDir, 'staging', 'surfcore-drop');
+    fs.mkdirSync(path.join(keep, 'surfcore-0.8.6-dev.4'), { recursive: true });
+    fs.mkdirSync(drop, { recursive: true });
+    fs.writeFileSync(path.join(keep, 'pkg.zip'), 'x');
+    fs.writeFileSync(path.join(drop, 'pkg.zip'), 'x');
+    const past = Date.now() - 4 * 24 * 3600_000;
+    fs.utimesSync(keep, new Date(past), new Date(past));
+    fs.utimesSync(drop, new Date(past), new Date(past));
+    fs.writeFileSync(path.join(stateDir, 'updates-pending.json'), JSON.stringify({ kind: 'zip', staging: path.join(keep, 'surfcore-0.8.6-dev.4'), target: dir }));
+    const svc = createUpdatesService({
+      stateDir,
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+    });
+    await svc.check({ fetch: false });
+    ok(fs.existsSync(keep), '待重启的 staging 不会被清理');
+    ok(!fs.existsSync(drop), '无引用的过期 staging 仍会被清理');
   }
 
   // 5.6) 磁盘版本变了 → 旧的检查结果要丢弃（否则弹窗显示 v0.7.3→旧提交）

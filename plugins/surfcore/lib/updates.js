@@ -1132,7 +1132,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             ? '上次暂存已过期（等 DSH 退出的时间太久）：点「立即更新」重新下载即可'
             : code === 'verify.version-mismatch'
               ? '发布包与清单不一致：手动下载该版本覆盖，重试无效'
-              : '备份与 staging 仍保留；可重试或手动覆盖 zip',
+              : code === 'apply.unknown-kind'
+                ? '更新助手不认识这种任务类型（插件缺陷）：请反馈，并手动下载 zip 覆盖'
+                : '备份与 staging 仍保留；可重试或手动覆盖 zip',
           at: j.at ?? null,
         };
       }
@@ -1149,7 +1151,6 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         const files = fs.readdirSync(doneDir).filter((f) => f.endsWith('.json')).sort();
         if (files.length) {
           const j = JSON.parse(fs.readFileSync(path.join(doneDir, files[files.length - 1]), 'utf8'));
-          // 助手做了更新后版本校验；verified:true 才能叫成功，否则只能是"已应用未验证"
           if (j.verified === true) {
             return {
               status: 'success', code: 'apply.verified', component: j.component ?? '',
@@ -1194,11 +1195,18 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   /** 清理 N 天前的 staging 残留（成功更新后 helper 只删解压目录，外层 pkg.zip 会留下）。 */
   function cleanupStaleStaging(maxAgeMs = 3 * 24 * 3600_000) {
     const root = path.join(stateDir, 'staging');
+    let activeStaging = '';
+    try {
+      const pending = JSON.parse(fs.readFileSync(path.join(stateDir, 'updates-pending.json'), 'utf8'));
+      activeStaging = path.resolve(String(pending.staging ?? ''));
+    } catch {}
     let removed = 0;
     try {
       for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const full = path.join(root, entry.name);
+        // 正在排队等 DSH 退出的 staging 不能被清理，否则 helper 找不到包
+        if (activeStaging && activeStaging.startsWith(path.resolve(full) + path.sep)) continue;
         try {
           const st = fs.statSync(full);
           if (Date.now() - st.mtimeMs > maxAgeMs) { fs.rmSync(full, { recursive: true, force: true }); removed += 1; }
@@ -1570,6 +1578,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 
 /** 写 pending 文件 + 起独立进程（等本宿主退出后执行覆盖）。 */
   function stageDeferredApply(job) {
+    // 新一次排队 = 新尝试：上一轮的 .failed 不能再压住它
+    try { fs.rmSync(path.join(stateDir, 'updates-pending.json.failed'), { force: true }); } catch {}
+
     const pendingFile = path.join(stateDir, 'updates-pending.json');
     const payload = {
       ...job,
@@ -1657,7 +1668,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         if (report.channel === 'release') {
           // 构建产物型（桌宠）：下 zip → 校验 → 交给组件自己的安装器。
           const downloaded = await downloadReleaseAsset(item, report, { stateDir, pluginLog });
-          if (!downloaded.ok) { results.push({ id: item.id, ok: false, error: downloaded.error }); continue; }
+          if (!downloaded.ok) { results.push({ id: item.id, ok: false, code: downloaded.code ?? 'download.failed', error: downloaded.error, hint: downloaded.hint ?? '检查网络后重试；持续失败可手动下载安装包' }); continue; }
           if (typeof item.installZip !== 'function') {
             results.push({ id: item.id, ok: false, error: '这个组件没有配置安装器（installZip）' });
             continue;
@@ -1666,7 +1677,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           try { installed = await item.installZip(downloaded.path, { report }); }
           catch (error) { installed = { ok: false, error: String(error?.message ?? error) }; }
           try { fs.rmSync(downloaded.path, { force: true }); } catch {}
-          if (!installed?.ok) { results.push({ id: item.id, ok: false, error: installed?.error ?? '安装失败' }); continue; }
+          if (!installed?.ok) { results.push({ id: item.id, ok: false, code: installed?.code ?? 'apply.install-failed', error: installed?.error ?? '安装失败', hint: installed?.hint ?? '查看该组件安装器日志；或手动下载安装包覆盖' }); continue; }
           results.push({
             id: item.id, ok: true, from: report.installedVersion, to: report.latestVersion,
             message: `${report.name} 已更新到 v${report.latestVersion}`,
@@ -1739,7 +1750,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       const failedNow = results.filter((row) => !row.ok);
       // 下载/网络类失败：30 分钟内不再自动弹同一条（用户关掉后不该每次检查又出现）
       for (const f of failedNow) {
-        if (/^download\./.test(String(f.code || '')) || String(f.code || '').startsWith('stage.')) {
+        if (/^download\./.test(String(f.code || ''))
+          || String(f.code || '').startsWith('stage.')
+          || /^apply\.(unknown-channel|unknown-kind|git-failed)$/.test(String(f.code || ''))) {
           const row = (state.results ?? []).find((r) => r.id === f.id);
           if (row) {
             state.applyBackoff = state.applyBackoff && typeof state.applyBackoff === 'object' ? state.applyBackoff : {};

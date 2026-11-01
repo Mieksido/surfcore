@@ -3305,6 +3305,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (action === 'set-channel') {
+      if (updates.status().applying) {
+        json(res, 409, { ok: false, code: 'UPDATE_CHANNEL_BUSY', error: '正在更新中，不能切换通道', hint: '等本次更新完成或失败后再切' });
+        return;
+      }
       const nextChannel = String(body.channel ?? '').trim();
       if (!['stable', 'dev'].includes(nextChannel)) {
         json(res, 400, { ok: false, code: 'UPDATE_CHANNEL_INVALID', error: '更新通道只能是 stable 或 dev', hint: '正式用户用 stable；只有测试机才切 dev' });

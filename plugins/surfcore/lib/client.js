@@ -1545,15 +1545,15 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               h("input", { type: "checkbox", checked: selected.has(item.id), onChange: () => toggle(item.id), disabled: working }),
               item.name,
               h("span", { className: "qbw-chip", style: { marginLeft: "auto" } },
-                item.channel === "version"
-                  ? `v${item.installedVersion} → ${fmtV(item.latestVersion)}`
+                item.channel === "version" || item.channel === "dev"
+                  ? `v${item.installedVersion} → ${fmtV(item.latestVersion)}${item.channel === "dev" ? "（测试通道）" : ""}`
                   : item.channel === "release"
                     ? `${item.installedVersion ? `v${item.installedVersion}` : "未安装"} → ${fmtV(item.latestVersion)}`
                     : (item.latestVersion
                       ? `v${item.installedVersion || "?"} → ${fmtV(item.latestVersion)}（${item.behind} 个提交）`
                       : `${item.behind} 个提交（到 ${String(item.remote || "").slice(0, 7)}）`))),
             h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-              `${item.dir} · ${item.branch ?? ""}${item.dirty ? ` · ⚠️ 本地有 ${item.dirty} 处改动` : ""}${item.ahead ? ` · ⚠️ 本地领先 ${item.ahead}` : ""} · ${item.channel === "release" ? "版本清单" : item.channel === "version" ? "提交追踪" : "git 仓库"}`),
+              `${item.dir} · ${item.branch ?? ""}${item.dirty ? ` · ⚠️ 本地有 ${item.dirty} 处改动` : ""}${item.ahead ? ` · ⚠️ 本地领先 ${item.ahead}` : ""} · ${item.channel === "release" ? "版本清单" : item.channel === "version" ? "版本追踪" : item.channel === "dev" ? "测试通道（Pre-release）" : "git 仓库"}`),
             item.blocked ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)" } }, `不能自动更新：${item.blocked}`) : null,
             item.blocked ? h("div", { className: "qbw-hint" }, "处理办法：本仓库有未提交改动时，先 commit/stash 再更新；或者直接用新版本的 zip 覆盖安装。") : null,
             (item.changelog ?? []).length ? h("ul", { style: { margin: "6px 0 0 18px", padding: 0, fontSize: "11.5px", lineHeight: "18px", opacity: 0.82 } },
