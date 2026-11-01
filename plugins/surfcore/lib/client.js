@@ -655,8 +655,44 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "关闭"))));
     }
 
-    function AdminCard({ admin, onChange, qqPrivate = [], qqAllowAll = false, toast }) {
+    function AdminGentleEnableModal({ onConfirm, onClose }) {
+      return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
+        h("div", { className: "qbw-modal", style: { maxWidth: "680px", maxHeight: "84vh", overflow: "auto" } },
+          h("h3", null, "⚠️ 开启“温柔 / 绝不回嘴”前请确认"),
+          h("p", null, "开启后 QQ 和 B站 都会对管理员使用这套规则。这不是普通语气开关，会改变她的行为边界："),
+          h("ul", { style: { paddingLeft: "20px", lineHeight: "20px" } },
+            h("li", null, "对管理员更温柔、先接情绪；"),
+            h("li", null, "“绝不回嘴”：不反驳、不顶撞、不阴阳、不冷嘲、不抬杠；"),
+            h("li", null, "可能减少诚实纠错和边界提醒，甚至迎合不合理要求；"),
+            h("li", null, "可能与人格卡、安全规则冲突；模型行为只能引导，无法硬保证；"),
+            h("li", null, "每次唤醒会多占一点上下文 token；"),
+            h("li", null, "已存在的旧会话可能继续受历史温柔规则影响；彻底清掉需要重置会话；"),
+            h("li", null, "管理员权限、审批、白名单不受影响。")),
+          h("p", { className: "qbw-hint" }, "确认理解并接受以上行为变化后再开启。确认后仍需点页面底部保存。"),
+          h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
+            h(Btn, { onClick: onConfirm }, "确认开启"),
+            h(Btn, { kind: "qbw-btn2", onClick: onClose }, "取消"))));
+    }
+
+    function AdminGentleDisableModal({ onKeep, onDiscard, onClose }) {
+      return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
+        h("div", { className: "qbw-modal", style: { maxWidth: "700px", maxHeight: "84vh", overflow: "auto" } },
+          h("h3", null, "关闭温柔模式"),
+          h("p", null, "关闭后，当前提示词不再注入管理员专属的语气/身份标记；管理员权限、审批、白名单不变。"),
+          h("p", null, "但旧会话历史里已经写进去的“温柔 / 绝不回嘴”不会自动消失，模型仍可能按旧规则说话。你可以选择："),
+          h("ul", { style: { paddingLeft: "20px", lineHeight: "20px" } },
+            h("li", null, h("b", null, "只关闭，保留上下文："), "不丢聊天记忆；但旧语气可能残留，直到历史自然滚出或会话重置。"),
+            h("li", null, h("b", null, "关闭并丢弃上下文："), "清空相关会话上下文，旧规则不再存在；但当前聊天记忆会丢失，且无法恢复。")),
+          h("p", { className: "qbw-hint" }, "不确定就选“保留上下文”；之后仍可在设置里重置会话。选择后仍需点页面底部保存；丢弃上下文的选项会自动重启桥接。"),
+          h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
+            h(Btn, { kind: "qbw-btn2", onClick: onKeep }, "只关闭，保留上下文"),
+            h(Btn, { onClick: onDiscard }, "关闭并丢弃上下文"),
+            h(Btn, { kind: "qbw-btn2", onClick: onClose }, "取消"))));
+    }
+
+    function AdminCard({ admin, onChange, qqPrivate = [], qqAllowAll = false, toast, onDiscardContext }) {
       const [auditOpen, setAuditOpen] = useState(false);
+      const [gentlePrompt, setGentlePrompt] = useState(null); // enable | disable
       const [uidCheck, setUidCheck] = useState(null); // {ok, match, actualName, error, hint}
       const [uidChecking, setUidChecking] = useState(false);
       const value = admin && typeof admin === "object" ? admin : {};
@@ -693,7 +729,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
             h("div", { className: "qbw-admin-title" },
               "管理员（QQ ⇄ B站 · 同一个人）",
               h("span", { className: "qbw-badge " + badge }, badgeText),
-              h("span", { className: "qbw-pill" }, "对 TA 温柔 · 不回嘴")),
+              h("span", { className: "qbw-pill" }, value.gentle === true ? "温柔 · 不回嘴" : "普通模式 · 只按人格卡")),
             h("div", { className: "qbw-hint" },
               "默认就是同一个人：这里填一次，QQ 的 ownerQQ 和 B站 的 owner.mid 会同时写成这两个号（QQ 侧保存后需重启桥接，B站 下一轮生效）。"))),
         h("div", { className: "qbw-admin-grid" },
@@ -750,11 +786,14 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
           h("label", { className: "qbw-admin-check" },
             h("input", {
               type: "checkbox", className: "qbw-switch",
-              checked: value.gentle !== false,
-              onChange: (e) => set("gentle", e.target.checked),
+              checked: value.gentle === true,
+              onChange: (e) => setGentlePrompt(e.target.checked ? "enable" : "disable"),
             }),
             h("span", null, "对管理员更温柔、绝不回嘴")),
-          h("span", { className: "qbw-hint" }, "QQ 消息和 B站 回复都适用；关掉 = 只按人格卡。")),
+          h("span", { className: "qbw-hint" },
+            value.gentle === true
+              ? "QQ 消息和 B站 回复都适用；关闭前会解释旧上下文的影响。"
+              : "默认关闭；开启前会弹窗列出全部行为风险，管理员权限不受影响。")),
         blockedPrivate
           ? h("div", { className: "qbw-warnbox" }, "⚠️ 管理员 QQ 不在私聊白名单 allow.private 里：私聊会被拦截（白名单为空时也没人放行）。去下面的「QQ 白名单」把 TA 加进去。")
           : null,
@@ -763,6 +802,31 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
           : null,
         h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
           h(Btn, { kind: "qbw-btn3", onClick: () => setAuditOpen(true) }, "管理操作记录（最近 50 条）")),
+        gentlePrompt === "enable"
+          ? h(AdminGentleEnableModal, {
+            onClose: () => setGentlePrompt(null),
+            onConfirm: () => {
+              set("gentle", true);
+              onDiscardContext?.(false);
+              setGentlePrompt(null);
+            },
+          })
+          : null,
+        gentlePrompt === "disable"
+          ? h(AdminGentleDisableModal, {
+            onClose: () => setGentlePrompt(null),
+            onKeep: () => {
+              set("gentle", false);
+              onDiscardContext?.(false);
+              setGentlePrompt(null);
+            },
+            onDiscard: () => {
+              set("gentle", false);
+              onDiscardContext?.(true);
+              setGentlePrompt(null);
+            },
+          })
+          : null,
         auditOpen ? h(AuditModal, { onClose: () => setAuditOpen(false), toast }) : null);
     }
 
@@ -1297,7 +1361,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("share.silentAfterDays", "沉默几天后降额", "", "number", { min: 0 }),
         F("share.decayPerDay", "每天降多少", "", "number", { min: 0 }),
       ]},
-      { group: "额度（代码闸门）", note: "四本账的硬上限；0 = 不限量（关闭该上限）。保存后下一轮生效，不用重启 DSH。", fields: [
+      { group: "互动与静默", note: "只看不说：关掉后不再评论/回复/搭话/发动态/分享/私信；仍会浏览、评分、写日记。额度里的 0 是“不限量”，不是关闭。", fields: [
+        F("interact.enabled", "沉默逛 B 站（只看不说）", "开 = 正常互动；关 = 只浏览、评分、写日记，不对外发言", "switch"),
+        F("interact.maxCommentAgeDays", "只回复多少天内的评论", "默认 14；0 = 不限（容易挖坟，不推荐）", "number", { min: 0, max: 365 }),
+      ]},
+      { group: "额度（代码闸门）", note: "四本账的硬上限；0 = 不限量（不是关闭）。要沉默逛请用上面的「互动与静默」。保存后下一轮生效，不用重启 DSH。", fields: [
         F("limits.daily", "普通评论 / 天", "默认 30", "number", { min: 0, max: 200 }),
         F("limits.replyDaily", "回找我的人 / 天", "默认 50", "number", { min: 0, max: 500 }),
         F("limits.taDaily", "主动搭话 / 天", "默认 15", "number", { min: 0, max: 200 }),
@@ -1376,7 +1444,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { group: "日记与推送", fields: [
         F("diary.push", "推送日记摘要", "日记照写；只控制推不推", "switch"),
         F("diary.enabled", "写日记（锁定开）", "旧版本可关；现在照写不可关", "switch", { readOnly: true }),
-        F("notify.type", "推送方式", "不推送 / 桌面通知 / Webhook / 自定义命令", "select", { options: [["none", "不推送"], ["desktop", "桌面通知"], ["webhook", "Webhook"], ["command", "自定义命令"]] }),
+        F("notify.type", "推送方式", "不推送 / 桌面通知 / QQ 私聊 / Webhook / 自定义命令", "select", { options: [["none", "不推送"], ["desktop", "桌面通知"], ["qq", "QQ 私聊管理员"], ["webhook", "Webhook"], ["command", "自定义命令"]] }),
         F("notify.url", "Webhook 地址", "飞书/钉钉/企业微信/QQ机器人", "text", { wide: true }),
         F("notify.template", "模板", "纯文本 / markdown", "select", { options: [["text", "纯文本"], ["markdown", "markdown"]] }),
         F("notify.cmd", "自定义命令", "可执行文件；消息自动作为最后一个参数", "text", { wide: true }),
@@ -1702,7 +1770,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       if (!events.length) return null;
       return h("div", { className: "qbw-card", style: { borderColor: "rgba(214,137,16,.45)", marginTop: "10px" } },
         h("h4", null, "错误报告 / 限制提醒 ", h("span", { className: "qbw-badge warn" }, `${events.filter((ev) => !ev.ack).length} 条未确认`)),
-        h("p", { className: "qbw-hint" }, "这些不是“随便失败了”：是某个设置上限把动作挡住了。这里不弹窗；你可以去改设置，或确认这是你有意设的限制。"),
+        h("p", { className: "qbw-hint" }, "这些不是“随便失败了”：是某个设置上限或超时把动作挡住了。这里不弹窗；你可以去改设置，或确认这是你有意设的限制。"),
         events.slice(0, 8).map((ev) => h("div", { key: ev.id, className: "qbw-item", style: { marginTop: "6px" } },
           h("div", null,
             h("div", { className: "qbw-label" }, ev.reason?.message || ev.event, h("span", { className: "qbw-badge" }, ev.ack ? "已确认" : "未确认")),
@@ -1963,12 +2031,16 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
       const muteLimit = async (ev) => {
         try {
-          await api("/limit-mute", { method: "POST", body: { code: ev.reason?.code || ev.event, setting: ev.evidence?.setting || "" } });
-          toast("✓ 以后不再显示这个限制提醒");
+          const code = ev.reason?.code || ev.event;
+          if (ev.gate === "timeout") {
+            await api("/timeout-mute", { method: "POST", body: { code } });
+          }
+          await api("/limit-mute", { method: "POST", body: { code, setting: ev.evidence?.setting || "" } });
+          toast(ev.gate === "timeout" ? "✓ 以后不再提示这个超时" : "✓ 以后不再显示这个限制提醒");
           await loadGateEvents();
         } catch (e) { toast("✗ " + e.message); }
       };
-      const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.evidence?.setting);
+      const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
       return h("div", null,
         h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
         h("div", { className: "qbw-infobox" },
@@ -2875,7 +2947,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("span", { className: "qbw-hint" }, "保存后桥接下一条消息生效；群成员数由 OneBot 缓存 10 分钟。")));
     }
 
-    function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave }) {
+    function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext }) {
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
       const groups = [...QQ_FIELDS];
@@ -2927,7 +2999,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.bridge?.running || overview?.bridge?.ok),
           overview,
         }),
-        h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast }),
+        h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext }),
         h(WhitelistCard, {
           allow: cfg?.allow ?? {},
           allowAll: cfg?.allowAllWhenEmpty === true,
@@ -3598,7 +3670,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }) : null);
     }
 
-    function BiliTab({ cfg, set, qq, setQqPath, admin, setAdmin, unified, setUnified, qqPrivate, qqAllowAll, overview, busy, setBusy, toast, reload, onSave }) {
+    function BiliTab({ cfg, set, qq, setQqPath, admin, setAdmin, unified, setUnified, qqPrivate, qqAllowAll, overview, busy, setBusy, toast, reload, onSave, onAdminDiscardContext }) {
       const [query, setQuery] = useState("");
       const [cookie, setCookie] = useState({ sessdata: "", bili_jct: "", buvid3: "" });
       const [cookieMsg, setCookieMsg] = useState("");
@@ -3705,7 +3777,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.scheduler?.running),
           overview,
         }),
-        h(AdminCard, { admin, onChange: setAdmin, qqPrivate, qqAllowAll, toast }),
+        h(AdminCard, { admin, onChange: setAdmin, qqPrivate, qqAllowAll, toast, onDiscardContext: onAdminDiscardContext }),
         h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
           h("h4", null, "B站 账号"),
           h("div", { className: "qbw-kv" }, h("span", null, "登录态"), h("span", null, bili.available ? `记忆已生成 · ${bili.briefChars ?? 0} 字` : "暂无记忆（先扫码登录）")),
@@ -6071,6 +6143,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [unified, setUnified] = useState(null);
       const [saved, setSaved] = useState("");
       const [busy, setBusy] = useState("");
+      // 关闭温柔模式时用户选择“同时丢弃上下文”：保存时一并重置 QQ 会话，并自动重启桥接。
+      const [adminDiscardContext, setAdminDiscardContext] = useState(false);
       // 浮层文案（字符串）。真正的通知函数叫 notify —— 两者别同名，否则会被误当函数传（2026-10-30）。
       const [toastText, setToastText] = useState("");
       const [err, setErr] = useState("");
@@ -6180,6 +6254,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       const save = async (restartBridge = false) => {
         setBusy("save"); setErr("");
+        const resetSessions = adminDiscardContext;
+        const shouldRestart = restartBridge || resetSessions;
         try {
           if (budgetDirty && limitDraft) {
             const b = await api("/token-budget", { method: "POST", body: { limits: limitDraft } });
@@ -6188,7 +6264,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           }
           let r;
           try {
-            r = await api("/config", { method: "POST", body: { qq: normalizedQq, bili, unified: normalizedUnified, restartBridge, baseStamp: configStamps } });
+            r = await api("/config", { method: "POST", body: { qq: normalizedQq, bili, unified: normalizedUnified, restartBridge: shouldRestart, resetSessions, baseStamp: configStamps } });
           } catch (e) {
             // 409：配置在加载后被别处改过。不要盲目覆盖 —— 提示重新读取。
             if (/CONFIG_STALE|已被别处修改/.test(String(e.message))) {
@@ -6203,7 +6279,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           if (r.unified) setUnified(r.unified);
           const nextSaved = JSON.stringify({ qq: r.qq ?? normalizedQq, bili: r.bili ?? bili, unified: r.unified ?? normalizedUnified });
           setSaved(nextSaved);
-          notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${r.warnings?.length ? "（有提示）" : ""}`);
+          if (resetSessions) setAdminDiscardContext(false);
+          const resetDone = r.sessionsReset === true || r.biliSessionsReset === true;
+          notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${resetSessions ? (resetDone ? "，已重置相关会话上下文" : "，没有可重置的在线会话") : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${r.warnings?.length ? "（有提示）" : ""}`);
           if (r.warnings?.length) setErr(r.warnings.join(" "));
           await loadOverview();
         } catch (e) { setErr(`保存失败：${e.message}`); } finally { setBusy(""); }
@@ -6213,6 +6291,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         setQq(JSON.parse(saved).qq);
         setBili(JSON.parse(saved).bili);
         setUnified(JSON.parse(saved).unified);
+        setAdminDiscardContext(false);
         if (budgetRef.current?.limits) setLimitDraft(budgetRef.current.limits);
         notify("已撤销未保存的改动");
       };
@@ -6255,8 +6334,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "overview") return h(OverviewTab, { overview, reload, busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, goTab: setTab });
         if (tab === "characters") return h(CharactersTab, { overview, busy, setBusy, toast: notify, reload, goTab: setTab, unified, setUnified: setUnifiedPath });
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
-        if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save });
-        if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save });
+        if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext });
+        if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext });
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify });

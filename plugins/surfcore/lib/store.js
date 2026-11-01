@@ -51,7 +51,8 @@ const BIDI_DEFAULTS = {
   // 四类动态（2026-10-22 可编辑）：默认值与 tools/lib/kinds.mjs 的 DEFAULT_KINDS 同源。
   dynamics: dynamicDefaults(),
   diary: { push: true, enabled: true },
-  notify: { type: 'none', url: '', template: 'text', cmd: '', args: [] },
+  notify: { type: 'none', url: '', template: 'text', cmd: '', args: [], timeoutMutes: [] },
+  interact: { enabled: true, maxCommentAgeDays: 14 },
   listen: {
     comment: true, commentIntervalSec: 300, scope: 'both', oncePerPerson: false,
     allDay: false, dm: false, dmScope: 'owner', live: false, liveRoom: '', liveScope: 'owner',
@@ -84,7 +85,7 @@ export const DEFAULT_UNIFIED = {
     biliMid: '',
     biliName: '',
     displayName: '',
-    gentle: true,
+    gentle: false,
   },
   memory: {
     qqToBili: {
@@ -504,9 +505,15 @@ export function normalizeBiliConfig(input) {
   );
   cfg.fishGuard = normalizeBiliFishGuard(cfg.fishGuard ?? DEFAULT_BILI_FISH_GUARD);
   cfg.notify = isPlainObject(cfg.notify) ? cfg.notify : {};
-  cfg.notify.type = ['none', 'desktop', 'dm', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
+  cfg.notify.type = ['none', 'desktop', 'qq', 'dm', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
   cfg.notify.template = cfg.notify.template === 'markdown' ? 'markdown' : 'text';
   cfg.notify.args = Array.isArray(cfg.notify.args) ? cfg.notify.args.map(String) : [];
+  cfg.notify.timeoutMutes = Array.isArray(cfg.notify.timeoutMutes)
+    ? [...new Set(cfg.notify.timeoutMutes.map(String).filter((x) => /^[A-Z0-9_]{3,80}$/.test(x)))].slice(0, 50)
+    : [];
+  cfg.interact = isPlainObject(cfg.interact) ? cfg.interact : {};
+  cfg.interact.enabled = cfg.interact.enabled !== false;
+  cfg.interact.maxCommentAgeDays = finiteNumber(cfg.interact.maxCommentAgeDays, 14, 0, 365, { integer: true });
   cfg.diary = isPlainObject(cfg.diary) ? cfg.diary : {};
   cfg.diary.enabled = true;
   cfg.diary.push = cfg.diary.push !== false;

@@ -5,18 +5,20 @@
 
 ---
 
-## 快照：2026-11-01 18:05（dev.5 + 发版规则确认制）
+## 快照：2026-11-01 20:35（dev.6 + 通知/QQ推送/沉默逛）
 
 ### 当前事实
 
 - **分支**：`dev` 是集货区；`main` 固定为已发布的 `0.8.6`（`42ec20d`）。
 - **稳定版**：`0.8.6`（Release 标题 `SurfCore v0.8.6`）；`/releases/latest` 仍是它。
-- **dev 构建**：`0.8.6-dev.5` 已发 Pre-release（tag `v0.8.6-dev.5`，commit `d08554e`）。
-- **本地 dev HEAD**：`ac40467 build(dev): v0.8.6-dev.5`；版本 `0.8.6-dev.5`；工作区干净。
-- **测试**：`npm run test:audit` **110/110**；插件测试全绿；清单 574 files、`--verify-ref HEAD` 问题 0。
+- **dev 构建**：`0.8.6-dev.6`（tag 由发布会话发；本地构建提交 `8098849`）。
+- **本地 dev HEAD**：以 `git log -1` 为准（功能提交 `9be7fa6`；之后仅交接/清单提交）；版本 `0.8.6-dev.6`；工作区干净。
+- **测试**：`npm run test:audit` **114/114**；插件测试全绿；清单见 manifest（本次提交后重新生成）。
 
 ### 本批内容（都在 dev，未进稳定版）
 
+- **通知/QQ/沉默逛**：桌面通知修复；新增 `notify.type=qq`（只私聊 owner）；B站「互动与静默」+ 评论年龄上限；闸门错误带 code/hint；超时提醒可写入 `notify.timeoutMutes` 永久静音；
+- **管理员温柔模式**：默认关闭；开启弹全部风险；关闭后不再注入管理员提示/标记；关闭时可选保留或丢弃上下文（重置 QQ + B站 新会话）；管理员权限不变；
 - 更新器 `updates.channel`：`stable`（默认，只跟正式 Release）/ `dev`（只跟 `-dev.N` Pre-release）；
 - 设置页「检查更新」下面单选 **main / dev**；切回 main 会清空旧检查结果，不被 dev 弹窗打扰；
 - 版本规则 `X.Y.Z-dev.N`（同号下低于正式版；正式版切 dev 允许一次 `channel-switch`）；

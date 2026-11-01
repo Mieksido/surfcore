@@ -71,6 +71,12 @@ const tests = [
   // 号码规范化、旧字段推导、保存冲突、QQ/B站 两份提示词（B站 不得带 QQ 号）；
   // 以及真实 bridge.js 源码里的接线（唤醒 / 角色提示 / 消息标记）。
   'test-admin-identity.mjs', 'test-admin-prompt-wiring.mjs',
+  // 管理员温柔模式：默认关闭 / 开启风险弹窗 / 关闭时上下文取舍 / 丢弃上下文重置。
+  'test-admin-gentle-ux.mjs',
+  // 通知通道：桌面 toast 转义 / 捕获 stderr；QQ 推送只走控制台专用端点。
+  'test-notify-channels.mjs',
+  // B站沉默逛 + 评论年龄闸：工具硬拦、带 code/hint。
+  'test-bili-interact.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。
   'test-memory-card.mjs', 'test-memory-card-wiring.mjs',
   // 角色人格：多角色目录隔离 / 切换 epoch / 快照回档 / 旧数据迁移（含凭证不进角色包）。

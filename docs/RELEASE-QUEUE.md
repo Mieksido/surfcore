@@ -14,6 +14,87 @@
 
 ## 待发布
 
+### 批次 2026-11-01 20:35 · 通知修复 + QQ推送 + 沉默逛 + 年龄闸
+<!-- release-batch: start=2026-11-01T20:10+08:00 end=2026-11-01T20:50+08:00 commits=e676dd9,218a2a4,9be7fa6 -->
+
+**覆盖提交**：`e676dd9`, `218a2a4`, `9be7fa6`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 桌面通知：PowerShell 单引号 XML + SecurityElement.Escape；捕获 stderr；非 Windows 明确失败；
+- 新增 `notify.type=qq`：只私聊 ownerQQ，走桥接 `/api/notify/owner`（控制台专用，AI 不能调）；
+- 新增 B站 `interact.enabled` 沉默逛：评论/回复/搭话/动态/分享/私信/弹幕/点赞全部硬拦，仍可看/评分/写日记；
+- 新增 `interact.maxCommentAgeDays`（默认 14），避免 @ 2023 年旧评论；
+- 闸门错误统一 code + hint：BILI_INTERACT_DISABLED / BILI_COMMENT_TOO_OLD / DESKTOP_* / QQ_NOTIFY_* / NOTIFY_*。
+- 超时提醒可在概览「永久不再显示」；写入 `bili.config.json` 的 `notify.timeoutMutes`，同 code/source 1 小时去重。
+
+**验证**：
+```text
+node scripts/test-notify-channels.mjs
+node scripts/test-bili-interact.mjs
+npm run test:audit   # 114/114
+cd plugins/surfcore && npm test   # 0 失败
+PowerShell Parser::ParseFile(桌面 toast) → PS syntax OK
+```
+
+**重启**：QQ 桥接（通知端点）+ DSH（UI）；B站 沉默/年龄下一轮生效。
+
+**数据**：B站 config 新增 `interact`；旧配置默认 true/14；`0` 额度仍是不限量，不改变旧语义。
+
+**风险**：
+- QQ 推送依赖桥接在线；桥接没开只能报错；
+- 沉默逛仍会读/评分/写日记，token 仍消耗；
+- 年龄闸只对有明确 parent/fish target 生效；模型自写 @ 仍可能绕过；
+- B站闸门错误目前主要回工具/agent，未进概览错误报告；
+- 桌面通知仍只支持 Windows。
+
+**case**：`docs/cases/2026-11-01-notify-qq-silent-browse.md`
+
+---
+
+### 批次 2026-11-01 19:55 · 管理员温柔模式默认关闭 + 风险/上下文确认
+<!-- release-batch: start=2026-11-01T19:35+08:00 end=2026-11-01T19:55+08:00 commits=bf5fd31 -->
+
+**覆盖提交**：`bf5fd31`
+**建议**：**0.8.7（patch，稳定版）**；若只发 dev，则 `0.8.6-dev.7`
+
+**改了什么**：
+- `normalizeAdmin`/`adminFromSources`/`store.DEFAULT_UNIFIED` 默认 `gentle:false`，只有显式 true 才开；
+- 开启前新增 `AdminGentleEnableModal`，列出全部行为风险；
+- 关闭后不再注入 `adminPromptBlock`、不再用 `【管理员】` 标记；`ownerLabel` 不再带“管理员”；
+- 关闭时新增 `AdminGentleDisableModal`：保留上下文（默认/可选否）或丢弃上下文；
+- 丢弃上下文 → `resetSessions`：QQ 会话语义重置、B站 换新 sessionId、自动重启桥接；
+- 管理员权限/审批/白名单不变。
+
+**验证**：
+```text
+node scripts/test-admin-identity.mjs
+node scripts/test-admin-prompt-wiring.mjs
+node scripts/test-admin-gentle-ux.mjs
+cd plugins/surfcore && node scripts/test-admin-bili-prompt.mjs
+cd plugins/surfcore && node scripts/test-admin-config-api.mjs
+npm run test:audit   # 112/112
+cd plugins/surfcore && npm test   # 0 失败
+```
+
+**重启**：QQ 桥接 + DSH；B站 调度器由插件自动换会话。
+
+**数据/迁移**：
+- 已有显式 `gentle:true` 保持；缺省/旧配置按新默认关闭；
+- 丢弃上下文会清 QQ 会话/社交状态，B站 换新 sessionId（旧 DSH 会话文件仍在磁盘，不再读取）；
+- 保留上下文则旧历史可能继续影响语气。
+
+**风险**：
+- 关闭后模型不再知道“管理员”，权限仍硬校验；
+- 人格卡本身可能仍温柔；
+- 丢弃上下文不可恢复；
+- 提示词只能引导，不能保证绝不回嘴；
+- 默认关闭会让缺省旧用户从“温柔”变“普通”，需要发布说明。
+
+**case**：`docs/cases/2026-11-01-admin-gentle-default-off.md`
+
+---
+
 ### 批次 2026-11-01 14:00 · 更新通道 stable/dev（测试版链路）
 <!-- release-batch: start=2026-11-01T13:00+08:00 end=2026-11-01T14:00+08:00 commits=dev -->
 

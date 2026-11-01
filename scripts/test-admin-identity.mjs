@@ -6,7 +6,7 @@
  *   2. 合体层 admin 缺省时，从 QQ ownerQQ / B站 owner.mid 推导（升级不用重填）；
  *   3. 保存冲突：管理员卡片优先，高级参数单独改能回填；
  *   4. 提示词块：QQ 两侧号码都出现，B站 不出现 QQ 号，规则包含「绝不回嘴」；
- *   5. 关掉温柔模式后只留身份，不再注入语气规则。
+ *   5. 关掉温柔模式后不再注入任何管理员专属提示词，也不再留【管理员】标记。
  *
  * 运行：node scripts/test-admin-identity.mjs
  */
@@ -22,7 +22,7 @@ assert.equal(normalized.qq, '10001');
 assert.equal(normalized.biliMid, '20002');
 assert.equal(normalized.biliName, '测试B站昵称');
 assert.equal(normalized.displayName, '测试B站昵称', '没填称呼时用 B站昵称');
-assert.equal(normalized.gentle, true, '温柔模式默认开');
+assert.equal(normalized.gentle, false, '温柔模式默认关闭（2026-11-01 用户定）');
 
 assert.equal(normalizeAdmin({ qq: 'abc' }).qq, '', '非数字 QQ 必须丢弃');
 assert.equal(normalizeAdmin({ biliMid: '12' }).biliMid, '', '过短 mid 必须丢弃');
@@ -44,7 +44,7 @@ const fromLegacy = adminFromSources({
 });
 assert.deepEqual(
   { qq: fromLegacy.qq, biliMid: fromLegacy.biliMid, biliName: fromLegacy.biliName, gentle: fromLegacy.gentle },
-  { qq: '10001', biliMid: '20002', biliName: '测试B站昵称', gentle: true },
+  { qq: '10001', biliMid: '20002', biliName: '测试B站昵称', gentle: false },
   '合体层还没有 admin 时，必须从 ownerQQ / owner.mid 推导',
 );
 
@@ -67,7 +67,7 @@ assert.equal(adminDisplayName(normalizeAdmin({ qq: '10001' })), '', '没填称�
 assert.equal(adminFromQqConfig({ admin: { qq: '111111', biliMid: '20002' }, ownerQQ: '999999' }).qq, '111111', 'admin 优先于 ownerQQ');
 
 // ── 3. 保存冲突合并 ────────────────────────────────────────────────────────
-const current = normalizeAdmin({ qq: '10001', biliMid: '20002', biliName: '测试B站昵称', displayName: '主人' });
+const current = normalizeAdmin({ qq: '10001', biliMid: '20002', biliName: '测试B站昵称', displayName: '主人', gentle: true });
 const cardWins = resolveAdminUpdate({
   current,
   incomingAdmin: { qq: '100001', biliMid: '200002', biliName: '新主人', displayName: '新称呼', gentle: true },
@@ -117,8 +117,8 @@ assert.ok(compact.length < qqBlock.length, 'compact 版必须比完整版短');
 assert.ok(compact.includes('绝不回嘴'));
 
 const mild = adminPromptBlock('qq', normalizeAdmin({ ...admin, gentle: false }));
-assert.ok(!mild.includes('绝不回嘴'), '关掉温柔模式后不再注入语气规则');
-assert.ok(mild.includes('10001'), '但身份仍要保留');
+assert.equal(mild, '', '关掉温柔模式后不再注入任何管理员专属提示词');
+assert.equal(adminPromptBlock('bili', normalizeAdmin({ ...admin, gentle: false })), '', 'B站关闭后也不注入管理员专属块');
 
 assert.equal(adminPromptBlock('qq', normalizeAdmin({})), '', '未配置管理员时不占提示词');
 const unnamed = adminPromptBlock('qq', normalizeAdmin({ qq: '10001', gentle: true }));
@@ -130,7 +130,7 @@ assert.ok(namedPrompt.includes('身份/权限标记'), '必须说明“管理员
 assert.equal(adminPromptBlock('bili', normalizeAdmin({})), '');
 
 assert.equal(adminMarker(admin), '【管理员·温柔】');
-assert.equal(adminMarker({ ...admin, gentle: false }), '【管理员】');
+assert.equal(adminMarker({ ...admin, gentle: false }), '', '关闭后消息标记也不能留【管理员】');
 
 const summary = adminSummary(admin);
 assert.deepEqual(
@@ -171,6 +171,17 @@ assert.equal(cardEdit.qq.admin.displayName, '新称呼', '改称呼必须投影�
 assert.equal(cardEdit.bili.owner.mid, '200002', '管理员卡片改 B站 UID 必须落到 bili.config.json');
 assert.equal(cardEdit.bili.owner.name, '新主人');
 assert.equal(cardEdit.unified.admin.displayName, '新称呼');
+
+// 6.2b 关闭温柔模式必须投影成 false，不能被默认值改回 true。
+const gentleOff = projectAdminSave({
+  current: legacyCurrent,
+  qq: { ...uiQq, admin: { ...legacyCurrent, gentle: true } },
+  bili: uiBili,
+  unified: { ...uiUnified, admin: { ...legacyCurrent, gentle: false } },
+});
+assert.equal(gentleOff.admin.gentle, false);
+assert.equal(gentleOff.qq.admin.gentle, false, 'QQ config 投影必须保留 false');
+assert.equal(gentleOff.unified.admin.gentle, false, 'unified 必须保留 false');
 
 // 6.3 只传 unified.admin（没有 qq/bili 对象）且改了值 → 自动补最小投影。
 const onlyAdmin = projectAdminSave({

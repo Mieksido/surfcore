@@ -15,6 +15,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { assertInteractEnabled } from '../lib/interact.mjs'
 import { biliState } from '../lib/state-paths.mjs'
 import { dynamicsGapMin } from '../lib/kinds.mjs'
 import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
@@ -49,6 +50,7 @@ if (!text) { console.error('share-dynamic 需要 --text'); process.exit(2) }
 if (text.length > 1000) { console.error('动态正文最多 1000 字'); process.exit(2) }
 if (dry && go) { console.error('--dry 和 --go 只能选一个'); process.exit(2) }
 if (!dry && !go) { console.error('必须显式 --dry 或 --go'); process.exit(2) }
+if (go && !assertInteractEnabled('分享动态')) process.exit(3)
 
 const cfg = config()
 if (cfg.share?.enabled === false) {

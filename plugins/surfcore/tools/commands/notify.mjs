@@ -1,6 +1,6 @@
 // 通知分发器 —— 她看完一轮，把摘要送到哪。
 //
-// 2026-10-18 主人重定：方式只有四种（不推送 / 桌面通知 / Webhook / 自定义命令）。
+// 2026-10-18 主人重定：方式有五种（不推送 / 桌面通知 / QQ私聊 / Webhook / 自定义命令）。
 //   · Webhook **按域名自动适配**飞书/钉钉/企业微信/QQ机器人/WorkBuddy 的报文格式
 //     （它们各自的 JSON 结构不一样 ✗，让用户去记格式不现实 ✓）
 //   · 自定义命令：`cmd` = 可执行文件、`args` = 参数数组，消息自动作为**最后一个参数**传入 ✓
@@ -12,13 +12,16 @@
 //   node notify.mjs --test                              （发一条测试消息；设置页「发条测试」用它）
 //
 // 配置（~/.dsh/surfcore/bili.config.json 的 notify 段）：
-//   { "type": "none|desktop|webhook|command", "url": "", "template": "text|markdown", "cmd": "" }
+//   { "type": "none|desktop|qq|webhook|command", "url": "", "template": "text|markdown", "cmd": "" }
+//   · qq：只私聊管理员本人（走本机桥接的 /api/notify/owner；不发群）
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
+import { buildDesktopToastScript } from '../lib/desktop-toast.mjs'
+import { QQ_CONFIG, QQ_STATE_DIR } from '../../lib/paths.js'
 
 const argv = process.argv.slice(2)
 const DRY = argv.includes('--dry')
@@ -76,33 +79,99 @@ async function sendWebhook(url, tpl) {
   console.log(`webhook ${r.status} ✓ ${raw.slice(0, 120)}`)
 }
 
-function sendDesktop() {
+async function sendDesktop() {
   if (DRY) { console.log('[dry] 桌面通知：' + String(text).slice(0, 60)); return }
-  if (process.platform !== 'win32') { console.log(`[通知] ${title}\n${text}`); return }
-  const ps = [
-    '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null',
-    '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null',
-    '"<toast><visual><binding template=\\"ToastGeneric\\"><text></text><text></text></binding></visual></toast>" | Out-File -Encoding utf8 $env:DW_XML',
-    '$xml = New-Object Windows.Data.Xml.Dom.XmlDocument',
-    '$xml.LoadXml([IO.File]::ReadAllText($env:DW_XML))',
-    '$node = $xml.GetElementsByTagName("text")',
-    '$node.Item(0).AppendChild($xml.CreateTextNode($env:DW_TITLE)) | Out-Null',
-    '$node.Item(1).AppendChild($xml.CreateTextNode($env:DW_TEXT)) | Out-Null',
-    '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("DeepSeek Harness").Show([Windows.UI.Notifications.ToastNotification]::new($xml))',
-    'Remove-Item $env:DW_XML -Force -ErrorAction SilentlyContinue',
-  ].join('\n')
+  if (process.platform !== 'win32') {
+    throw new Error('[DESKTOP_UNSUPPORTED] 桌面通知仅支持 Windows；请改用 Webhook / QQ / 自定义命令')
+  }
+  const ps = buildDesktopToastScript()
   const script = path.join(os.tmpdir(), `dw-toast-${Date.now()}.ps1`)
-  const xml = path.join(os.tmpdir(), `dw-toast-${Date.now()}.xml`)
   fs.writeFileSync(script, ps, 'utf8')
-  execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
-    env: { ...process.env, DW_TITLE: String(title), DW_TEXT: String(text), DW_XML: xml },
-    stdio: 'ignore', timeout: 15000,
-  })
-  fs.rmSync(script, { force: true })
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
+      env: { ...process.env, DW_TITLE: String(title), DW_TEXT: String(text) },
+      stdio: ['ignore', 'ignore', 'pipe'], timeout: 15000,
+    })
+  } catch (error) {
+    const detail = String(error?.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' ');
+    const message = `[DESKTOP_TOAST_FAILED] 桌面通知失败：${detail || error?.message || 'PowerShell 未返回错误详情'}`;
+    await reportTimeout('DESKTOP_TOAST_FAILED', message, '检查 PowerShell 是否可用；或改用 QQ / Webhook；在概览错误报告可永久静音这类超时');
+    throw new Error(message)
+  } finally {
+    try { fs.rmSync(script, { force: true }) } catch {}
+  }
   console.log('桌面通知已发送 ✓')
 }
 
-function sendCommand(cmd) {
+function qqBridgeInfo() {
+  const qqConfigFile = process.env.SURFCORE_QQ_CONFIG || QQ_CONFIG
+  let qq = {}
+  try { qq = JSON.parse(fs.readFileSync(qqConfigFile, 'utf8')) } catch {}
+  let token = String(qq.consoleToken ?? '').trim()
+  if (!token) {
+    try { token = fs.readFileSync(path.join(QQ_STATE_DIR, 'console-token'), 'utf8').trim() } catch {}
+  }
+  return { ownerQQ: String(qq.ownerQQ ?? '').trim(), port: Number(qq.consolePort) || 3100, token }
+}
+
+async function reportTimeout(code, message, hint) {
+  if (Array.isArray(n.timeoutMutes) && n.timeoutMutes.includes(code)) return
+  const info = qqBridgeInfo()
+  if (!info.token) return
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 2500)
+  try {
+    await fetch(`http://127.0.0.1:${info.port}/api/notice/timeout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': info.token },
+      body: JSON.stringify({ code, message: String(message).slice(0, 300), hint: String(hint).slice(0, 300), source: 'notify' }),
+      signal: controller.signal,
+    })
+  } catch {
+    // 通知失败本身不能因为“上报失败”再抛一次。
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function sendQQ() {
+  const { ownerQQ, port, token } = qqBridgeInfo()
+  if (!ownerQQ) throw new Error('[QQ_NOTIFY_NO_OWNER] QQ 推送失败：config.json 未配置 ownerQQ（管理员 QQ）')
+  if (!token) throw new Error('[QQ_NOTIFY_NO_TOKEN] QQ 推送失败：没有控制台令牌（检查 config.json.consoleToken / state/console-token）')
+  if (DRY) {
+    console.log(`[dry] QQ 私聊管理员 ${ownerQQ}：${String(text).slice(0, 60)}`)
+    return
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/notify/owner`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': token },
+      body: JSON.stringify({ title, message: String(text) }),
+      signal: controller.signal,
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.ok === false) {
+      throw new Error(`QQ 推送失败：${body?.error || `桥接 HTTP ${res.status}`}${body?.hint ? `；${body.hint}` : ''}`)
+    }
+    console.log(`QQ 私聊管理员已发送 ✓${body?.messageId ? `（messageId ${body.messageId}）` : ''}`)
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const message = '[QQ_NOTIFY_TIMEOUT] QQ 推送超时：桥接 15 秒没响应；确认 SnowLuma/QQ 在线，重启桥接后重试';
+      await reportTimeout('QQ_NOTIFY_TIMEOUT', message, '检查 SnowLuma/QQ 是否在线；重启 QQ 桥接；在概览错误报告可永久静音这类超时');
+      throw new Error(message)
+    }
+    if (!String(error?.message || '').startsWith('QQ 推送失败')) {
+      throw new Error(`[QQ_NOTIFY_UNREACHABLE] QQ 推送失败：${error?.message || error}；确认 QQ 桥接已启动（默认 http://127.0.0.1:${port}）`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function sendCommand(cmd) {
   const c = String(cmd ?? '')
   if (!c.trim()) throw new Error('config.notify.cmd 没配')
   // 2026-10-18 加保险：命令不存在（换电脑/插件被删/路径变了）→ 别静默失败 ✗，
@@ -137,7 +206,9 @@ try {
   if (type === 'none') {
     console.log(DRY ? '[dry] 方式=none（不推送）→ 什么也不做 ✓' : '（方式=none：不推送）')
   } else if (type === 'desktop') {
-    sendDesktop()
+    await sendDesktop()
+  } else if (type === 'qq') {
+    await sendQQ()
   } else if (type === 'webhook') {
     if (!n.url) throw new Error('config.notify.url 没配')
     await sendWebhook(n.url, n.template)
@@ -148,9 +219,9 @@ try {
     if (isPath && !fs.existsSync(c)) {
       console.log(`⚠️ 推送命令不存在：${c}`)
       console.log('   → 已自动改用「桌面通知」✓（去设置里改「消息推送」即可）')
-      sendDesktop()
+      await sendDesktop()
     } else {
-      sendCommand(n.cmd)
+      await sendCommand(n.cmd)
     }
   } else if (type === 'dm') {
     // 2026-10-26：这条分支从来没实现过（原稿引用未定义的 p，一跑就 ReferenceError），

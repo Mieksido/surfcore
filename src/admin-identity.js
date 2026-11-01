@@ -47,7 +47,8 @@ export function normalizeAdmin(input = {}) {
     biliName,
     // 没填称呼就用 B站昵称：两个设置页和提示词里都显示同一个人。
     displayName: displayName || biliName,
-    gentle: source.gentle !== false,
+    // 2026-11-01 用户定：新装/缺省默认关闭温柔模式（显式 true 才开）。
+    gentle: source.gentle === true,
   };
 }
 
@@ -72,7 +73,7 @@ export function adminFromSources({ unified = {}, qq = {}, bili = {} } = {}) {
     biliMid: source && hasOwn(source, 'biliMid') ? source.biliMid : biliOwner.mid,
     biliName: source && hasOwn(source, 'biliName') ? source.biliName : biliOwner.name,
     displayName: source && hasOwn(source, 'displayName') ? source.displayName : '',
-    gentle: source && hasOwn(source, 'gentle') ? source.gentle : true,
+    gentle: source && hasOwn(source, 'gentle') ? source.gentle : false,
   });
 }
 
@@ -172,7 +173,7 @@ export function adminDisplayName(admin) {
 export function adminMarker(admin) {
   const a = normalizeAdmin(admin);
   // 没配置管理员时保持旧标记：不要凭空宣称「温柔模式」。
-  return a.gentle && adminConfigured(a) ? '【管理员·温柔】' : '【管理员】';
+  return a.gentle && adminConfigured(a) ? '【管理员·温柔】' : '';
 }
 
 /**
@@ -185,6 +186,8 @@ export function adminMarker(admin) {
 export function adminPromptBlock(platform, admin, options = {}) {
   const a = normalizeAdmin(admin);
   if (!adminConfigured(a)) return '';
+  // 关闭温柔模式 = 不再注入任何管理员专属提示词（不是只删语气规则）。
+  if (!a.gentle) return '';
   const name = adminDisplayName(a);
   const addressRule = name
     ? `称呼「${name}」；「管理员」只是身份/权限标记，不要当名字或拼进称呼`
@@ -198,7 +201,6 @@ export function adminPromptBlock(platform, admin, options = {}) {
       a.biliMid ? `（mid ${a.biliMid}）` : '',
       '—— QQ 和 B站 是同一个管理员',
     ].join('');
-    if (!a.gentle) return `【主人】你的主人是 ${who}。`;
     if (compact) {
       return `【主人·温柔模式】主人是 ${who}；回主人时更温柔（${addressRule}），先回应关心再答内容，绝不回嘴、不抬杠。`;
     }
@@ -217,7 +219,6 @@ export function adminPromptBlock(platform, admin, options = {}) {
     a.biliMid ? `B站「${a.biliName || name}」（mid ${a.biliMid}）` : '',
   ].filter(Boolean).join('；');
   const who = `${ids} —— 两边是同一个人，别当成两个人`;
-  if (!a.gentle) return `【管理员】管理员是 ${who}。`;
   if (compact) {
     return `【管理员·温柔模式】管理员是 ${who}；说话时要比平时更温柔（${addressRule}），先接情绪再答内容，绝不回嘴。`;
   }

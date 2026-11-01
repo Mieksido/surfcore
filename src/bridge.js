@@ -130,6 +130,15 @@ const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const GROUP_POLICY_FILE = path.join(STATE_DIR, 'group-policy.json');
 const LIMIT_MUTE_FILE = path.join(STATE_DIR, 'limit-mutes.json');
+function readLimitMutes() {
+  try { return JSON.parse(fs.readFileSync(LIMIT_MUTE_FILE, 'utf8')) || {}; } catch { return {}; }
+}
+function readBiliTimeoutMutes() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(SURFCORE_DIR, 'bili.config.json'), 'utf8'));
+    return Array.isArray(cfg?.notify?.timeoutMutes) ? cfg.notify.timeoutMutes.map(String) : [];
+  } catch { return []; }
+}
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
 const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 // 操作者为每个会话预写的「初始提示词」（见 main() 里的 initialPrompts）。
@@ -6363,7 +6372,7 @@ async function main() {
           atomicWriteJson(LIMIT_MUTE_FILE, mutes);
           try {
             const rows = gateEvents.list({ limit: 500, includeAcked: false }).events
-              .filter((ev) => ev.gate === 'limit' && ev.reason?.code === code)
+              .filter((ev) => (ev.gate === 'limit' || ev.gate === 'timeout') && ev.reason?.code === code)
               .map((ev) => ev.id);
             if (rows.length) gateEvents.ack(rows);
           } catch {}
@@ -8615,6 +8624,96 @@ async function main() {
           } catch (error) {
             log(`图片查询失败 ${key} ${messageId}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `图片查询失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+
+        // ── 超时提醒（L1，可永久静音）────────────────────────────────────────
+        // 工具进程（B站 notify / 通知测试）超时后 POST 到这里，不再只能 toast 一句。
+        if (req.method === 'POST' && url.pathname === '/api/notice/timeout') {
+          if (req.headers['x-agent-token']) {
+            sendJson({ ok: false, code: 'TIMEOUT_NOTICE_CONSOLE_ONLY', error: '超时提醒只允许控制台调用' }, 403);
+            return;
+          }
+          const body = await readBody();
+          const code = String(body.code ?? 'TIMEOUT').trim().slice(0, 80) || 'TIMEOUT';
+          const message = redactKnownTokensOnly(String(body.message ?? '操作超时').trim()).slice(0, 300);
+          const hint = redactKnownTokensOnly(String(body.hint ?? '').trim()).slice(0, 300);
+          const source = String(body.source ?? '').trim().slice(0, 120);
+          const mutes = readLimitMutes();
+          if (mutes.muted?.[code] || readBiliTimeoutMutes().includes(code)) {
+            sendJson({ ok: true, muted: true, code });
+            return;
+          }
+          const key = `timeout:${code}:${source}`;
+          const nowMs = Date.now();
+          if (nowMs - Number(mutes.lastAt?.[key] || 0) < 60 * 60 * 1000) {
+            sendJson({ ok: true, skipped: 'throttled', code });
+            return;
+          }
+          mutes.lastAt = { ...(mutes.lastAt || {}), [key]: nowMs };
+          atomicWriteJson(LIMIT_MUTE_FILE, mutes);
+          try {
+            gateEvents.record({
+              level: 'L1',
+              gate: 'timeout',
+              kind: 'fault',
+              event: code,
+              action: 'failed',
+              subject: { source },
+              reason: { code, message },
+              impact: '这次操作没有完成；如果反复出现，可能是桥接/QQ/DSH 或外部服务响应慢。',
+              recommendation: hint || '打开错误报告查看；确认桥接/QQ 在线；仍失败时重启对应进程。',
+              confidence: 'confirmed',
+              dedupeKey: key,
+              evidence: { source },
+            });
+          } catch {}
+          sendJson({ ok: true, reported: true, code });
+          return;
+        }
+
+        // ── 管理员私聊通知（B站日记推送 / QQ 推送通道）──────────────────────
+        // 只允许控制台调用，只发给 ownerQQ，不接受任意收件人；AI（x-agent-token）不能拿它当群发通道。
+        if (req.method === 'POST' && url.pathname === '/api/notify/owner') {
+          if (req.headers['x-agent-token']) {
+            sendJson({ ok: false, code: 'NOTIFY_CONSOLE_ONLY', error: '管理员通知只允许控制台调用', hint: '在设置页测试，或由 B站 推送进程携带控制台令牌调用' }, 403);
+            return;
+          }
+          const body = await readBody();
+          const owner = String(cfg.ownerQQ ?? '').trim();
+          if (!owner) {
+            sendJson({ ok: false, code: 'NOTIFY_OWNER_MISSING', error: '未配置管理员 QQ（ownerQQ）', hint: '先到设置页填写管理员 QQ，再重试' }, 400);
+            return;
+          }
+          const message = redactKnownTokensOnly(String(body.message ?? '').trim());
+          const title = String(body.title ?? '').trim().slice(0, 80);
+          if (!message) {
+            sendJson({ ok: false, code: 'NOTIFY_EMPTY', error: '通知正文为空', hint: '发送前检查日记摘要；空内容不推送' }, 400);
+            return;
+          }
+          if (message.length > 4000) {
+            sendJson({ ok: false, code: 'NOTIFY_TOO_LONG', error: `通知正文过长（${message.length} 字，上限 4000）`, hint: '只推摘要，不要推整篇日记' }, 400);
+            return;
+          }
+          if (SENSITIVE_RE.test(message)) {
+            sendJson({ ok: false, code: 'NOTIFY_SENSITIVE', error: '通知正文疑似含敏感信息，已阻止发送', hint: '检查日记里是否带路径/令牌；去掉后再推' }, 403);
+            return;
+          }
+          const fullText = title && title !== '通知' ? `【${title}】\n${message}` : message;
+          try {
+            const sent = await withTimeout(bot.sendPrivateMessage(Number(owner), text(escapeCqText(fullText))), SEND_TIMEOUT_MS, 'QQ 管理员通知');
+            log(`控制台：管理员通知已私聊 ${owner}`);
+            sendJson({ ok: true, owner, messageId: sent?.message_id ?? null });
+          } catch (error) {
+            const detail = String(error?.message ?? error);
+            log(`控制台：管理员通知发送失败：${detail}`);
+            sendJson({
+              ok: false,
+              code: 'NOTIFY_SEND_FAILED',
+              error: `QQ 推送失败：${detail}`,
+              hint: '确认 SnowLuma/QQ 在线、管理员 QQ 未把机器人拉黑；QQ 桥接未运行时先启动桥接',
+            }, 502);
           }
           return;
         }
@@ -12422,6 +12521,14 @@ async function main() {
   function ownerMessageTag() {
     return adminMarker(adminIdentity());
   }
+  // 关闭温柔模式后，消息标签也不能再把“管理员”当称呼。
+  function ownerMessageLabel() {
+    const a = adminIdentity();
+    if (!a.gentle) {
+      return a.displayName ? `${a.displayName}（ownerQQ ${cfg.ownerQQ ?? ''}）` : `你（ownerQQ ${cfg.ownerQQ ?? ''}）`;
+    }
+    return `${ownerMessageTag()}管理员（ownerQQ ${cfg.ownerQQ ?? ''}）`;
+  }
   // 对齐表（称呼）：只用在**私聊当前对方**身上，不把别人的称呼带进别的会话。
   const ALIGNMENTS_FILE = path.join(STATE_DIR, 'alignments.json');
   let alignLinksCache = { key: '', links: [] };
@@ -13030,7 +13137,7 @@ async function main() {
       tail: truncateTextTail(String(plainContent ?? textContent), 200),
       quoteTargetIsSelf: !!quoteTargetIsSelf,
       isOwner: !!isOwner,
-      ownerLabel: isOwner ? `${ownerMessageTag()}管理员（ownerQQ ${cfg.ownerQQ ?? ''}）` : '',
+      ownerLabel: isOwner ? ownerMessageLabel() : '',
       isSelf: false,
       // 入站时就标记：后续群名/昵称/规则改了也不影响已经发生的判定。
       fish: !isOwner && isFishName(sender, cfg.fishGuard),
@@ -13080,7 +13187,7 @@ async function main() {
       kind: 'poke',
       quoteTargetIsSelf: !!targetIsSelf,
       isOwner: !!isOwner,
-      ownerLabel: isOwner ? `${ownerMessageTag()}管理员（ownerQQ ${cfg.ownerQQ ?? ''}）` : '',
+      ownerLabel: isOwner ? ownerMessageLabel() : '',
       isSelf: false,
       media: [],
       hasMedia: false,
@@ -14216,7 +14323,7 @@ async function main() {
         tail: candidate.tail,
         quoteTargetIsSelf: false,
         isOwner: candidate.isOwner,
-        ownerLabel: candidate.isOwner ? `${ownerMessageTag()}管理员（ownerQQ ${cfg.ownerQQ ?? ''}）` : '',
+        ownerLabel: candidate.isOwner ? ownerMessageLabel() : '',
         isSelf: candidate.isSelf,
         history: true,
         fish: candidate.fish,

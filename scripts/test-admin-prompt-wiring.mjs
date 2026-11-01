@@ -54,19 +54,19 @@ await withHarness({ ownerQQ: ADMIN.qq, admin: ADMIN }, async (h) => {
 
 await withHarness({ ownerQQ: ADMIN.qq, admin: { ...ADMIN, gentle: false } }, async (h) => {
   const wake = h.buildWakePromptV2('group:456', 'question');
-  assert.ok(wake.includes(ADMIN.qq), '关掉温柔模式后仍要认出管理员');
+  assert.ok(!wake.includes(ADMIN.qq), '关掉温柔模式后不再注入管理员身份块');
   assert.ok(!wake.includes('绝不回嘴'), '关掉后不得再注入语气硬规则');
   const roleHint = h.currentRoleHintV2();
-  assert.ok(roleHint.includes('【管理员】'), '角色提示保留身份');
+  assert.ok(!roleHint.includes('【管理员】'), '关掉后角色提示也不留管理员标记');
   assert.ok(!roleHint.includes('绝不回嘴'), '关掉后角色提示也不得带语气规则');
-  assert.equal(h.ownerMessageTag(), '【管理员】');
+  assert.equal(h.ownerMessageTag(), '', '关掉后消息标记必须为空');
 });
 
 // 未配置管理员（ownerQQ 也空）：不能凭空造出规则，也不能报错。
 await withHarness({ ownerQQ: null }, async (h) => {
   const wake = h.buildWakePromptV2('group:456', 'question');
   assert.ok(!wake.includes('管理员·温柔模式'), '未配置时不得注入管理员规则');
-  assert.equal(h.ownerMessageTag(), '【管理员】');
+  assert.equal(h.ownerMessageTag(), '', '未配置时也不能凭空留【管理员】标记');
 });
 
 console.log('admin prompt wiring tests OK');

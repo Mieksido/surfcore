@@ -10,6 +10,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 // 2026-10-21 补：line 99 用到 gate 却没 import，发动态会 ReferenceError
 import { gate } from '../lib/quota-gate.mjs'
+import { assertInteractEnabled } from '../lib/interact.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
 const argv = process.argv.slice(2)
@@ -21,6 +22,7 @@ for (let i = 1; i < argv.length; i += 1) {
 }
 const isDry = args.has('dry')
 const isGo = args.has('go')
+if (mode === 'post' && isGo && !assertInteractEnabled('发动态')) process.exit(3)
 const text = args.get('text')
 const dynId = args.get('id')
 

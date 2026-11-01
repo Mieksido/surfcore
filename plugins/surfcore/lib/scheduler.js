@@ -38,6 +38,7 @@ import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
+import { interactEnabled } from '../tools/lib/interact.mjs'
 
 // 当前角色的 B站 行为目录（角色系统未启用时回退旧目录）。
 function platformDir() {
@@ -282,6 +283,7 @@ function wakePrompt(st, tools = '') {
   const L = limitsNow()
   const B = config()
   const K = kindsNow(B)
+  const SILENT = !interactEnabled(B)
   const bestSlot = `${String(K.best.slot).padStart(2, '0')}:00`
   const capText = (n) => (Number(n) > 0 ? n : '不限')
   const identity = identityContextLines()
@@ -307,7 +309,9 @@ function wakePrompt(st, tools = '') {
     })(),
     ...silenceLines(),
     '按 AGENTS.md 的「看的那晚」流程走一遍（不要等我说话，直接做）：',
-    '⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**',
+    ...(SILENT
+      ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
+      : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
     '1) `node bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
     '2) 读两本日记（`~/.dsh/surfcore/bili/whale-diary.md` + `whale-diary-private.md`）',
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
@@ -395,6 +399,7 @@ function wakePrompt(st, tools = '') {
       return days >= 7 ? ["5.5) ⛔ 已经 " + days + " 天没有主人的表态 → **今天不分享**（只看 + 写两本日记 + 推荐给我 ✓ 日记照写 ✓）"] : []
     })(),
     ...diaryPushLines(),
+    ...(SILENT ? ['⛔ **再次强调：沉默逛已开启，以上 4.5–7.5 的所有对外发言步骤全部跳过；只读、评分、写日记。**'] : []),
     '9) 收工：记 `diary log` ✓（今天想说的都说了吗？没说完留到下一趟，别憋着 ✗）',
   ].join('\n')
 }
@@ -748,6 +753,7 @@ export function startScheduler(ctx, opts) {
     const toolLine = () => `［工具］所有命令都用这一条：\`${TOOL_CMD} <子命令>\`（提示里写 "bili.mjs" 的都指它）—— 别去别处找 ✗`
 
     async function dmTick() {
+      if (!interactEnabled()) return
       if (dmBusy) return
       if (await budgetBlockedNow('私信叫醒')) return
       let cfg
@@ -806,6 +812,7 @@ export function startScheduler(ctx, opts) {
     }
 
   async function listenTick() {
+    if (!interactEnabled()) return
     if (listening) return
     if (await budgetBlockedNow('评论区倾听')) return
     let cfg
@@ -880,6 +887,16 @@ export function startScheduler(ctx, opts) {
   // ── 直播间监听：起一个 `danmaku await` 子进程；它命中就退出（自带契约）→ 叫醒她 → 再挂上 ──
   // 为什么放独立循环：tick() 会在"今天 done"时提前 return ✗，直播间不能跟着停 ✓
   async function liveTick() {
+    if (!interactEnabled()) {
+      if (liveProc !== null) {
+        liveStopping = true
+        try { liveProc.kill() } catch {}
+        liveProc = null
+        liveRetryAt = 0
+        log('[bili-whale] 直播间监听已停（沉默逛开启 ✓）')
+      }
+      return
+    }
     // ⚠️ 2026-10-18 主人定：直播间是**独立开关** —— 点开就开始、关掉就停（不受作息影响 ✓）
     if (ctx.sessionController) {
       let cur = {}
@@ -991,6 +1008,7 @@ export function startScheduler(ctx, opts) {
   //   补发：重启后发现今天有类错过了时段 → **一次只提醒一类**，两条之间隔 dynamics.gapMin
   //   （`daily-nudge.json` 记每类最近一次提醒，gapMin 内不重复吵她 ✓）
   async function dynTick() {
+    if (!interactEnabled()) return
     if (!ctx.sessionController) return
     if (await budgetBlockedNow('动态提醒')) return
     const cfgNow = config()

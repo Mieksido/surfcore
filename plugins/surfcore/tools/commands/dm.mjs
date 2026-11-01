@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { assertInteractEnabled } from '../lib/interact.mjs'
 import { gate, record } from '../lib/quota-gate.mjs'
 
 const argv = process.argv.slice(2)
@@ -38,6 +39,7 @@ const BV = (String(opt.msg ?? "").match(/BV[0-9A-Za-z]{10}/) ?? [])[0] ?? "";
 //    notify 的私信后端也跟着挂 ✗）
 const DRY = !!opt.dry
 const GO = !!opt.go
+if (GO && !assertInteractEnabled('B站私信')) process.exit(3)
 const STATUS = !!opt.status
 const MSG = String(opt.msg ?? '').trim()
 // 2026-10-20（管理员定）：`--to <mid>` = **回复一个给她发过私信的人**（陌生人通道）

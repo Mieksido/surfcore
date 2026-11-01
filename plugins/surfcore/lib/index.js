@@ -209,6 +209,8 @@ export function apply(ctx) {
 
   let scheduler = null;
   let schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
+  // 关闭温柔模式并丢弃上下文时递增：给 B站 一个全新 DSH sessionId，旧历史不再带入。
+  let biliSessionEpoch = 0;
   let syncTimer = null;
   let memoryCardTimer = null;
   let characterTimer = null;
@@ -379,7 +381,8 @@ export function apply(ctx) {
     }
     try {
       const character = readCurrentCharacter();
-      const sessionId = character ? `bili-whale-${character.id}` : 'bili-whale';
+      const baseSessionId = character ? `bili-whale-${character.id}` : 'bili-whale';
+      const sessionId = biliSessionEpoch ? `${baseSessionId}-r${biliSessionEpoch}` : baseSessionId;
       scheduler = startScheduler(ctx, {
         dshHome: DSH_HOME,
         biliMjs: BILI_MJS,
@@ -405,6 +408,19 @@ export function apply(ctx) {
     schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
     if (wasRunning) pluginLog('生物钟已停止');
     return { ok: true, wasRunning, scheduler: schedulerStatus };
+  }
+  // 显式“丢弃上下文”：给 B站 换一个新的 DSH sessionId，旧历史不会被新会话读取。
+  // 只停/起重启调度器，不删除 B站 的观看历史/行为账本；丢的是模型对话上下文。
+  async function resetBiliSchedulerSession() {
+    if (!scheduler || !schedulerStatus.running) return { reset: false, reason: 'not-running' };
+    try { await scheduler?.retire?.(); } catch (error) {
+      pluginLog('B站 旧会话退役失败（继续换新会话）：', String(error?.message ?? error));
+    }
+    scheduler = null;
+    schedulerStatus = idleSchedulerStatus('reset');
+    biliSessionEpoch = Date.now();
+    const next = startSchedulerNow();
+    return { reset: true, sessionId: next?.sessionId ?? null, started: next?.running === true };
   }
   startSchedulerNow();
 
@@ -958,7 +974,28 @@ export function apply(ctx) {
           : `QQ 启动开关已打开，但桥接启动失败：${started.error ?? started.message ?? '未知'}`);
       }
     }
-    if (body.restartBridge === true) {
+    // 关闭管理员温柔模式并选择“丢弃上下文”：保存配置后先退役 QQ 会话/社交上下文，再重启桥接。
+    // 顺序很重要：先 reset 再 restart，否则新会话会带着旧 cfg 建出来。
+    if (body.resetSessions === true) {
+      const bridgeNow = await bridgeStatus().catch(() => ({ running: false }));
+      if (bridgeNow?.running) {
+        try {
+          await stopAllBridgeSessions();
+          result.sessionsReset = true;
+        } catch (error) {
+          result.warnings.push(`重置 QQ 会话上下文失败：${error?.message ?? error}`);
+        }
+      } else {
+        result.warnings.push('QQ 桥接未运行：没有可重置的 QQ 会话上下文。');
+      }
+      try {
+        const biliReset = await resetBiliSchedulerSession();
+        if (biliReset.reset) result.biliSessionsReset = true;
+      } catch (error) {
+        result.warnings.push(`重置 B站 会话上下文失败：${error?.message ?? error}`);
+      }
+    }
+    if (body.restartBridge === true || body.resetSessions === true) {
       // 开关关掉时不允许「保存并重启」把 QQ 又拉起来；否则用户刚关的开关会被绕过。
       if (!platformStartEnabled('qq')) {
         result.warnings.push('QQ 启动开关已关闭：已跳过「保存并重启 QQ 桥接」。');
@@ -2944,6 +2981,25 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (req.method === 'GET' && pathname.endsWith('/automation')) {
       json(res, 200, automationSnapshot());
+      return;
+    }
+    if (req.method === 'POST' && pathname.endsWith('/timeout-mute')) {
+      try {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const code = String(body.code ?? '').trim();
+        if (!/^[A-Z0-9_]{3,80}$/.test(code)) {
+          json(res, 400, { ok: false, code: 'TIMEOUT_MUTE_CODE', error: '无效的超时错误码', hint: '刷新错误报告后重试' });
+          return;
+        }
+        const current = readBiliConfig().config;
+        const notify = current.notify && typeof current.notify === 'object' ? current.notify : {};
+        const list = Array.isArray(notify.timeoutMutes) ? notify.timeoutMutes.map(String) : [];
+        const next = { ...current, notify: { ...notify, timeoutMutes: [...new Set([...list, code])].slice(0, 50) } };
+        saveBiliConfig(next);
+        json(res, 200, { ok: true, code, muted: true, count: next.notify.timeoutMutes.length });
+      } catch (error) {
+        json(res, 500, { ok: false, code: 'TIMEOUT_MUTE_SAVE', error: `保存超时静音失败：${error?.message ?? error}`, hint: '检查 bili.config.json 是否可写' });
+      }
       return;
     }
     if (req.method === 'GET' && pathname.endsWith('/notify-config')) {

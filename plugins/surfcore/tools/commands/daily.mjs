@@ -19,6 +19,7 @@ import { currentGame, advanceRotation, GAMES } from '../lib/games.mjs'
 import { rememberKind } from '../lib/my-dynamics.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, dueKind, withPrefix, stripPrefix, CATCHUP_DAY } from '../lib/kinds.mjs'
 import { config } from '../lib/config.mjs'
+import { assertInteractEnabled } from '../lib/interact.mjs'
 import { hasKindSignal } from '../lib/kind-signals.mjs'
 import { ownerOf, findVideoDynamic, createForward, verifyForward } from '../lib/forward.mjs'
 import { pinOf, clearPin } from '../lib/pins.mjs'
@@ -50,6 +51,7 @@ for (let i = 0; i < argv.length; i += 1) {
 const DRY = !!opt.dry
 const GO = !!opt.go
 if (DRY === GO) { console.error('必须且只能给一个 --dry 或 --go'); process.exit(2) }
+if (GO && !assertInteractEnabled('发动态')) process.exit(3)
 
 const KIND = String(opt.kind ?? '')
 // 2026-10-22：四类动态的开关/时段/长度/前缀读设置页（bili.config.json 的 dynamics 段）。

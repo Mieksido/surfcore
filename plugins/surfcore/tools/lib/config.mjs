@@ -32,7 +32,9 @@ export const DEFAULTS = {
     // 每个偏好关键词的权重（0~5；0 = 停用，1 = 默认）。键名就是关键词本身。
     weights: {},
   },
-  notify: { type: 'none', url: '', template: 'text', cmd: '' },   // none | desktop | webhook | command（见 commands/notify.mjs）
+  notify: { type: 'none', url: '', template: 'text', cmd: '', timeoutMutes: [] },   // none | desktop | qq | webhook | command（见 commands/notify.mjs）
+  // 沉默逛：只看不说。enabled=false 时禁止评论/回复/搭话/动态/分享/私信，但仍可看/评分/写日记。
+  interact: { enabled: true, maxCommentAgeDays: 14 },
   aliases: [],                  // 历史昵称（兜底用；当前昵称仍从 nav 动态读）
   // 使用者本人（分享型评论要 @ 的人）：mid 用于白名单/查询，name 用于正文里的 @昵称
   // （acc/info 查询会风控，所以 name 缓存一份；改过就用 thread 的 `@到:` 验一下）
