@@ -486,6 +486,35 @@ window.__ModuleLoader__.load({
     }
 
     // ── 设置区域按钮 + 弹窗：高级设置里的每组参数收成一个按钮 ─────────────
+    function DshRepairCard({ busy, setBusy, toast }) {
+      const [profile, setProfile] = useState("");
+      const [out, setOut] = useState("");
+      const repair = async () => {
+        setBusy("dsh-repair");
+        try {
+          const r = await api("/dsh/repair", { method: "POST", body: { profile } });
+          if (!r.ok) throw new Error(r.error || "修复失败");
+          setOut(String(r.output || ""));
+          toast("✓ 已写回 DSH 注册；请完全退出并重开 DSH（不是刷新页面）");
+        } catch (e) {
+          setOut(String(e.output || ""));
+          toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
+        } finally { setBusy(""); }
+      };
+      return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+        h("h4", null, "DSH 注册（MCP / bundle）"),
+        h("p", null, "DSH 升级后如果 QQ 会话没有 qq_* 工具（只能收不能发），点这里重写 profile 的 MCP 与 bundle。"),
+        h("p", { className: "qbw-hint" }, "只在 DSH 升级/注册丢失时用；脚本不会重启 DSH，点完要完全退出并重开。"),
+        h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "4px", paddingTop: "0" } },
+          h("input", {
+            className: "qbw-input", placeholder: "profile（留空=自动检测，如 desktop）",
+            value: profile, onChange: (e) => setProfile(e.target.value),
+          }),
+          h(Btn, { onClick: repair, disabled: !!busy }, busy === "dsh-repair" ? "修复中…" : "修复 DSH 注册"),
+          h(Btn, { kind: "qbw-btn2", disabled: !out, onClick: () => navigator.clipboard.writeText(out).then(() => toast("✓ 输出已复制")) }, "复制输出")),
+        out ? h("pre", { className: "qbw-code", style: { whiteSpace: "pre-wrap", maxHeight: "220px", overflow: "auto", marginTop: "6px" } }, out) : null);
+    }
+
     function AreaButton({ title, note, badge, onClick }) {
       return h("button", { type: "button", className: "qbw-area-btn", title: note || title, "data-tip": note || title, onClick },
         h("div", { style: { minWidth: 0, textAlign: "left" } },
@@ -1455,6 +1484,29 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           })()),
           h("p", { style: { fontSize: "12px", color: "#e6a23c", marginTop: "2px" } },
             "⚠️ 下载/更新完成后需要完全退出 DSH 再打开才会生效；只刷新设置页不会应用。"),
+          (() => {
+            // 更新通道：正式用户 stable（默认）；测试机才切 dev（只跟 -dev.N 预发布）
+            const ch = status?.channel === "dev" ? "dev" : "stable";
+            const switchChannel = async (next) => {
+              if (next === ch) return;
+              setWorking(true);
+              try {
+                const r = await api("/updates", { method: "POST", body: { action: "set-channel", channel: next } });
+                if (!r.ok) throw new Error(r.error || "切换通道失败");
+                toast(`✓ 已切到${next === "dev" ? "测试" : "稳定"}通道；正在重新检查…`);
+                onDone?.();
+              } catch (e) { toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`); }
+              finally { setWorking(false); }
+            };
+            return h("div", { style: { display: "flex", gap: "8px", alignItems: "center", marginTop: "6px", flexWrap: "wrap" } },
+              h("span", { className: "qbw-label", style: { margin: 0 } }, "更新通道"),
+              h("select", { className: "qbw-select", value: ch, disabled: working, onChange: (e) => switchChannel(e.target.value) },
+                h("option", { value: "stable" }, "stable（正式版，默认）"),
+                h("option", { value: "dev" }, "dev（测试版，只给测试机）")),
+              h("span", { className: "qbw-hint" }, ch === "dev"
+                ? "只安装 vX.Y.Z-dev.N 的 Pre-release；正式用户不要开。"
+                : "只安装正式 Release；Pre-release 不会打扰你。"));
+          })(),
           pending.length ? pending.map((item) => h("div", { key: item.id, style: { border: "1px solid rgba(127,127,127,.24)", borderRadius: "10px", padding: "10px 12px", margin: "0 0 8px" } },
             h("label", { style: { display: "flex", gap: "8px", alignItems: "center", fontWeight: 600 } },
               h("input", { type: "checkbox", checked: selected.has(item.id), onChange: () => toggle(item.id), disabled: working }),
@@ -1578,6 +1630,20 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     function GateAlertModal({ event, onClose, onAck }) {
       if (!event) return null;
       const urgent = event.level === "L3";
+      const canRepairDsh = event.gate === "dsh" && event.event === "dsh-profile-mcp-missing";
+      const [repairing, setRepairing] = useState(false);
+      const [repairMsg, setRepairMsg] = useState("");
+      const repairDsh = async () => {
+        setRepairing(true);
+        setRepairMsg("");
+        try {
+          const r = await api("/dsh/repair", { method: "POST", body: {} });
+          if (!r.ok) throw new Error(r.error || "修复失败");
+          setRepairMsg(r.hint || "已写回；请完全退出并重开 DSH。");
+        } catch (e) {
+          setRepairMsg(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
+        } finally { setRepairing(false); }
+      };
       return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
         h("div", { className: "qbw-modal", style: { width: "min(620px, 94vw)", maxHeight: "86vh", overflow: "auto" } },
           h("h3", null, urgent ? "安全/成本警报（L3）" : "需要处理的安全提醒（L2）"),
@@ -1590,7 +1656,9 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           event.subject?.key ? h("div", { className: "qbw-hint", style: { marginTop: "2px" } }, `会话：${event.subject.key}`) : null,
           event.recommendation ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, `建议：${event.recommendation}`) : null,
           h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, "这条记录会保留；确认后不再自动弹同一事件。"),
+          repairMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px", color: "#e67e22" } }, repairMsg) : null,
           h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
+            canRepairDsh ? h(Btn, { onClick: repairDsh, disabled: repairing || !!repairMsg }, repairing ? "修复中…" : "修复 DSH 注册（MCP / bundle）") : null,
             h(Btn, { onClick: () => onAck?.(event.id) }, urgent ? "确认并关闭" : "确认"),
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "稍后"))));
     }
@@ -1709,6 +1777,21 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         } catch (e) {
           toast(`✗ 检查更新失败：${e.message}`);
           return null;
+        } finally { setBusy(""); }
+      };
+      // 更新通道：main/stable 只跟正式 Release；dev 只跟 -dev.N 的 Pre-release（测试机才用）
+      const switchUpdateChannel = async (channel) => {
+        if ((updates?.channel ?? "stable") === channel) return;
+        setBusy("channel");
+        try {
+          const r = await api("/updates", { method: "POST", body: { action: "set-channel", channel } });
+          if (!r.ok) throw new Error(r.error || "切换通道失败");
+          toast(channel === "dev"
+            ? "✓ 已切到 dev 测试通道（只装 -dev.N 构建）；正检查更新…"
+            : "✓ 已切回 main 稳定通道（只装正式 Release）");
+          await checkUpdates();
+        } catch (e) {
+          toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
         } finally { setBusy(""); }
       };
       // 插件冲突体检：只读扫描；结果必须带“未覆盖项”，不能把“没查到”说成“兼容”。
@@ -2076,6 +2159,19 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                       "此版本无法自动更新：手动下载")
                     : null),
               h(Btn, { kind: "qbw-btn2", onClick: () => setUpdateOpen(true), disabled: !(updates.results ?? []).length }, "查看详情"))),
+          h("div", { style: { display: "flex", gap: "14px", alignItems: "center", marginTop: "8px", flexWrap: "wrap" } },
+            h("span", { className: "qbw-label", style: { margin: 0 } }, "更新通道"),
+            ...[["stable", "main（正式版，默认）"], ["dev", "dev（测试版，只给测试机）"]].map(([value, label]) =>
+              h("label", { key: value, style: { display: "inline-flex", gap: "5px", alignItems: "center", cursor: busy ? "default" : "pointer", fontSize: "12.5px" } },
+                h("input", {
+                  type: "radio", name: "update-channel", value,
+                  checked: (updates.channel ?? "stable") === value,
+                  disabled: !!busy,
+                  onChange: () => switchUpdateChannel(value),
+                }), label)),
+            h("span", { className: "qbw-hint" }, (updates.channel ?? "stable") === "dev"
+              ? "只安装 vX.Y.Z-dev.N 的 Pre-release；正式用户不要选。"
+              : "只安装正式 Release；Pre-release 不会打扰你。")),
           h("div", { style: { marginTop: "8px", paddingTop: "8px", borderTop: "1px solid rgba(127,127,127,.18)" } },
             h("div", { className: "qbw-hint" },
               updates.githubTokenConfigured
@@ -2833,6 +2929,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 [["chat", "chat（一代普通）"], ["reserved", "reserved（一代仿真）"], ["reserved2", "reserved2（二代仿真）"], ["closed-agent", "closed-agent（封闭）"], ["simulation", "simulation（=reserved2）"]].map(([v, l]) => h("option", { key: v, value: v }, l)))) : null,
           })),
           h(GroupPolicyArea, { busy, setBusy, toast }),
+          h(DshRepairCard, { busy, setBusy, toast }),
           h(ToolProfileArea, { cfg, set, onSave, busy }),
           h(AreaModalCard, { title: "鱼群保护", note: "鱼群密度、冷却与放行规则", onSave, busy },
             h(QqFishGuardStatusCard, { busy })),

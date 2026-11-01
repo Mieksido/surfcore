@@ -264,6 +264,8 @@ export function apply(ctx) {
     stateDir: STATE_DIR,
     pluginLog,
     githubToken: () => String(readUnified().config?.updates?.githubToken ?? ''),
+    // 更新通道：stable（默认，只走正式 Release）/ dev（只走 Pre-release 的 -dev.N）
+    channel: () => String(readUnified().config?.updates?.channel ?? 'stable'),
     blockedReason: (component) => {
       if (component.kind === 'pet' || component.id === 'surfpet') {
         try {
@@ -3225,6 +3227,55 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     json(res, 200, { ok: true, platforms: await platforms.statusAll(), capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] });
   }
 
+  // ── DSH 注册修复（2026-11-01）───────────────────────────────────────────
+  // 用户点按钮才跑 scripts/setup-dsh.mjs（写 profile 的 bundle/MCP）。
+  // 不自动执行、不自动重启 DSH：这一步会改 ~/.dsh，必须由人显式触发。
+  async function handleDshRepair(req, res) {
+    if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'DSH_REPAIR_METHOD', error: '只支持 POST', hint: '从设置页点「修复 DSH 注册」' }); return; }
+    let body = {};
+    try { body = JSON.parse((await readBody(req)) || '{}'); } catch { json(res, 400, { ok: false, code: 'DSH_REPAIR_BODY', error: '请求体不是合法 JSON' }); return; }
+    const profile = String(body.profile ?? '').trim();
+    if (profile && (profile === '.' || profile === '..' || /[\\/\x00-\x1f<>:"|?*]/.test(profile) || /[. ]$/.test(profile))) {
+      json(res, 400, { ok: false, code: 'DSH_REPAIR_PROFILE', error: 'profile 名非法', hint: '只填 profile 目录名（如 desktop），不要填路径' });
+      return;
+    }
+    const repoRoot = path.dirname(rootPkg);
+    const script = path.join(repoRoot, 'scripts', 'setup-dsh.mjs');
+    if (!fs.existsSync(script)) {
+      json(res, 400, {
+        ok: false, code: 'DSH_REPAIR_SCRIPT_MISSING', error: `找不到修复脚本：${script}`,
+        hint: '这是 zip 安装缺失 scripts/ 的情况：重新解压完整安装包，或手动在仓库根目录运行 node scripts/setup-dsh.mjs',
+      });
+      return;
+    }
+    const args = [script, ...(profile ? [profile] : [])];
+    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', PYTHONIOENCODING: 'utf-8' };
+    const run = (cmd) => new Promise((resolve) => {
+      execFile(cmd, args, { cwd: repoRoot, timeout: 180_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
+    });
+    let result = await run(process.execPath);
+    if (result.error && (result.error.code === 'ENOENT' || result.error.code === 'EACCES')) {
+      result = await run('node');
+    }
+    const output = `${result.stdout}\n${result.stderr}`.trim();
+    if (result.error) {
+      json(res, 500, {
+        ok: false, code: 'DSH_REPAIR_FAILED',
+        error: String(result.stderr || result.error.message || result.error).slice(0, 1200),
+        hint: '在宿主机终端手动运行 node scripts\\setup-dsh.mjs <profile> 查看完整输出；按提示完全重启 DSH',
+        output: output.slice(-4000),
+      });
+      return;
+    }
+    json(res, 200, {
+      ok: true,
+      profile: profile || '(auto)',
+      requiresRestart: true,
+      hint: '已写回 profile。请**完全退出并重开 DSH**（不是刷新页面），然后到控制台重置旧的 QQ 会话。',
+      output: output.slice(-4000),
+    });
+  }
+
   // ── 组件更新 ────────────────────────────────────────────────────────────
   // GET  : 最近一次检查结果 + 待更新项 + 是否该弹窗
   // POST : { action:'check' | 'apply' | 'dismiss' | 'reset', ids?: string[] }
@@ -3250,6 +3301,23 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           error: `保存 token 失败：${String(error?.message ?? error).slice(0, 160)}`,
           hint: '检查 config.json 是否可写；也可以稍后重试',
         });
+      }
+      return;
+    }
+    if (action === 'set-channel') {
+      const nextChannel = String(body.channel ?? '').trim();
+      if (!['stable', 'dev'].includes(nextChannel)) {
+        json(res, 400, { ok: false, code: 'UPDATE_CHANNEL_INVALID', error: '更新通道只能是 stable 或 dev', hint: '正式用户用 stable；只有测试机才切 dev' });
+        return;
+      }
+      try {
+        saveUnified({ updates: { channel: nextChannel } });
+        // 切换通道必须清掉上一轮的检查结果：否则 main 通道会被上轮 dev 检查留下的
+        // pending 继续弹窗（2026-11-01 用户要求：选 main 时不被 dev 更新打扰）。
+        updates.resetCheck?.();
+        json(res, 200, { ok: true, channel: nextChannel, requiresCheck: true, hint: nextChannel === 'dev' ? '已切到测试通道：会安装 -dev.N 预发布；正式版用户不要开' : '已切回稳定通道：只跟正式 Release' });
+      } catch (error) {
+        json(res, 500, { ok: false, code: 'UPDATE_CHANNEL_SAVE', error: `保存通道失败：${String(error?.message ?? error).slice(0, 160)}`, hint: '检查 config.json 是否可写后重试' });
       }
       return;
     }
@@ -3382,6 +3450,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
     if (pathname === `${API_PREFIX}/token-budget`) { await handleTokenBudget(req, res, url); return; }
     if (pathname === `${API_PREFIX}/updates`) { await handleUpdates(req, res); return; }
+    if (pathname === `${API_PREFIX}/dsh/repair`) { await handleDshRepair(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/bili/`)) { await handleBili(req, res, url); return; }
     if (pathname === `${API_PREFIX}/logs`) { handleLogs(res, url); return; }
     if (pathname === `${API_PREFIX}/owner-audit`) { await handleOwnerAudit(req, res, url); return; }

@@ -1,0 +1,101 @@
+{
+  "scene": "场景",
+  "sources": [
+    {
+      "name": "音频输入采集",
+      "id": "wasapi_input_capture",
+      "device": "{0.0.1.00000000}.{e9f56ec0-4e33-4c54-8af1-b2311baf7b2c}",
+      "items": []
+    },
+    {
+      "name": "场景",
+      "id": "scene",
+      "device": null,
+      "items": [
+        "音频输入采集"
+      ]
+    }
+  ],
+  "devices": [
+    {
+      "flow": "Capture",
+      "guid": "{19446d63-6325-419f-9487-394bca7eb9c8}",
+      "name": "麦克风"
+    },
+    {
+      "flow": "Capture",
+      "guid": "{206c4ac0-d7db-461d-a4b6-4791e32193c5}",
+      "name": "立体声混音"
+    },
+    {
+      "flow": "Capture",
+      "guid": "{6832c404-319f-480f-888c-602310ac4d83}",
+      "name": "麦克风"
+    },
+    {
+      "flow": "Capture",
+      "guid": "{ac99f06a-846f-45fd-b20f-75c21c497e7f}",
+      "name": "麦克风阵列"
+    },
+    {
+      "flow": "Capture",
+      "guid": "{e9f56ec0-4e33-4c54-8af1-b2311baf7b2c}",
+      "name": "虚拟麦克风"
+    },
+    {
+      "flow": "Capture",
+      "guid": "{f4df5e09-5589-441e-b028-ae26c0da303b}",
+      "name": "耳机"
+    },
+    {
+      "flow": "Render",
+      "guid": "{1ccedc92-8bb4-408e-93a4-61c49de49602}",
+      "name": "虚拟扬声器"
+    },
+    {
+      "flow": "Render",
+      "guid": "{22095314-1721-45e0-9a26-ef7ce553ac9d}",
+      "name": "扬声器"
+    },
+    {
+      "flow": "Render",
+      "guid": "{294eadff-2d51-43bb-a78b-fc9336b034a3}",
+      "name": "Digital Audio (HDMI)"
+    },
+    {
+      "flow": "Render",
+      "guid": "{447bffbe-3c4a-416f-8ebe-c72c3edda0ae}",
+      "name": "扬声器"
+    },
+    {
+      "flow": "Render",
+      "guid": "{7cf06e10-2315-4656-8f27-056c9256da78}",
+      "name": "NVIDIA Output"
+    },
+    {
+      "flow": "Render",
+      "guid": "{96ac4240-218d-4c98-9936-1cd43d331c93}",
+      "name": "耳机"
+    },
+    {
+      "flow": "Render",
+      "guid": "{b5476131-1190-42c5-8553-7400c1f91699}",
+      "name": "HDMI Extender"
+    },
+    {
+      "flow": "Render",
+      "guid": "{c875e294-4483-4c6b-af40-65935af385d7}",
+      "name": "扬声器"
+    },
+    {
+      "flow": "Render",
+      "guid": "{c94ad785-5a9b-4cfc-8741-794fd43124ce}",
+      "name": "耳机"
+    },
+    {
+      "flow": "Render",
+      "guid": "{d1dd0219-9191-4017-97db-b4ca378bc490}",
+      "name": "耳机"
+    }
+  ]
+}

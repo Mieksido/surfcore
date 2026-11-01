@@ -4,6 +4,26 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [Unreleased]
+
+### 新增（控制台「修复 DSH 注册」按钮）
+
+- 设置 → QQ → 高级设置新增「DSH 注册（MCP / bundle）」：填 profile（可留空自动检测）→ 点按钮，
+  后端执行 `scripts/setup-dsh.mjs` 并回显输出；**不会自动重启 DSH**，点完需完全退出重开；
+- L2 `dsh-profile-mcp-missing` 弹窗直接带「修复 DSH 注册」按钮；
+- 失败路径结构化（METHOD/BODY/PROFILE/SCRIPT_MISSING/FAILED，均带 hint）；只接受 POST、只由点击触发。
+
+## [Unreleased]
+
+### 新增（更新通道 stable / dev + 测试版发布链路）
+
+- 更新器新增 `updates.channel`（默认 `stable`）：stable 只跟正式 Release，dev 只跟 `-dev.N` 的 Pre-release；
+- 设置页「检查更新」下面新增 **main（正式版）/ dev（测试版）** 单选；切回 main 会清空旧检查结果，
+  不会被上一轮 dev 的 pending 弹窗打扰；
+- 版本规则：stable `X.Y.Z`，dev 构建 `X.Y.Z-dev.N`（同号下低于正式版）；正式版切 dev 允许安装一次（`channel-switch`）；
+- 新增 `scripts/publish-dev.mjs`：在 dev 分支打 tag、发 Pre-release、过清单门禁，不合并/不修改 main；
+- 完整 semver 比较（含预发布与 dev.N 数字排序）。
+
 ## [0.8.6] - 2026-11-01
 
 ### 修复（缺 MCP 的建议要写给操作者，不是写给模型）

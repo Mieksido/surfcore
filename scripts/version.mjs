@@ -23,7 +23,7 @@ const ROOT = path.resolve(HERE, '..');
 const ROOT_PKG = path.join(ROOT, 'package.json');
 const PLUGIN_PKG = path.join(ROOT, 'plugins', 'surfcore', 'package.json');
 const CHANGELOG = path.join(ROOT, 'CHANGELOG.md');
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-(rc|beta|alpha)\.(\d+))?$/;
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-(rc|beta|alpha|dev)\.(\d+))?$/;
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] || 'show';

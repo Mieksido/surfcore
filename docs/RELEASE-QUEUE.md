@@ -6,10 +6,55 @@
 >
 > 触发：用户说「好了，总结这次的改动」之类的话时追加（规则见 AGENTS 1.6）。
 > 没有进这张表的改动，不允许发布（见 [RELEASE.md](RELEASE.md) 第一节）。
+>
+> **2026-11-01 起：编辑会话的提交都在 `dev` 分支**；发布会话合并 `dev → main` 后按本表发布。
+> 批次里的「覆盖提交」指 dev 上的提交；发布时 main 上会多一个 merge commit，属正常。
 
 ---
 
 ## 待发布
+
+### 批次 2026-11-01 14:00 · 更新通道 stable/dev（测试版链路）
+<!-- release-batch: start=2026-11-01T13:00+08:00 end=2026-11-01T14:00+08:00 commits=dev -->
+
+**覆盖提交**：`dev`
+**建议**：**0.8.7（patch）**
+**当前版本**：`0.8.6`（未 bump）
+
+**内容**：
+- 更新器 `updates.channel`：stable（默认，只跟正式 Release）/ dev（只跟 `-dev.N` Pre-release）；
+- 设置页「检查更新」下面单选 main/dev；切回 main 清空旧检查结果，不被 dev pending 打扰；
+- 版本规则 `X.Y.Z-dev.N`（同号低于正式版），稳定版切 dev 允许安装一次；
+- `scripts/publish-dev.mjs`：dev 分支打 tag + Pre-release，不碰 main；
+- 完整 semver 比较（含 dev.N 数字排序）。
+
+**验证**：`test-dev-publish`、`test-update-apply-result`（版本排序/通道切换/main 不探测 dev）；audit 109/109。
+
+**残余**：dev 分支会推到公开仓库（tag 需要 commit 可达）；它不发 Release，稳定用户看不到。
+
+---
+
+### 批次 2026-11-01 12:55 · DSH 注册修复按钮（dev 集货）
+<!-- release-batch: start=2026-11-01T11:00+08:00 end=2026-11-01T12:55+08:00 commits=42ec20d..HEAD -->
+
+**覆盖提交**：`dev` 分支（`42ec20d..HEAD`，含 `7b8b2d1` 等）
+**建议**：**0.8.7（patch）**
+**当前版本**：`0.8.6`，未 bump / 未 tag（dev 上）
+
+**内容**：
+- 设置 → QQ → 高级设置新增「DSH 注册（MCP / bundle）」按钮：显式点击才跑 `scripts/setup-dsh.mjs`，
+  回显输出、不自动重启 DSH；
+- L2 `dsh-profile-mcp-missing` 弹窗直接带「修复 DSH 注册」按钮；
+- 失败路径结构化：`DSH_REPAIR_METHOD/BODY/PROFILE/SCRIPT_MISSING/FAILED`，均带 hint；
+- 缺 MCP 的建议文案改为“宿主机终端执行（模型没有本地工具）”，evidence 加 `manualOnly`。
+
+**验证**：audit 108/108；插件测试全绿；`--verify-ref HEAD` 问题 0。
+
+**重启**：插件前端刷新即可；脚本执行后需完全退出并重开 DSH。
+
+**残余**：`setup-dsh.mjs` 若需要 npm install，可能耗时；超时 180 秒，失败会给手动命令。
+
+---
 
 ### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
 <!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->

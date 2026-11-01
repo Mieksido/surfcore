@@ -171,6 +171,8 @@ const tests = [
   'test-allowlist.mjs',
   // DSH 升级后 profile MCP / 会话 preset 审计（2026-11-01 升级后没有 qq_* 工具）。
   'test-dsh-health.mjs',
+  // dev 通道 / Pre-release 发布链路（2026-11-01）。
+  'test-dev-publish.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
   'test-voice-gates.mjs',

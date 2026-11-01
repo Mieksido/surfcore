@@ -58,3 +58,14 @@ node scripts/setup-dsh.mjs desktop
 **“会话创建后工具表就定死”必须当成契约检查**：只比对本地映射/sessionPolicy 不够，
 要读 DSH 侧会话的真实 `agentPreset`；升级 DSH 后先查 profile MCP，否则会表现为
 “能收不能发”的静默故障。
+
+## 0.8.7：控制台「修复 DSH 注册」按钮（用户要求 A）
+
+- 设置 → QQ → 高级设置新增「DSH 注册（MCP / bundle）」卡片：填 profile（可留空自动检测）→
+  点「修复 DSH 注册」→ 后端执行 `scripts/setup-dsh.mjs`，返回输出；**不会自动重启 DSH**；
+- L2 `dsh-profile-mcp-missing` 弹窗里直接带「修复 DSH 注册」按钮：点完显示“请完全退出并重开 DSH”；
+- 失败路径结构化：`DSH_REPAIR_METHOD` / `DSH_REPAIR_BODY` / `DSH_REPAIR_PROFILE` /
+  `DSH_REPAIR_SCRIPT_MISSING` / `DSH_REPAIR_FAILED`，都带 hint；
+- 接口只接受 POST、只由用户点击触发（测试断言“不能自动执行”）。
+
+以后 DSH 升级出问题，统一让用户来这里点这个按钮，再重启 DSH。

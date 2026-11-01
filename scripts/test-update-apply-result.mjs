@@ -523,6 +523,112 @@ try {
     ok(/robocopy/.test(String(la.reason)), '.failed 原因可见', String(la.reason));
     ok(typeof la.hint === 'string' && la.hint.length > 0, '.failed 带建议');
   }
+
+  // 7) 预发布比较：0.8.6 > 0.8.6-dev.2 > 0.8.6-dev.1；0.8.7-dev.1 > 0.8.6
+  {
+    const { compareVersions } = await import('../plugins/surfcore/lib/updates.js');
+    ok(compareVersions('0.8.6', '0.8.6-dev.1') === 1, '稳定版高于同号 dev');
+    ok(compareVersions('0.8.6-dev.2', '0.8.6-dev.1') === 1, 'dev.2 高于 dev.1');
+    ok(compareVersions('0.8.7-dev.1', '0.8.6') === 1, '下一版的 dev 高于当前稳定版');
+    ok(compareVersions('0.8.6-dev.1', '0.8.6') === -1, 'dev 低于同号稳定版');
+  }
+
+  // 8) 测试通道（dev）：只认 pre-release；从稳定版切换时允许安装一次 dev（channel-switch）
+  {
+    const dir = makeTarget('dev-channel', '0.8.6', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([
+          { tag_name: 'v0.8.5', prerelease: false },
+          { tag_name: 'v0.8.6', prerelease: false },
+          { tag_name: 'v0.8.6-dev.2', prerelease: true },
+          { tag_name: 'v0.8.6-dev.10', prerelease: true },
+        ]), { status: 200 });
+      }
+      return undefined;
+    });
+    try {
+      const r = await svc.check({ fetch: true });
+      const row = r.results[0];
+      ok(row.channel === 'dev', '通道标记为 dev', JSON.stringify(row));
+      ok(row.latestVersion === '0.8.6-dev.10', 'dev 构建按数字比较（dev.10 > dev.2）', String(row.latestVersion));
+      ok(row.updateAvailable === true && row.code === 'channel-switch', '稳定版切 dev 允许安装一次', JSON.stringify(row));
+      ok(r.channel === 'dev', 'status 暴露 channel');
+    } finally { restore(); }
+  }
+
+  // 9) dev 通道在已装 dev 构建时按版本比较
+  {
+    const dir = makeTarget('dev-newer', '0.8.6-dev.1', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([{ tag_name: 'v0.8.6-dev.3', prerelease: true }]), { status: 200 });
+      }
+      return undefined;
+    });
+    try {
+      const r = await svc.check({ fetch: true });
+      ok(r.results[0].latestVersion === '0.8.6-dev.3' && r.results[0].updateAvailable === true, '已装 dev.1 → 发现 dev.3', JSON.stringify(r.results[0]));
+    } finally { restore(); }
+  }
+
+
+  // 10) 通道切换清空旧结果：main 不被 dev 的 pending 继续打扰
+  {
+    const dir = makeTarget('channel-reset', '0.8.6', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([{ tag_name: 'v0.8.6-dev.1', prerelease: true }]), { status: 200 });
+      }
+      return undefined;
+    });
+    try {
+      await svc.check({ fetch: true });
+      ok(svc.status().pendingCount === 1, 'dev 检查后有 pending');
+      svc.resetCheck();
+      const st = svc.status();
+      ok(st.pendingCount === 0 && st.showPrompt === false, '切换通道清空 pending/showPrompt（main 不被 dev 打扰）', JSON.stringify(st));
+    } finally { restore(); }
+  }
+
+  // 11) main 通道完全不查 dev（不请求 releases?per_page）
+  {
+    const dir = makeTarget('stable-no-dev', '0.8.6', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'stable',
+    });
+    let devProbes = 0;
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) { devProbes += 1; return new Response('[]', { status: 200 }); }
+      return undefined;
+    });
+    try {
+      await svc.check({ fetch: true });
+      ok(devProbes === 0, 'main 通道不探测 dev 预发布（不会被 dev 弹窗打扰）', String(devProbes));
+    } finally { restore(); }
+  }
+
 } finally {
   fs.rmSync(base, { recursive: true, force: true });
 }

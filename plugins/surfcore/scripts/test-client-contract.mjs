@@ -447,4 +447,12 @@ assert.ok(source.includes('updatePromptSignature'), '按版本集合生成提醒
 assert.ok(source.includes('neverStarted'), '未启动（everConnected=false）也要过滤旧断线告警');
 assert.ok(source.includes('sl.everConnected === false'), '按 everConnected 判断“从未启动”');
 
+// ── DSH 注册修复入口（2026-11-01）──
+assert.ok(source.includes("/dsh/repair"), "设置页要有修复 DSH 注册的入口");
+assert.ok(source.includes("修复 DSH 注册"), "按钮文案要能看懂");
+assert.ok(source.includes("canRepairDsh"), "L2 弹窗遇到 dsh-profile-mcp-missing 要给修复按钮");
+// ── 更新通道单选（2026-11-01）──
+assert.ok(source.includes("update-channel"), "检查更新下面要有 main/dev 单选");
+assert.ok(source.includes("main（正式版") && source.includes("dev（测试版"), "两个通道文案");
+assert.ok(source.includes("switchUpdateChannel"), "切通道要调 set-channel");
 console.log('client contract tests OK');

@@ -24,14 +24,20 @@
 9. **小步提交**：一次一件事；提交信息写「现象 + 修法」，别写 update/fix。
 10. **不确定就问**：涉及删除、发布、对外发送、改用户数据时停下来问用户，不要「先做了再说」。
 
-## 1.5 发布与编辑分开（2026-10-29 用户要求）
+## 1.5 发布与编辑分开 + dev/main 双分支（2026-11-01 用户拍板 A 方案）
 
-**版本号与发布只能在一个"发布会话"里做**；其它会话只管改代码。
+**版本号与发布只能在一个"发布会话"里做**；其它会话只管改代码。代码与发布之间隔一层 `dev`：
 
-- 编辑会话：改代码 + 测试 + `docs/cases/*.md` + 本地提交；**不改 `package.json` 的 version、不打 tag、不推公开仓库**。
-- 发布会话：发布前**现读** `git status` / `git log` / `package.json` / 测试结果（不信记忆），
-  按 [`docs/RELEASE.md`](docs/RELEASE.md) 的清单执行，并把每次发布记进那张表。
+- **`dev`（集货区）**：所有日常修复/功能/文档提交到这里；可以随时 commit；**不改 `package.json` 的 version、不打 tag、不发 Release、不推公开仓库**。
+  - 编辑会话只保证：`npm run test:audit` 通过 + 插件测试通过 + case 文档。
+- **`main`（稳定线）**：只放"已发布"的状态。只允许两种提交：
+  1. 发布会话从 `dev` 合并（`git merge --no-ff dev`）后做 release commit；
+  2. 热修（安全/数据丢失/完全不可用）从 `main` 切 `hotfix/*`，修完立即 patch，再回并 `dev`。
+- **发布会话流程**：`git checkout main` → 合并 dev → **现读** `git status/log/package.json` → 跑三条门禁（见 §1.8）→ bump/commit/tag/Release → **把 main 合回 dev**。
+- **公开仓库/镜像只同步 `main`**：zip 用户不会拿到半成品；`dev` 留在本地（需要给志愿者测试时发 **GitHub Pre-release**，`/releases/latest` 天然忽略它）。
 - 两边不要同时跑 `git` 写操作（会撞 `index.lock`）。
+
+**判断标准**：用户可见的行为变化才需要进稳定版；纯重构/文档/实验性改动留在 dev 攒着。
 
 ## 1.6 讲透逻辑（2026-10-29 用户要求）
 

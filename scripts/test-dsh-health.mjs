@@ -76,6 +76,13 @@ try {
   ok(bridge.includes('宿主机终端'), '建议要说明在宿主机终端执行（模型没有本地工具）');
   ok(bridge.includes('脚本本身不会重启 DSH'), '要说明 setup 脚本不会自动重启，避免用户以为会话被中断');
   ok(bridge.includes('manualOnly: true'), '事件里标记 manualOnly，便于 UI/调用方区分');
+
+  // 7) 控制台一键修复入口（2026-11-01 用户要求 A）：只显式触发，不自动跑
+  const plugin = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
+  ok(plugin.includes('handleDshRepair'), '插件要有 DSH 注册修复接口');
+  ok(plugin.includes('DSH_REPAIR_SCRIPT_MISSING'), '缺脚本要给出结构化 code');
+  ok(plugin.includes('ELECTRON_RUN_AS_NODE'), '用 Electron 内置 node 跑脚本的兜底');
+  ok(!/startup[\s\S]{0,80}handleDshRepair\(/.test(plugin), '修复不能自动执行（只能点按钮）');
 } finally {
   fs.rmSync(home, { recursive: true, force: true });
 }

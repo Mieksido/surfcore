@@ -120,18 +120,44 @@ function normalizeDir(dir) {
  * 纯版本号检查（不需要 .git）：读本地 package.json，跟 GitHub 最新 release/tag 比。
  * 目的：zip 安装、开发副本也能知道"最新是 0.4.8，我是 0.4.6"。
  */
-function parseSemver(value) {
+function parseVersionParts(value) {
   const text = String(value ?? '').replace(/^v/i, '').trim();
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(text);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text);
+  if (!m) return null;
+  return { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split('.') : [] };
 }
 
+/**
+ * 完整 semver 比较（含预发布）：
+ *   0.8.6 > 0.8.6-dev.2 > 0.8.6-dev.1；0.8.7-dev.1 > 0.8.6。
+ * 以前只比 core，导致 0.8.6-dev.N 与 0.8.6 相等，dev 通道永远判“没更新”。
+ */
 function semverCompare(a, b) {
-  const x = parseSemver(a);
-  const y = parseSemver(b);
+  const x = parseVersionParts(a);
+  const y = parseVersionParts(b);
   if (!x || !y) return 0;
   for (let i = 0; i < 3; i += 1) {
-    if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
+    if (x.core[i] !== y.core[i]) return x.core[i] > y.core[i] ? 1 : -1;
+  }
+  if (!x.pre.length && !y.pre.length) return 0;
+  if (!x.pre.length) return 1;   // 正式版高于同号预发布
+  if (!y.pre.length) return -1;
+  const len = Math.max(x.pre.length, y.pre.length);
+  for (let i = 0; i < len; i += 1) {
+    const a1 = x.pre[i];
+    const b1 = y.pre[i];
+    if (a1 === undefined) return -1;
+    if (b1 === undefined) return 1;
+    const an = /^\d+$/.test(a1);
+    const bn = /^\d+$/.test(b1);
+    if (an && bn) {
+      const d = Number(a1) - Number(b1);
+      if (d !== 0) return d > 0 ? 1 : -1;
+    } else if (an !== bn) {
+      return an ? -1 : 1; // 数字标识符低于字母标识符
+    } else if (a1 !== b1) {
+      return a1 > b1 ? 1 : -1;
+    }
   }
   return 0;
 }
@@ -287,7 +313,33 @@ async function fetchLatestRelease(repo) {
   return best;
 }
 
-export async function inspectVersionComponent(component, { fetch: doFetch = true } = {}) {
+/** 测试通道：从 GitHub pre-releases 里挑 semver 最高的 v*-dev.N。 */
+async function fetchLatestDevRelease(repo) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=50`, {
+      headers: ghHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const list = await res.json();
+    const devs = (Array.isArray(list) ? list : []).filter((x) => x
+      && x.prerelease === true
+      && /^v?\d+\.\d+\.\d+-dev\.\d+$/.test(String(x.tag_name ?? '')));
+    if (!devs.length) return null;
+    devs.sort((a, b) => semverCompare(b.tag_name, a.tag_name));
+    const best = devs[0];
+    return {
+      tag: String(best.tag_name),
+      url: String(best.zipball_url ?? ''),
+      source: 'dev-prerelease',
+      publishedAt: String(best.published_at ?? ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectVersionComponent(component, { fetch: doFetch = true, channel = 'stable' } = {}) {
   const id = String(component?.id ?? '').trim();
   const name = String(component?.name ?? id);
   const dir = normalizeDir(component?.dir);
@@ -342,6 +394,48 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
   if (!dir) return { ...base, available: false, installedVersion: '', reason: '安装目录不存在（还没装）' };
   if (!installedVersion && !meta) return { ...base, available: false, installedVersion: '', reason: '目录里没有 version.json / .installed-meta.json（还没装好，或装到了别的目录）' };
   if (!doFetch) return { ...base, available: true, installedVersion, latestVersion: null, updateAvailable: false, reason: '本次未拉取' };
+
+  // ── 测试通道（dev）：只认 GitHub pre-release 的 -dev.N，完全不碰稳定版的 latest ──
+  if (channel === 'dev') {
+    const dev = await fetchLatestDevRelease(repo).catch(() => null);
+    const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta);
+    if (!dev) {
+      return {
+        ...base, available: true, installedVersion, latestVersion: null,
+        updateAvailable: false, status: 'latest', code: 'DEV_NO_BUILD', channel: 'dev',
+        reason: '测试通道暂时没有 dev 构建',
+        hint: '让开发机先发一个 vX.Y.Z-dev.N 的 Pre-release，再点「检查更新」',
+      };
+    }
+    const latestVersion = String(dev.tag).replace(/^v/i, '');
+    const installedIsDev = /-/.test(installedVersion);
+    const cmp = semverCompare(latestVersion, installedVersion);
+    let updateAvailable = cmp > 0;
+    let code = cmp > 0 ? 'new-dev-build' : 'up-to-date';
+    let reason = cmp > 0
+      ? `测试通道有新构建：v${installedVersion} → v${latestVersion}`
+      : `已是最新测试构建（v${installedVersion}）`;
+    // 从正式版显式切到测试通道：dev 版本号低于同号正式版，按“通道切换”允许安装一次。
+    if (!installedIsDev && installedVersion) {
+      updateAvailable = true;
+      code = 'channel-switch';
+      reason = `切换到测试通道：v${installedVersion} → v${latestVersion}（dev 低于同号正式版，只按通道切换安装一次）`;
+    }
+    if (updateAvailable && !hasEvidence) {
+      return {
+        ...base, available: true, installedVersion, latestVersion,
+        updateAvailable: true, status: 'blocked', code: 'evidence-insufficient', channel: 'dev',
+        blocked: '目录里没有安装清单/安装记录，无法确认归属',
+        reason: `有测试构建 v${latestVersion}，但这个目录没有安装证据`,
+        hint: '为安全不自动覆盖：请手动下载该版本 zip 覆盖一次；装好后会自动补登记',
+      };
+    }
+    return {
+      ...base, available: true, installedVersion, latestVersion,
+      updateAvailable, status: updateAvailable ? 'update' : 'latest', code, channel: 'dev',
+      downloadUrl: dev.url, reason,
+    };
+  }
 
   // 提交级比对：语音包这类"没有发版号"的组件，按远端 main 的 commit 判断有没有新提交。
   // 同时尽量取远端版本号：只显示 7 位 sha 时用户会以为是乱码（2026-10-29 反馈）。
@@ -637,20 +731,9 @@ export async function fastForwardComponent(component) {
 // 构建产物型组件（桌宠）：源码在 git，但用户装的是 zip。检查 = 读 version.json 比版本号；
 // 更新 = 下 zip → 校验 sha256 → 交给组件自己的安装器（保留用户数据由安装器负责）。
 
-/** semver 比较：0.10.0 > 0.9.0；预发布（含 -）低于同号正式版。返回 1/0/-1。 */
+/** semver 比较：0.10.0 > 0.9.0；正式版 > 同号预发布；dev.2 > dev.1。返回 1/0/-1。 */
 export function compareVersions(a, b) {
-  const core = (value) => String(value ?? '').trim().replace(/^v/i, '').split(/[-+]/)[0]
-    .split('.').map((part) => Number.parseInt(part, 10) || 0);
-  const pa = core(a);
-  const pb = core(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
-    if (x !== y) return x > y ? 1 : -1;
-  }
-  const isPre = (value) => /[-+]/.test(String(value ?? '').trim().replace(/^v/i, ''));
-  if (isPre(a) !== isPre(b)) return isPre(a) ? -1 : 1;
-  return 0;
+  return semverCompare(a, b);
 }
 
 function readJsonSafe(file) {
@@ -867,7 +950,7 @@ export async function downloadReleaseAsset(component, report, { stateDir, plugin
   return { ok: true, path: dest, bytes: downloaded.bytes };
 }
 
-export function createUpdatesService({ stateDir, components, blockedReason = () => '', pluginLog = () => {}, githubToken = () => '' }) {
+export function createUpdatesService({ stateDir, components, blockedReason = () => '', pluginLog = () => {}, githubToken = () => '', channel = () => 'stable' }) {
   const file = path.join(stateDir, 'updates.json');
   const now = () => Date.now();
   let state = { dismissed: {}, lastCheckAt: 0, results: [], lastError: '', lastApplyFailure: null, applyBackoff: {} };
@@ -1101,6 +1184,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       pending,
       pendingCount: pending.length,
       lastApply: state.lastApplyFailure ?? readLastApply(),
+      channel: channel() === 'dev' ? 'dev' : 'stable',
       download: downloadProgress,
       githubTokenConfigured: githubTokenConfigured(),
       showPrompt: pending.length > 0,
@@ -1116,7 +1200,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       const results = [];
       for (const item of items) {
         try {
-          results.push(await inspectComponent(item, { fetch }));
+          results.push(await inspectComponent(item, { fetch, channel: channel() }));
         } catch (error) {
           // 单个组件炸了不能拖垮整次检查，但必须留下可读结论（不能变成"最新"）
           results.push({
@@ -1233,7 +1317,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     // 有版本号就用 **tag 归档**：分支（main.zip）会随提交漂移，和"某版本的清单"天然对不上。
     // 没有版本号（语音包等按提交追踪的组件）才退回 main.zip。
     const wantVer = String(report?.latestVersion ?? '').trim();
-    const isSemver = /^\d+\.\d+\.\d+$/.test(wantVer);
+    const isSemver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(wantVer);
     // 下载走 codeload 直连（少一次 302、少一个域名依赖），再依次试镜像；
     // github.com 在部分网络下不可达，但 codeload 正常（2026-10-30 实测）。
     const archivePaths = isSemver
@@ -1667,6 +1751,18 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     return status();
   }
 
+  /**
+   * 清掉当前检查结果（切换更新通道时用）：
+   * 避免切回 main 后，上一轮 dev 检查留下的 pending 继续弹窗——main 通道不该被 dev 更新打扰。
+   */
+  function resetCheck() {
+    state.results = [];
+    state.lastCheckAt = 0;
+    state.lastError = '';
+    persist();
+    return status();
+  }
+
   /** 清掉"不再提示"，让下一次检查重新提示（界面上的"恢复提示"）。 */
   function resetDismissed() {
     state.dismissed = {};
@@ -1686,7 +1782,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     if (timer) { clearInterval(timer); timer = null; }
   }
 
-  return { check, apply, rollback, dismiss, resetDismissed, status, startAutoCheck, dispose, file };
+  return { check, apply, rollback, dismiss, resetDismissed, resetCheck, status, startAutoCheck, dispose, file };
 }
 
 export { resumePendingApply };
