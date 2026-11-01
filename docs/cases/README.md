@@ -1,3 +1,5 @@
+- [v0.8.4 QQ Guard 晚注册限制](2026-11-01-pr-v084-guard.md)
+
 # 案例索引（每次修 bug 都要在这里留一条）
 
 > 规矩：**修完一个 bug，必须写一份 case 记录并在此登记**（模板见 [`_TEMPLATE.md`](_TEMPLATE.md)）。

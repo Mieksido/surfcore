@@ -198,18 +198,28 @@ export function apply(ctx) {
   // 以及 MCP 之外的宿主工具（plugin-guard / cordis 检查工具等）。
   // 名字不存在时跳过（执行期白名单仍然兜底），但**只汇总一行**：
   // 以前每个工具打一行，DSH 启动时刷几百行日志，把真实告警淹没（2026-10-28 用户反馈）。
-  const skipped = []
-  for (const name of KNOWN_DANGEROUS_GLOBAL_TOOLS) {
-    try {
-      ctx.tools.restrict({ deny: [name] })
-    } catch (error) {
-      skipped.push(name)
-      if (skipped.length === 1) {
-        // 只在第一次失败时记一条细节，便于排查"某个名字失效"
-        console.error(`[qq-tool-restrict] restrict 跳过（示例）：${name} — ${error?.message ?? error}`)
+  const restricted = new Set()
+  function restrictAvailable(report = false) {
+    const skipped = []
+    for (const name of KNOWN_DANGEROUS_GLOBAL_TOOLS) {
+      if (restricted.has(name)) continue
+      // Mark before restrict emits tools/change, preventing reentrant duplicates.
+      restricted.add(name)
+      try { ctx.tools.restrict({ deny: [name] }) }
+      catch (error) {
+        restricted.delete(name)
+        skipped.push(name)
+        if (report && skipped.length === 1) {
+          console.error(`[qq-tool-restrict] restrict 跳过（示例）：${name} — ${error?.message ?? error}`)
+        }
       }
     }
+    return skipped
   }
+  const skipped = restrictAvailable(true)
+  // A global plugin may register tools after this preset is mounted.
+  // Retry previously unknown names; guards continue denying during registration.
+  ctx.on?.('tools/change', () => { restrictAvailable() })
   if (skipped.length) {
     const list = skipped.length > 8 ? `${skipped.slice(0, 8).join(', ')} 等` : skipped.join(', ')
     console.error(`[qq-tool-restrict] 跳过 ${skipped.length}/${KNOWN_DANGEROUS_GLOBAL_TOOLS.length} 个当前版本不存在的工具名：${list}（执行期白名单仍生效）`)
