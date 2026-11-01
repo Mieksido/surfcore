@@ -1235,6 +1235,8 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.wait.maxMs", "最长等待（ms）", "", "number"),
         F("socialV2.wait.defaultQuietMs", "默认静默（ms）", "", "number"),
         F("socialV2.wait.minQuietAfterNewMs", "新消息后最短静默（ms）", "", "number"),
+        F("socialV2.wait.maxBatchMessages", "单次最多返回消息", "默认 20；群聊积压时只交付最近/最相关的一批，其余折叠", "number", { min: 1, max: 50 }),
+        F("socialV2.wait.maxBatchChars", "单次最多正文字符", "默认 4000；超出时折叠较旧消息", "number", { min: 500, max: 20000 }),
         F("socialV2.context.recentLimit", "最近消息上限", "", "number"),
         F("socialV2.context.unreadLimit", "未读上限", "", "number"),
         F("socialV2.context.contextWindow", "上下文窗口", "", "number"),
@@ -2965,8 +2967,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         F("socialV2.sticker.collect.maxPerHour", "每小时最多收藏", "", "number", { min: 0 }),
         F("socialV2.sticker.collect.maxRemarkChars", "备注最大字符", "", "number", { min: 0 }),
       ]});
-      groups.push({ group: "语音", fields: [
-        F("socialV2.voice.enabled", "启用语音发送", "", "switch"),
+      groups.push({ group: "语音", note: "语音需要两个开关同时开：这里的「启用语音发送」总闸 + 工具面的「发语音」；改完必须重启 DSH（工具列表在 MCP 启动时固定）。text 模式不需要语音库；旧会话仍可能保留旧提示/旧记忆，必要时新建会话。", fields: [
+        F("socialV2.voice.enabled", "启用语音发送", "总闸；还要在「工具面」打开「发语音」；改完重启 DSH", "switch"),
 F("socialV2.voice.dir", "语音库目录", "相对 surfcore 根目录；也可以点「浏览…」选绝对路径（需打开下面的开关）", "text", { browse: "dir" }),
         F("socialV2.voice.maxSeconds", "最长秒数", "", "number", { min: 1 }),
         F("socialV2.voice.maxBytes", "最大字节", "", "number"),
@@ -3797,7 +3799,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h(Btn, { kind: "qbw-btn2", onClick: runDeps, disabled: !!busy }, busy === "deps" ? "体检中…" : "依赖体检"),
             h(Btn, { kind: "qbw-btn2", onClick: testNotify, disabled: !!busy }, "发条通知测试")),
           h("div", { className: "qbw-infobox" },
-            "B站参数写入 ", h("code", { className: "qbw-code" }, "~/.dsh/surfcore/bili.config.json"), "；",
+            "B站参数写入 ", h("code", { className: "qbw-code" }, overview?.paths?.biliConfig || "当前实际配置文件（见概览→路径）"), "；",
             "cookie 单独写入 ", h("code", { className: "qbw-code" }, "~/.dsh/surfcore/bili/credentials.json"), "，永不回显。",
             "人设卡已合体到「角色」页，这里不再重复一套。"),
           h("div", { className: "qbw-grid" },
@@ -4030,17 +4032,20 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         setBusy(`mc-${action}`);
         let result = null;
         let failure = null;
+        let reloadFailure = null;
         try {
           result = await api("/memory-card", { method: "POST", body: { action, ...extra } });
         } catch (e) {
           failure = e;
         }
-        // 先把服务端结果刷新回界面：toast 文案再坏，也不能阻断 reload。
-        try { await reload(); } catch {}
+        // 先把服务端结果刷新回界面；reload 失败不能假装成功，否则用户会以为没生效。
+        try { await reload(); } catch (e) { reloadFailure = e; }
         try { onChanged?.(); } catch {}
         try {
           if (failure) {
-            toast(`✗ ${failure.message}`);
+            toast(`✗ ${failure.message}${failure.hint ? `；${failure.hint}` : ""}`);
+          } else if (reloadFailure) {
+            toast(`⚠️ 服务端已保存，但界面刷新失败：${reloadFailure.message}；请手动刷新后再确认`);
           } else {
             const r = result ?? {};
             toast(action === "maintain" ? `✓ 已整理：新增 QQ ${r.addedQq ?? 0} / 桌宠 ${r.addedPet ?? 0} / B站 ${r.addedBili ?? 0} / 全量归档 ${r.addedFull ?? 0} 条`
@@ -4054,7 +4059,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       };
       const pin = (record) => act("pin", { id: record.id, pinned: !record.pinned });
       const forget = (record) => {
-        if (!confirm(`确定忘掉「${record.title || record.text.slice(0, 20)}」？这是不可逆的（会先备份整张卡）。`)) return;
+        const extra = record.firstMet
+          ? "\n这是初次相遇记录；删除后会自动选下一条最早的主人互动。全量卡仍保留副本。"
+          : "";
+        if (!confirm(`确定忘掉「${record.title || record.text.slice(0, 20)}」？这是不可逆的（会先备份整张卡）。${extra}`)) return;
         act("forget", { id: record.id });
       };
       const toggleSelect = (id) => setSelected((list) => list.includes(id) ? list.filter((item) => item !== id) : [...list, id]);
@@ -4232,7 +4240,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               record.botReply ? h("div", { className: "qbw-rec-text" }, `她回：${record.botReply}`) : null),
             h("div", { className: "qbw-rec-actions" },
               h(Btn, { kind: "qbw-btn2", onClick: () => pin(record), disabled: !!busy }, record.pinned ? "取消置顶" : "置顶"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => forget(record), disabled: !!busy || record.pinned }, "忘记"))))),
+              h(Btn, { kind: "qbw-btn2", onClick: () => forget(record), disabled: !!busy }, "忘记"))))),
         h("div", { className: "qbw-cols" },
           h("div", null,
             h("div", { className: "qbw-group" }, "QQ 注入预览 ", h("small", null, `${status.promptChars?.qq ?? 0} 字`)),

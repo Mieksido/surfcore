@@ -455,6 +455,11 @@ export function refreshInitialState(card) {
     card.meta.firstMetEventId = earliest ? earliest.id : '';
   }
 
+  // firstMet 是“初次相遇”标记；pinned 是用户选择。两者不再强制绑定：
+  // 旧卡第一次升级到新语义时仍会自动置顶；用户之后明确取消置顶则保留 false，
+  // 不会每次 GET/refresh 又把它写回 true。
+  const wasFirstMet = new Set(card.records.filter((record) => record.firstMet).map((record) => record.id));
+
   for (const record of card.records) {
     const tags = new Set(asArray(record.tags));
     tags.delete('initial');
@@ -471,7 +476,8 @@ export function refreshInitialState(card) {
     const isAutoRecord = !hasManual && earliest && record.id === earliest.id;
     if (isManualRecord || isAutoRecord) {
       record.firstMet = true;
-      record.pinned = true;
+      // 只有“新成为初次相遇”时才自动置顶；已有 firstMet 的 pinned 是用户的决定。
+      if (!wasFirstMet.has(record.id)) record.pinned = true;
       record.anchor = true;
       record.kind = 'firstMeet';
       record.importance = 100;
@@ -483,6 +489,7 @@ export function refreshInitialState(card) {
       record.tags = [...tags];
       continue;
     }
+    record.anchor = record.pinned === true;
     const offsetDays = firstAt
       ? Math.max(0, Math.floor((timeOf(record.createdAt, firstAt) - firstAt) / DAY_MS))
       : 0;
@@ -1727,14 +1734,17 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = 
     used.add(record.id);
     list.push(record);
   };
-  for (const record of visible.filter((item) => item.pinned && item.firstMet)) push(firstMet, record);
+  for (const record of visible.filter((item) => item.firstMet)) push(firstMet, record);
   for (const record of visible.filter((item) => item.pinned && !item.firstMet)) push(anchors, record);
-  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && item.isInitial)) push(initial, record);
-  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && !item.isInitial)) push(owner, record);
-  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && !item.tags.includes('owner') && !item.isInitial)) {
+  // 「最近」优先于「最初/和主人」：只要是最近 N 天、非置顶、非初次相遇，
+  // 不管它是不是 owner/isInitial，都先归 recent。否则 owner+isInitial 会把
+  // recent 永远挤空，预算紧张时再先砍 recent，就变成“永远回忆第一天”。
+  for (const record of visible.filter((item) => !item.pinned && !item.firstMet && item.platform !== 'pet')) {
     const age = (now - timeOf(record.createdAt, now)) / DAY_MS;
     if (age <= cfg.recentDays) push(recent, record);
   }
+  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && item.isInitial)) push(initial, record);
+  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && !item.isInitial)) push(owner, record);
   // 剩下的按平台分模块；已经模糊 / 只剩印象的统一进「正在模糊的事」。
   for (const record of visible) {
     if (used.has(record.id)) continue;
@@ -1782,12 +1792,12 @@ export function renderMemoryCard(card, options = {}) {
     ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, recent: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
     : (platform === 'bili'
       ? { firstMet: 0, anchors: 4, initial: 0, owner: 0, recent: 6, bili: 8, qq: 0, pet: 0, fuzzy: 3 }
-      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 8, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
+      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 12, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
   const calls = [
     { key: 'firstMet', title: '## 初次相遇（和主人）', priority: 120, lines: sections.firstMet.slice(0, limits.firstMet).map((record) => recordLine(record, { platform, full })) },
     { key: 'anchors', title: '## 永远不会忘的', priority: 100, lines: sections.anchors.slice(0, limits.anchors).map((record) => recordLine(record, { platform, full })) },
-    { key: 'initial', title: '## 最初的日子（和主人）', priority: 45, lines: sections.initial.slice(0, limits.initial).map((record) => recordLine(record, { platform, full })) },
-    { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 40, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
+    { key: 'initial', title: '## 最初的日子（和主人）', priority: 26, lines: sections.initial.slice(0, limits.initial).map((record) => recordLine(record, { platform, full })) },
+    { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 28, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
     { key: 'recent', title: '## 最近记得的', priority: 30, lines: sections.recent.slice(0, limits.recent).map((record) => recordLine(record, { platform, full })) },
     { key: 'pet', title: '## 桌宠（私下相处）', priority: 36, lines: (sections.petModule ?? []).slice(0, limits.pet).map((record) => recordLine(record, { platform, full })) },
     { key: 'bili', title: '## B站（冲浪）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },

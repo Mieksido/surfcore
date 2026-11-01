@@ -253,9 +253,9 @@ await test('combined close respects the separate mark-read and wake-config tool 
 
 await test('an in-flight wait cannot authorize new messages after its session token is retired', async ({ h, st, request, append }) => {
   await h.ensureSession(KEY);
-  append('before wait');
   const oldToken = st.agentToken;
-  const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 }, token: oldToken });
+  // 不预置未读：有积压时 wait 会立即返回；本用例要验证真正挂起中的 wait。
+  const waiting = request('wait', { body: { timeoutMs: 200, quietMs: 0 }, token: oldToken });
   const timer = setTimeout(() => { h.retireSession(KEY); append('arrived after token retirement'); }, 60);
   let result;
   try { result = await waiting; } finally { clearTimeout(timer); }
@@ -266,7 +266,7 @@ await test('an in-flight wait cannot authorize new messages after its session to
 }, { observe: true });
 
 await test('an in-flight wait cannot write observation into a replaced conversation state', async ({ h, st, request, append }) => {
-  append('old state');
+  // 同上：不预置积压，确保 wait 真的处于挂起中。
   const waiting = request('wait', { body: { timeoutMs: 100, quietMs: 0 } });
   const timer = setTimeout(() => {
     h.socialV2.conversations.delete(KEY);
@@ -282,8 +282,8 @@ await test('an in-flight wait cannot write observation into a replaced conversat
 }, { observe: true });
 
 await test('an in-flight wait rechecks mode permission before exposing a new arrival', async ({ h, request, append }) => {
-  append('before mode change');
-  const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 } });
+  // 不预置积压：让 wait 先挂起，模式变化后由新到达消息触发权限复检。
+  const waiting = request('wait', { body: { timeoutMs: 300, quietMs: 0 } });
   const timer = setTimeout(() => { h.setMode('chat'); append('after mode change'); }, 60);
   let result;
   try { result = await waiting; } finally { clearTimeout(timer); }
@@ -350,7 +350,8 @@ await test('default wake window (12) keeps the last 12 of a 15-message backlog',
 });
 
 await test('an in-flight wait rechecks paused, feature, tool and allowlist permissions without granting observation', async ({ h, st, request, append }) => {
-  append('unread before policy changes');
+  // 不预置未读：本用例要验证“真正挂起中的 wait”在权限变化后 403；
+  // 有积压时 wait 现在会立即返回，不属于 in-flight 场景。
   const cases = [
     ['pause', () => { h.socialV2.paused = true; }, () => { h.socialV2.paused = false; }],
     ['feature disable', () => { h.cfg.socialV2.enabled = false; }, () => { h.cfg.socialV2.enabled = true; }],

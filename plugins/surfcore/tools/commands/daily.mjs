@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { bestToday, todayScores } from '../lib/scores.mjs'
 import { currentGame, advanceRotation, GAMES } from '../lib/games.mjs'
 import { rememberKind } from '../lib/my-dynamics.mjs'
-import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, dueKind, withPrefix, stripPrefix, CATCHUP_DAY } from '../lib/kinds.mjs'
+import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, dueKind, withPrefix, stripPrefix, stripLegacyPrefix, CATCHUP_DAY } from '../lib/kinds.mjs'
 import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { hasKindSignal } from '../lib/kind-signals.mjs'
@@ -83,7 +83,8 @@ const today = () => new Date().toLocaleDateString('sv-SE')
 const UA = { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' }
 
 const RAW = String(opt.text ?? '').trim()
-const BODY = stripPrefix(KIND, RAW, KINDS_NOW)   // 去前缀后的"正文"，数字数用这个
+// 配置里明确为空 = 不加前缀；此时还要清掉模型可能带的旧默认前缀。
+const BODY = K.prefix ? stripPrefix(KIND, RAW, KINDS_NOW) : stripLegacyPrefix(KIND, RAW)
 const BVARG = String(opt.bvid ?? '').trim()
 // 2026-10-21：管理员会先看候选再拍板 —— 他钦定了哪条，就**照办**（覆盖 --bvid ✓）
 const PINNED = pinOf(KIND)
@@ -298,7 +299,7 @@ const imageSrc = image ? '手动指定' : ''
 console.log(`[${K.n}类·${K.label}] ${bv}${meta.score ? `（今天最高分 ${meta.score}/20）` : ''}`)
 console.log('  这是**公开发给所有人**的动态（推给关注你的人，不是私信、不是只给管理员看）')
 if (meta.title) console.log(`  视频：${meta.title.slice(0, 50)}`)
-console.log(`  正文 ${n} 字 + 固定前缀：${TEXT.slice(0, 60)}…`)
+console.log(`  正文 ${n} 字${K.prefix ? ' + 固定前缀' : '（无固定前缀）'}：${TEXT.slice(0, 60)}…`)
 console.log(`  视频链接：${VIDEO_URL}（点了能跳 ✓）`)
 console.log(`  配图：${image ? imageSrc + ' · ' + path.basename(image) : '无（只发文字 + 视频链接）'}`)
 

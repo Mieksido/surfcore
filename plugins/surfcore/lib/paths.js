@@ -57,7 +57,9 @@ export const QQ_BRIDGE_LOG = path.join(QQ_STATE_DIR, 'bridge.log');
 export const QQ_LOCK_FILE = path.join(QQ_STATE_DIR, 'bridge.lock');
 // B站数据也收进 SurfCore 自己的状态目录，和 QQ 共用同一个根。
 export const BILI_DIR = path.join(STATE_DIR, 'bili');
-export const BILI_CONFIG = path.join(STATE_DIR, 'bili.config.json');
+// 和 tools/lib/config.mjs 共用同一优先级，避免“设置页写 A、daily 读 B”。
+export const BILI_CONFIG = process.env.SURFCORE_BILI_CONFIG
+  || path.join(DSH_HOME, 'surfcore', 'bili.config.json');
 export const BILI_CRED = path.join(BILI_DIR, 'credentials.json');
 // 主人（用户本人）的 B站 凭据：只用于「一键抓取偏好」的只读扫描，绝不用于发评论/动态。
 // 单独一个文件，避免和鱼自己的 cookie 混在一起（身份串号是事故）。

@@ -16,7 +16,11 @@ import { DEFAULT_BILI_FISH_GUARD } from './fish-guard.mjs'
 import { DEFAULT_LIMITS } from './limits.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
-export const configPath = process.env.SURFCORE_BILI_CONFIG || path.join(HOME, '.dsh', 'surfcore', 'bili.config.json')
+// 与插件侧 paths.js 同一优先级：显式文件 > DSH_HOME > HOME/.dsh。
+// 2026-11-01：这里以前只认 HOME/.dsh，和插件的 DSH_HOME 分叉；
+// 自定义 DSH_HOME 的用户在设置页清空前缀，daily 仍读旧文件。
+const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
+export const configPath = process.env.SURFCORE_BILI_CONFIG || path.join(DSH_HOME, 'surfcore', 'bili.config.json')
 
 /** 中性默认值：不含任何作者的个人信息，换个人也能跑。 */
 export const DEFAULTS = {

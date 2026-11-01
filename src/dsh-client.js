@@ -948,13 +948,14 @@ export function unwrap(response, label) {
 }
 
 /** 在会话事件流里收集一次 turn 的 assistant 文本（按 turn 分组）。 */
-export function createTurnCollector() {
+export function createTurnCollector({ tolerantStart = false } = {}) {
   const turns = new Map(); // turn -> { text }
   return {
     /** 处理一条 session/event，返回该事件是否终结了一个 turn（此时可取最终文本）。 */
     push(event) {
       if (event.type === 'turn/start') {
-        turns.set(event.data.turn, { text: '' });
+        // tolerant 模式：如果 assistant/message 先到，不要重置已累积的文本。
+        if (!tolerantStart || !turns.has(event.data.turn)) turns.set(event.data.turn, { text: '' });
         return null;
       }
       if (event.type === 'assistant/chunk') {
@@ -963,7 +964,11 @@ export function createTurnCollector() {
         return null;
       }
       if (event.type === 'assistant/message') {
-        const t = turns.get(event.data.turn);
+        let t = turns.get(event.data.turn);
+        if (!t && tolerantStart) {
+          t = { text: '' };
+          turns.set(event.data.turn, t);
+        }
         if (!t) return null;
         for (const block of event.data.message?.content ?? []) {
           if (block?.type === 'text' && typeof block.text === 'string') t.text += block.text;
@@ -971,8 +976,9 @@ export function createTurnCollector() {
         return null;
       }
       if (event.type === 'turn/end') {
-        const t = turns.get(event.data.turn);
+        let t = turns.get(event.data.turn);
         turns.delete(event.data.turn);
+        if (!t && tolerantStart) t = { text: '' };
         if (!t) return null;
         return { turn: event.data.turn, reason: event.data.reason, text: t.text };
       }

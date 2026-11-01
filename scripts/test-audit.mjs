@@ -75,6 +75,14 @@ const tests = [
   'test-admin-gentle-ux.mjs',
   // 通知通道：桌面 toast 转义 / 捕获 stderr；QQ 推送只走控制台专用端点。
   'test-notify-channels.mjs',
+  // 语音提示词：不再写死默认关闭；按当前状态/VOICE_* 错误码判断。
+  'test-voice-prompt-fix.mjs',
+  // 黑话学习：waiter 先注册、缺 turn/start 兼容、超时不再误判会话。
+  'test-learner-turn-wait.mjs',
+  // 四类动态：空前缀不加；旧默认前缀不复活；DSH_HOME/SURFCORE_BILI_CONFIG 同源。
+  'test-bili-prefix-config.mjs',
+  // wait 积压：立即返回、有界批量、群聊不整段倒给模型。
+  'test-v2-wait-batch.mjs',
   // B站沉默逛 + 评论年龄闸：工具硬拦、带 code/hint。
   'test-bili-interact.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。

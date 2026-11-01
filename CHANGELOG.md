@@ -1,3 +1,43 @@
+## [0.8.6-dev.9] - 2026-11-02
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [Unreleased]
+
+### 记忆卡
+
+- `recent` 先收最近 N 天的 owner 记录，不再被 `initial` 挤空；预算紧张时先淡出早期 initial，保住最近。
+- `recent` 上限 8→12；`initial`/`owner` priority 下调，`firstMet`/anchors 仍保底。
+- 拆分 `firstMet` 与 `pinned`：初次相遇可取消置顶，不再每次刷新被写回；取消后仍保留初次相遇分区。
+- `forget` 允许删除置顶/初次相遇记录，删除后自动让下一条最早主人互动接管。
+- 记忆操作失败带 `MEMORY_NOT_FOUND + hint`；reload 失败不再假装成功。
+
+### QQ 等待
+
+- 修复 `qq_wait_for_messages` 积压消息不立即返回：已知未读直接返回，不再从 wait 时刻重新等静默。
+- 增加 wait 有界批量（默认 20 条/4000 字）；群聊超出折叠并给 `foldedCount`，私聊不静默删除。
+- `selectWaitBatch` 纯函数与 R17 桥接回归覆盖。
+
+### B站 动态
+
+- 修复清空四类动态固定开头后仍可能带旧前缀：统一 `DSH_HOME` / `SURFCORE_BILI_CONFIG` 配置路径，空前缀时清掉该类历史默认前缀，提示词不再要求空前缀。
+- 设置页显示实际 B站 配置文件路径。
+
+### 黑话学习
+
+- 修复 `waitLearnerTurn` 永远超时：waiter 先于 prompt 注册，prompt 失败可取消。
+- collector 兼容缺 `turn/start` 的 `assistant/message`/`turn/end`；超时不再用泛化“会话”正则误删会话。
+- 超时显式 `LEARNER_TURN_TIMEOUT`，只重建 scratch 学习会话。
+
+### 语音
+
+- 修复 preset 第 16 条写死“语音默认关闭”，导致开启后模型仍拒绝发语音。
+- 唤醒时动态注入总闸/工具/语音库状态；旧提示/旧记忆不再一律压过当前状态。
+- `qq_list_voices` 补 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` code + hint。
+- 语音设置说明改为“两个开关 + 需重启 DSH + text 不依赖语音库”。
+
 ## [0.8.6-dev.8] - 2026-11-01
 
 ### dev 测试构建

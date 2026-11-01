@@ -14,6 +14,204 @@
 
 ## 待发布
 
+### 批次 2026-11-02 00:15 · 记忆卡最近优先
+<!-- release-batch: start=2026-11-02T00:05+08:00 end=2026-11-02T00:15+08:00 commits=90f3eba -->
+
+**覆盖提交**：`90f3eba`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `sectionize` 先收最近 N 天的 owner 记录到 `recent`，不再被 `initial` 挤空；
+- recent 上限 8→12；initial/owner priority 下调（26/28），recent 保持 30；
+- firstMet/anchors 仍优先保护；
+- 新增渲染测试：近期 owner 进 recent，旧 initial 留 initial，同一记录不重复。
+
+**验证**：
+```text
+node scripts/test-memory-card.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：DSH 插件。
+
+**风险**：
+- 近期 owner 从 owner/initial 移到 recent，是行为变化；
+- initial 仍 6 个名额，早期记录多时仍会占一部分；
+- 未改 initialProbability 0.9，只改分区/预算；
+- 没有统一提示词总预算，recent 12 条可能挤其他段；
+- 未做真实聊天 live。
+
+**case**：`docs/cases/2026-11-02-memory-recent-first.md`
+
+---
+
+### 批次 2026-11-01 23:45 · 记忆卡初次相遇可取消置顶/忘记
+<!-- release-batch: start=2026-11-01T23:30+08:00 end=2026-11-01T23:45+08:00 commits=3e7c053 -->
+
+**覆盖提交**：`3e7c053`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `refreshInitialState` 不再每次把已有 firstMet 强制置顶；只有新成为初次相遇时自动置顶；
+- 初次相遇取消置顶后仍保留在 `## 初次相遇` 分区；
+- `forget` 允许删除 pinned/firstMet，删除后自动让下一条最早主人互动接管；
+- 失败返回 `MEMORY_NOT_FOUND + hint`；
+- UI“忘记”不再因 pinned 禁用；reload 失败提示“服务端已保存但界面刷新失败”。
+
+**验证**：
+```text
+node scripts/test-memory-card.mjs        # 26 passed
+node scripts/test-memory-card-act.mjs
+npm run test:audit                       # 119/119
+cd plugins/surfcore && npm test          # 0 失败
+```
+
+**重启**：DSH 插件。
+
+**风险**：
+- 删除初次相遇后会自动选下一条最早主人互动；确认框已说明。
+- 取消置顶的初次相遇仍进提示词/初次相遇分区，只是不再是 pinned 锚点。
+- 旧卡 `firstMet=true,pinned=false` 现在被尊重，视觉可能和旧预期不同。
+- 衰减卡删除不可逆；全量卡有归档副本。
+- 未做真实浏览器点击 live。
+
+**case**：`docs/cases/2026-11-01-memory-anchor-unpin.md`
+
+---
+
+### 批次 2026-11-01 23:05 · wait 积压立即返回 + 有界批量
+<!-- release-batch: start=2026-11-01T22:55+08:00 end=2026-11-01T23:05+08:00 commits=2e377ec -->
+
+**覆盖提交**：`2e377ec`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- wait 先检查本轮未读；有积压立即返回，不再从 wait 时刻重新等 quiet；
+- `turnActive` 不可靠时仍能看到 backlog；
+- 新增 `maxBatchMessages` / `maxBatchChars`（默认 20/4000）；
+- 群聊超出折叠 `foldedCount`，私聊不静默删除；
+- `selectWaitBatch` 纯函数 + R17 桥接回归。
+
+**验证**：
+```text
+node scripts/test-v2-wait-batch.mjs
+node scripts/test-audit-regressions.mjs
+npm run test:audit        # 119/119
+cd plugins/surfcore && npm test   # 0 失败
+```
+
+**重启**：QQ 桥接。
+
+**风险**：
+- 群聊折叠旧消息只给计数/预览，原文可从 recent 回看；
+- 私聊被批量上限截断时不删除，下次还能再给；
+- 静默下限仍可能覆盖只改 defaultQuietMs 的用户；
+- 未做真实 QQ 长轮询 live。
+
+**case**：`docs/cases/2026-11-01-wait-backlog-batch.md`
+
+---
+
+### 批次 2026-11-01 22:55 · 四类动态空前缀/配置路径修复
+<!-- release-batch: start=2026-11-01T22:45+08:00 end=2026-11-01T22:55+08:00 commits=827580d -->
+
+**覆盖提交**：`827580d`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `tools/lib/config.mjs` 与 `plugins/surfcore/lib/paths.js` 统一配置路径：
+  `SURFCORE_BILI_CONFIG > DSH_HOME/surfcore/bili.config.json > HOME/.dsh/...`；
+- 设置页显示实际 B站 配置文件路径；
+- 空前缀时 `daily` 清掉该类历史默认前缀（只清已知默认值）；
+- scheduler 空前缀不再要求“必须有固定前缀”；
+- 新增 `test-bili-prefix-config.mjs`。
+
+**验证**：
+```text
+node scripts/test-bili-prefix-config.mjs
+npm run test:audit        # 118/118
+cd plugins/surfcore && npm test   # 0 失败
+```
+
+**重启**：DSH 插件 / QQ 桥接；下一轮 B站 tick 生效。
+
+**风险**：
+- 自定义 `DSH_HOME` 用户以前可能有两份配置；切换后实际读取路径变化，先确认/备份旧文件；
+- 只清已知默认前缀，避免误删用户自己写的 `【…】`；
+- 旧配置缺 `prefix` 仍回退默认；只有明确 `""` 才代表不加；
+- 直接 `dynamic.mjs post` 不共享这套清洗。
+
+**case**：`docs/cases/2026-11-01-bili-dynamic-prefix-config.md`
+
+---
+
+### 批次 2026-11-01 22:40 · 黑话学习 turn 等待修复
+<!-- release-batch: start=2026-11-01T22:20+08:00 end=2026-11-01T22:40+08:00 commits=507c758,297efdc,18f89b1 -->
+
+**覆盖提交**：`507c758`, `297efdc`, `18f89b1`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `waitLearnerTurn` 改为先注册再 prompt，并支持 cancel；
+- 超时 `LEARNER_TURN_TIMEOUT`，不再用泛化“会话”正则误删会话；
+- collector 支持缺 `turn/start` 的 assistant/turn-end；
+- prompt 失败/被拒会取消 waiter，不再空等 120 秒。
+
+**验证**：
+```text
+node scripts/test-learner-turn-wait.mjs
+npm run test:audit        # 117/117
+cd plugins/surfcore && npm test   # 0 失败
+```
+
+**重启**：QQ 桥接。
+
+**风险**：
+- 超时仍会重建 scratch 学习会话（丢学习会话上下文，不丢用户聊天记忆）；
+- 若 DSH 完全不发 assistant/message 和 turn/end，仍只能超时；
+- 事件重连/重复投递需要真实 DSH 压测。
+
+**case**：`docs/cases/2026-11-01-slang-learner-wait.md`
+
+---
+
+### 批次 2026-11-01 22:15 · 语音提示词不再写死默认关闭
+<!-- release-batch: start=2026-11-01T21:55+08:00 end=2026-11-01T22:15+08:00 commits=f66749b -->
+
+**覆盖提交**：`f66749b`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `qq-chat-v2` preset 第 16 条删除“语音默认是关闭的”写死文案，改为按工具是否存在和 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` 判断；
+- 同步生成 `plugins/surfcore/presets/qq-chat-v2.patch.yml`；
+- `bridge.js` 每次唤醒注入 `voiceStatusLine()`：总闸/工具/语音库状态，覆盖旧记忆里的“不能发语音”；
+- `qq_list_voices` 补 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` code + hint；
+- 设置页说明两个开关、必须重启 DSH、text 模式不依赖语音库。
+
+**验证**：
+```text
+node scripts/test-voice-prompt-fix.mjs
+node scripts/test-voice-system.mjs
+node scripts/test-qq-preset-contract.mjs
+node scripts/test-voice.mjs
+npm run test:audit        # 116/116
+cd plugins/surfcore && npm test   # 0 失败
+```
+
+**重启**：DSH（preset/MCP 工具列表）+ QQ 桥接；旧会话建议新建后再测。
+
+**风险**：
+- 模型会更愿意尝试语音；MCP 未重启/总闸没开时会多一次失败调用；
+- 旧会话的系统提示不会自动更新，状态行只能覆盖，不保证完全压过；
+- 旧记忆卡不会自动删除“不能发语音”，只做当前状态覆盖；
+- 语音是强表达，可能更频繁，需依赖频率/场景规则；
+- `text` 模式依赖 TTS，TTS 未启动仍会失败。
+
+**case**：`docs/cases/2026-11-01-voice-prompt-default-off.md`
+
+---
+
 ### 批次 2026-11-01 20:35 · 通知修复 + QQ推送 + 沉默逛 + 年龄闸
 <!-- release-batch: start=2026-11-01T20:10+08:00 end=2026-11-01T20:50+08:00 commits=e676dd9,218a2a4,9be7fa6 -->
 

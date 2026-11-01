@@ -5,18 +5,24 @@
 
 ---
 
-## 快照：2026-11-01 20:35（dev.6 + 通知/QQ推送/沉默逛）
+## 快照：2026-11-02 00:15（dev.8 + 记忆“最近优先”/ wait /B站/语音/黑话）
 
 ### 当前事实
 
 - **分支**：`dev` 是集货区；`main` 固定为已发布的 `0.8.6`（`42ec20d`）。
 - **稳定版**：`0.8.6`（Release 标题 `SurfCore v0.8.6`）；`/releases/latest` 仍是它。
-- **dev 构建**：`0.8.6-dev.6`（tag 由发布会话发；本地构建提交 `8098849`）。
-- **本地 dev HEAD**：以 `git log -1` 为准（功能提交 `9be7fa6`；之后仅交接/清单提交）；版本 `0.8.6-dev.6`；工作区干净。
-- **测试**：`npm run test:audit` **114/114**；插件测试全绿；清单见 manifest（本次提交后重新生成）。
+- **dev 构建**：`0.8.6-dev.8`（本地构建提交 `1f621ca`）。
+- **本地 dev HEAD**：`90f3eba fix(memory): prioritize recent records over early initial`；版本 `0.8.6-dev.8`；工作区干净。
+- **测试**：`npm run test:audit` **119/119**；插件测试全绿；清单见 manifest（本次提交后重新生成）。
 
 ### 本批内容（都在 dev，未进稳定版）
 
+- **记忆卡最近优先**：`recent` 先收最近 N 天的 owner 记录，不再被 initial 挤空；recent 8→12，initial/owner priority 下调；
+- **记忆卡初次相遇**：拆开 firstMet/pinned；初次相遇可取消置顶、可忘记；删除后自动接管；reload 失败不再假装成功；
+- **QQ wait**：有积压先返回，不再从 wait 时刻重新等静默；默认 20 条/4000 字有界批量，群聊超出折叠，私聊不静默删除；
+- **B站 动态前缀**：统一 `DSH_HOME` / `SURFCORE_BILI_CONFIG` 配置路径；空前缀清历史默认前缀；提示词空前缀不再要求；
+- **黑话学习等待**：waiter 先于 prompt 注册、可取消；collector 兼容缺 turn/start；超时用 `LEARNER_TURN_TIMEOUT`，不再泛化误删会话；
+- **语音提示词**：不再写死“默认关闭”；唤醒动态注入总闸/工具/语音库状态；`qq_list_voices` 补 VOICE_* code/hint；
 - **通知/QQ/沉默逛**：桌面通知修复；新增 `notify.type=qq`（只私聊 owner）；B站「互动与静默」+ 评论年龄上限；闸门错误带 code/hint；超时提醒可写入 `notify.timeoutMutes` 永久静音；
 - **管理员温柔模式**：默认关闭；开启弹全部风险；关闭后不再注入管理员提示/标记；关闭时可选保留或丢弃上下文（重置 QQ + B站 新会话）；管理员权限不变；
 - 更新器 `updates.channel`：`stable`（默认，只跟正式 Release）/ `dev`（只跟 `-dev.N` Pre-release）；

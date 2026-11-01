@@ -406,6 +406,43 @@ test('最初：仅主人互动，前10/中10/后10/30天后概率递减', () => 
   assert.equal(bili.initialTier, '');
 });
 
+test('初次相遇：取消置顶后不会被 refresh 复活，仍保留初次相遇分区', () => {
+  const card = createEmptyCard(NOW - 20 * DAY_MS);
+  const first = addOwnerRecord(card, 0, '第一次和主人说话');
+  addOwnerRecord(card, 3, '后来聊了别的');
+  refreshInitialState(card);
+  assert.equal(first.firstMet, true);
+  assert.equal(first.pinned, true);
+
+  first.pinned = false;
+  refreshInitialState(card);
+  assert.equal(first.pinned, false, '用户取消置顶后不能被 refresh 写回 true');
+  assert.equal(first.firstMet, true, 'firstMet 标记本身不能丢');
+
+  const full = renderMemoryCard(card, { config: CFG, full: true, now: NOW });
+  assert.match(full, /## 初次相遇/);
+  assert.match(full, /第一次和主人说话/);
+});
+
+test('最近板块优先收 owner 的近期记录，不被“最初”挤空', () => {
+  const card = createEmptyCard(NOW - 60 * DAY_MS);
+  addOwnerRecord(card, 0, '第一天认识');
+  addOwnerRecord(card, 5, '最初第五天');
+  addOwnerRecord(card, 58, '最近两天');
+  refreshInitialState(card);
+  const full = renderMemoryCard(card, { config: CFG, full: true, now: NOW });
+  const section = (title) => {
+    const at = full.indexOf(`## ${title}`);
+    if (at < 0) return '';
+    const rest = full.slice(at + 3 + title.length);
+    const next = rest.indexOf('\n## ');
+    return next >= 0 ? rest.slice(0, next) : rest;
+  };
+  assert.match(section('最近记得的'), /最近两天/);
+  assert.match(section('最初的日子（和主人）'), /最初第五天/);
+  assert.doesNotMatch(section('最近记得的'), /最初第五天/, '同一记录不能既在最近又在最初');
+});
+
 test('初次相遇：可单条指定、也可多条合并为一个事件；可恢复自动', () => {
   const card = createEmptyCard(NOW - 50 * DAY_MS);
   const a = addOwnerRecord(card, 0, '最早认识的那天');

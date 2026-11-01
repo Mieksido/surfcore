@@ -21,7 +21,7 @@ import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
   compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadMemoryCard,
   maintainMemoryCard, markOwnerNotified, memoryCardStatus, mergeMemories, normalizeMemoryCardConfig,
-  readAllFullRecords, recallFullMemory, renderFullMemoryCard, renderMemoryCard,
+  readAllFullRecords, recallFullMemory, refreshInitialState, renderFullMemoryCard, renderMemoryCard,
   saveFullMemoryCard, saveMemoryCardOutputs, shouldNotifyOwner,
 } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 
@@ -346,15 +346,20 @@ export function applyMemoryCardAction(action, payload = {}, { config = memoryCar
     let outcome = {};
     if (action === 'pin') {
       const record = card.records.find((item) => item.id === String(payload.id ?? ''));
-      if (!record) return { ok: false, error: '记忆不存在' };
+      if (!record) return { ok: false, code: 'MEMORY_NOT_FOUND', error: '记忆不存在', hint: '刷新记忆卡后重试' };
       record.pinned = payload.pinned !== false;
-      record.anchor = record.pinned;
+      // firstMet 是锚点标记，不随用户取消置顶而丢失；pinned 才是用户选择。
+      record.anchor = record.firstMet ? true : record.pinned;
       changed = true;
     } else if (action === 'forget') {
       const id = String(payload.id ?? '');
       const before = card.records.length;
-      card.records = card.records.filter((item) => item.id !== id || item.pinned);
-      if (card.records.length === before) return { ok: false, error: '记忆不存在或已置顶（置顶记忆不会被忘记）' };
+      card.records = card.records.filter((item) => item.id !== id);
+      if (card.records.length === before) {
+        return { ok: false, code: 'MEMORY_NOT_FOUND', error: '记忆不存在', hint: '刷新记忆卡后重试；如果它已被自动清理，不用重复操作' };
+      }
+      // 删除的可能是初次相遇；让下一条最早的主人互动接管，避免 meta 指向不存在的记录。
+      refreshInitialState(card);
       card.stats.forgotten = (Number(card.stats.forgotten) || 0) + 1;
       changed = true;
     } else if (action === 'ack') {

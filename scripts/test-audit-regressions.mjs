@@ -18,6 +18,7 @@
 //   R14 token 账本：被淘汰采样被新基线覆盖后不得重复计费
 //   R15 /api/send/* 失败路径的 st/now 越界（与 R2 同型，残留在这条旧发送工具真正走的端点）
 //   R16 reserved2 消息落库不得丢 kind/emojiId/summary/subType（表情 CDN 兜底与标签全靠它）
+//   R17 wait 先看积压：已到达消息立即返回；群聊按条数/字符有界批量并折叠
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -310,6 +311,49 @@ await test('R10 group:0456 与 group:456 共用同一份 wait 租约', async () 
         method: 'POST', token, body: { key: 'group:456', purpose: 'messages', timeoutMs: 300 }
       });
       assert.equal(third.status, 200, '前一个等待结束后必须能重新占用租约');
+    });
+  } finally { await h.close(); }
+});
+
+// ── R17. wait 先看积压：已经到达的消息立即返回，不能从 wait 时刻重新计时 ───
+await test('R17 wait 积压立即返回，且有界批量/折叠', async () => {
+  const h = await bridgeHarness({
+    config: { socialV2: { wait: {
+      defaultMs: 1000, minMs: 100, maxMs: 2000,
+      defaultQuietMs: 0, minQuietAfterNewMs: 0,
+      maxBatchMessages: 5, maxBatchChars: 2000,
+    } } },
+  });
+  try {
+    h.setMode('reserved2');
+    const key = 'group:456';
+    const st = h.getSocialV2State(key);
+    const token = st.agentToken;
+    const now = Date.now();
+    const make = (seq) => ({
+      seq, messageId: String(seq), sender: '群友', userId: '10001',
+      text: `消息${seq}`, plain: `消息${seq}`, tail: `消息${seq}`,
+      isSelf: false, isOwner: false, media: [], hasMedia: false,
+      forwardIds: [], hasForward: false, time: now - 5000,
+    });
+    st.lastUnreadSeq = 40;
+    st.lastReadThroughSeq = 0;
+    st.modelSeenSeqs = new Set();
+    st.lastIncomingAt = now - 5000;
+    st.unread = Array.from({ length: 40 }, (_, i) => make(i + 1));
+    st.recentMessages = [...st.unread];
+    await withServer(h, async (port) => {
+      const started = Date.now();
+      const res = await call(port, '/api/socialV2/wait', {
+        method: 'POST', token, body: { key, purpose: 'messages', timeoutMs: 1000, quietMs: 0 },
+      });
+      const elapsed = Date.now() - started;
+      assert.equal(res.status, 200, res.body);
+      assert.equal(res.json.arrived, true);
+      assert.ok(res.json.newMessages.length <= 5, `批量上限必须生效（${res.json.newMessages.length}）`);
+      assert.equal(res.json.foldedCount, 40 - res.json.newMessages.length);
+      assert.equal(res.json.batchTruncated, true);
+      assert.ok(elapsed < 500, `积压必须立即返回（实际 ${elapsed}ms）`);
     });
   } finally { await h.close(); }
 });

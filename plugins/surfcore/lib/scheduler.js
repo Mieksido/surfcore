@@ -1142,7 +1142,9 @@ export function startScheduler(ctx, opts) {
                 ? `3) \`daily --kind ${kind} --text "…" --dry\` → \`--go\``
                 : `3) \`daily --kind ${kind} --catchup --text "…" --dry\` → \`--go\`（**补发必须带 --catchup**）`,
               '',
-              `⚠️ 开头必须是固定前缀：${k.prefix}（脚本会自动补 ✓）`,
+              k.prefix
+                ? `⚠️ 开头必须是固定前缀：${k.prefix}（脚本会自动补 ✓）`
+                : '⚠️ 这类当前**不添加固定前缀**：正文直接从内容开始（留空 ✓）',
               inSlot
                 ? `⚠️ 这类只在 ${String(k.slot).padStart(2, '0')}:00 起这段时间能发，过了就得用 --catchup 补 ✗`
                 : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,

@@ -19,7 +19,7 @@ import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
-import { looksLikeUnfinished } from './v2-wait.js';
+import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import {
   historyWatermark, normalizeHistoryConfig,
@@ -990,7 +990,9 @@ function loadConfig() {
         minMs: 5000,
         maxMs: 600000,
         defaultQuietMs: 8000,
-        minQuietAfterNewMs: 10000   // 收到新消息后至少再等这么久（默认 10 秒），防止抢话
+        minQuietAfterNewMs: 10000,  // 收到新消息后至少再等这么久（默认 10 秒），防止抢话
+        maxBatchMessages: 20,        // 单次 wait 最多交付多少条；群聊积压时不整段倒给模型
+        maxBatchChars: 4000          // 单次 wait 交付正文的软上限（超出折叠旧消息）
       },
       sticker: {
         enabled: true,             // 表情包体系总开关
@@ -2779,19 +2781,42 @@ async function main() {
   }
 
   function waitLearnerTurn(sessionId, timeoutMs = 120000) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const arr = learnerWaiters.get(sessionId) ?? [];
-        const idx = arr.findIndex((w) => w.timer === timer);
-        if (idx >= 0) arr.splice(idx, 1);
-        if (arr.length === 0) learnerWaiters.delete(sessionId);
-        reject(new Error(`等待学习会话 turn 超时(${timeoutMs}ms)`));
+    let settled = false;
+    let timer = null;
+    let waiter = null;
+    const removeWaiter = () => {
+      const arr = learnerWaiters.get(sessionId) ?? [];
+      const idx = arr.indexOf(waiter);
+      if (idx >= 0) arr.splice(idx, 1);
+      if (arr.length === 0) learnerWaiters.delete(sessionId);
+    };
+    const promise = new Promise((resolve, reject) => {
+      waiter = {
+        timer: null,
+        resolve: (text) => { if (settled) return; settled = true; clearTimeout(timer); removeWaiter(); resolve(text); },
+        reject: (error) => { if (settled) return; settled = true; clearTimeout(timer); removeWaiter(); reject(error); },
+      };
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        removeWaiter();
+        const error = new Error(`等待学习会话 turn 超时(${timeoutMs}ms)`);
+        error.code = 'LEARNER_TURN_TIMEOUT';
+        reject(error);
       }, timeoutMs);
-      const waiter = { resolve, reject, timer };
+      waiter.timer = timer;
       const arr = learnerWaiters.get(sessionId) ?? [];
       arr.push(waiter);
       learnerWaiters.set(sessionId, arr);
     });
+    // 调用方在 prompt 失败时取消，别让一个永远不会来的 waiter 拖 120 秒。
+    promise.cancel = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      removeWaiter();
+    };
+    return promise;
   }
 
   async function runSlangExtraction(key) {
@@ -2811,17 +2836,25 @@ async function main() {
     }
 
     const promptText = buildExtractionPrompt(messages);
+    // 关键顺序：先注册 waiter，再发 prompt。
+    // DSH 可能在 prompt 的 HTTP 响应返回前就发出 turn/start、turn/end；
+    // 旧顺序会先收完答案、再注册等待者，答案直接丢失，只能等 120 秒超时。
+    const turnWait = waitLearnerTurn(sessionId);
+    // prompt 本身如果慢过 120s，turnWait 会先 reject；先挂一个空 catch 防止
+    // Node 把它当成 unhandled rejection。真正的 await 仍在下面，错误照常处理。
+    turnWait.catch(() => {});
     try {
       const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
       if (!accepted.result.ok) {
+        turnWait.cancel();
         const code = String(accepted.result.error?.code ?? '');
         const message = String(accepted.result.error?.message ?? '');
-        // 会话已不在 DSH 侧：立刻作废本地记录，下一次窗口会重建，而不是一直重试死会话。
-        if (/not[- ]?found/i.test(`${code} ${message}`)) invalidateSlangLearnerSession();
+        // 只有明确“会话不存在”才作废；不要用泛化的“会话”判断。
+        if (/not[- ]?found|404|session\/not-found/i.test(`${code} ${message}`)) invalidateSlangLearnerSession();
         log(`黑话提取被拒 (${key}): ${code}: ${message}`);
         return;
       }
-      const output = await waitLearnerTurn(sessionId);
+      const output = await turnWait;
       const items = parseExtractionJson(output);
       if (!items.length) {
         log(`黑话提取：${key} 未发现候选`);
@@ -2854,7 +2887,11 @@ async function main() {
         queueSlangTask(() => runSlangResearch(researchCandidates));
       }
     } catch (error) {
-      if (/会话|session|not found|404/i.test(String(error?.message ?? error))) {
+      turnWait.cancel();
+      if (error?.code === 'LEARNER_TURN_TIMEOUT') {
+        log('黑话提取等待超时：重建学习会话，避免旧 turn 继续影响下一轮');
+        invalidateSlangLearnerSession();
+      } else if (/not[- ]?found|404|session\/not-found/i.test(String(error?.message ?? error))) {
         invalidateSlangLearnerSession();
       }
       log(`黑话提取失败 (${key}):`, error?.message ?? error);
@@ -2879,13 +2916,21 @@ async function main() {
       return;
     }
     const promptText = buildResearchPrompt(targets);
+    const turnWait = waitLearnerTurn(sessionId);
+    // prompt 本身如果慢过 120s，turnWait 会先 reject；先挂一个空 catch 防止
+    // Node 把它当成 unhandled rejection。真正的 await 仍在下面，错误照常处理。
+    turnWait.catch(() => {});
     try {
       const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
       if (!accepted.result.ok) {
-        log(`黑话研究被拒: ${accepted.result.error.code}: ${accepted.result.error.message}`);
+        turnWait.cancel();
+        const code = String(accepted.result.error?.code ?? '');
+        const message = String(accepted.result.error?.message ?? '');
+        if (/not[- ]?found|404|session\/not-found/i.test(`${code} ${message}`)) invalidateSlangLearnerSession();
+        log(`黑话研究被拒: ${code}: ${message}`);
         return;
       }
-      const output = await waitLearnerTurn(sessionId);
+      const output = await turnWait;
       const results = parseResearchJson(output);
       for (const r of results) {
         const entry = slangEntries.find((e) => e.content === r.content);
@@ -2907,7 +2952,11 @@ async function main() {
       saveSlangStore();
       log(`黑话研究：已更新 ${results.length} 条候选解释`);
     } catch (error) {
-      if (/会话|session|not found|404/i.test(String(error?.message ?? error))) {
+      turnWait.cancel();
+      if (error?.code === 'LEARNER_TURN_TIMEOUT') {
+        log('黑话研究等待超时：重建学习会话，避免旧 turn 继续影响下一轮');
+        invalidateSlangLearnerSession();
+      } else if (/not[- ]?found|404|session\/not-found/i.test(String(error?.message ?? error))) {
         invalidateSlangLearnerSession();
       }
       log('黑话研究失败:', error?.message ?? error);
@@ -5752,7 +5801,7 @@ async function main() {
           // wait：数值归一化
           if (body.wait && typeof body.wait === 'object') {
             merged.wait = { ...(current.wait ?? {}), ...body.wait };
-            for (const k of ['defaultMs', 'minMs', 'maxMs', 'defaultQuietMs', 'minQuietAfterNewMs']) {
+            for (const k of ['defaultMs', 'minMs', 'maxMs', 'defaultQuietMs', 'minQuietAfterNewMs', 'maxBatchMessages', 'maxBatchChars']) {
               if (merged.wait[k] !== undefined) {
                 const n = Number(merged.wait[k]);
                 merged.wait[k] = Number.isFinite(n) ? Math.max(0, Math.round(n)) : current.wait?.[k] ?? 5000;
@@ -7619,11 +7668,27 @@ async function main() {
           const voice = voiceCfg();
           const agentCall = Boolean(req.headers['x-agent-token']);
           // 与发送接口同样的分层：voice.enabled 只关 AI 通道；操作者（控制台面板）仍可列语音库。
-          if (agentCall && !voice.enabled) { sendJson({ ok: false, error: '语音功能已关闭' }, 403); return; }
+          if (agentCall && !voice.enabled) {
+            sendJson({
+              ok: false,
+              code: 'VOICE_DISABLED',
+              error: '语音功能已关闭（总闸）',
+              hint: '设置 → SurfCore → 全部参数 → socialV2.voice.enabled 打开；重启 DSH 后工具列表才会刷新',
+            }, 403);
+            return;
+          }
           if (agentCall && !key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           if (agentCall && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (agentCall && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
-          if (agentCall && !v2ToolEnabled('sendVoice')) { sendJson({ ok: false, error: '工具未启用：qq_send_voice' }, 403); return; }
+          if (agentCall && !v2ToolEnabled('sendVoice')) {
+            sendJson({
+              ok: false,
+              code: 'VOICE_TOOL_DISABLED',
+              error: '工具未启用：qq_list_voices / qq_send_voice',
+              hint: '设置 → SurfCore → 工具 → 「发语音」打开（或 socialV2.tools.sendVoice=true），保存后重启 DSH',
+            }, 403);
+            return;
+          }
           const wantProbe = url.searchParams.get('probe') !== '0';
           try {
             const files = listAudioFiles(voice.dir);
@@ -7838,6 +7903,8 @@ async function main() {
           // 同时给 quietMs 加上限，避免被模型/群友诱导导致 HTTP handler 长时间挂起。
           const maxQuietMs = Math.max(minQuietAfterNewMs, Math.min(120000, Number(waitCfg.maxMs) || 600000));
           const quietMs = Math.min(maxQuietMs, Math.max(minQuietAfterNewMs, Math.round(rawQuietMs) || 0));
+          const maxBatchMessages = Math.max(1, Math.min(50, Number(waitCfg.maxBatchMessages) || 20));
+          const maxBatchChars = Math.max(500, Math.min(20000, Number(waitCfg.maxBatchChars) || 4000));
           if (st.pendingWakeTimer) {
             clearTimeout(st.pendingWakeTimer);
             st.pendingWakeTimer = null;
@@ -7853,15 +7920,38 @@ async function main() {
           const turnSid = state.sessions[key];
           const turnActive = Boolean(turnSid) && Number(v2TurnStartAt.get(turnSid)) > 0;
           const canReadHistory = v2ToolEnabled('getUnread') || v2ToolEnabled('getRecent');
-          const baseline = (replyWait || turnActive) && canReadHistory
-            ? readThroughSeqV2(st)
+          const agentWait = Boolean(req.headers['x-agent-token']);
+          const readThroughAtStart = readThroughSeqV2(st);
+          const historyAtStart = [
+            ...(v2ToolEnabled('getUnread') ? st.unread : []),
+            ...(v2ToolEnabled('getRecent') && Array.isArray(st.recentMessages) ? st.recentMessages : []),
+          ];
+          const backlogAtStart = [...new Map(historyAtStart
+            .filter((m) => m && !m.isSelf && (m.seq || 0) > readThroughAtStart)
+            .map((m) => [m.seq, m])).values()].sort((a, b) => a.seq - b.seq);
+          // turnActive 依赖 turn/start 事件；事件晚到/丢失时，不能把已经进 unread 的
+          // 积压算成 baseline，否则 wait 会一直等“下一条”。agent 的 wait 只要看到
+          // 本轮未读，就把基线降到模型已读水位；控制台/旧调用仍保持旧语义。
+          const baseline = (replyWait || turnActive || (agentWait && backlogAtStart.length))
+            && canReadHistory
+            ? readThroughAtStart
             : (st.lastUnreadSeq || 0);
           const start = Date.now();
           let arrived = false;
           let lastNewAt = 0;
           let aborted = false;
+          let backlogImmediate = false;
           req.on('close', () => { aborted = true; });
-          if (replyWait) {
+          // 工具契约：已有本轮没看过的消息应立即返回，不应再从“现在”重新等静默。
+          // 把静默起点设为最后一条积压消息的到达时间；若它已经足够旧，quiet 直接成立。
+          if (!replyWait && agentWait && backlogAtStart.length >= minNew) {
+            const latest = backlogAtStart[backlogAtStart.length - 1];
+            const latestAt = Number(latest?.time) || Number(st.lastIncomingAt) || Date.now();
+            arrived = true;
+            lastNewAt = Math.min(latestAt, Date.now());
+            backlogImmediate = true;
+          }
+          if (!backlogImmediate && replyWait) {
             const incomingAt = () => {
               const value = Number(st.lastIncomingAt);
               return Number.isFinite(value) && value > 0 ? Math.min(value, Date.now()) : start;
@@ -7883,7 +7973,7 @@ async function main() {
             // Its timestamp must still invalidate the previous quiet window.
             lastNewAt = incomingAt();
             arrived = (st.lastUnreadSeq || 0) > baseline;
-          } else while (Date.now() - start < timeoutMs && !aborted) {
+          } else if (!backlogImmediate) while (Date.now() - start < timeoutMs && !aborted) {
             let nowSeq = st.lastUnreadSeq || 0;
             if (nowSeq - baseline >= minNew) {
               arrived = true;
@@ -7952,11 +8042,32 @@ async function main() {
           const pending = [...new Map(history
             .filter((m) => m && !m.isSelf && (m.seq || 0) > baseline)
             .map((m) => [m.seq, m])).values()].sort((a, b) => a.seq - b.seq);
+          const batch = selectWaitBatch(pending, {
+            maxMessages: maxBatchMessages,
+            maxChars: maxBatchChars,
+            isImportant: (m) => Boolean(m && (
+              m.isOwner === true
+              || m.quoteTargetIsSelf === true
+              || (m.kind === 'poke' && m.poke?.targetIsSelf === true)
+              || isDirectedAtAi(String(m.plain || m.text || ''))
+            )),
+          });
+          // 群聊积压才折叠旧消息；私聊保留在 unread（recent 也仍在），宁可下次再给，
+          // 不静默丢掉用户私聊。群聊折叠后仍可从 recent 回看。
+          if (!replyWait && batch.folded.length && String(key).startsWith('group:')) {
+            const cutoff = Math.max(...batch.folded.map((m) => Number(m.seq) || 0).filter(Boolean));
+            if (cutoff > 0) {
+              try { acknowledgeMessagesV2(st, cutoff); } catch {}
+            }
+          }
           // `arrived` is recomputed against what this request may actually hand over,
           // so a suppressed buffer cannot report an arrival it is not allowed to show.
-          const newMessages = replyWait ? pending : (arrived ? pending : []);
+          const newMessages = replyWait ? batch.selected : (arrived ? batch.selected : []);
           const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, newMessages) : readThroughSeqV2(st);
           const unreadNotice = unreadNoticeV2(st);
+          const foldedPreview = batch.folded.length
+            ? batch.folded.slice(-2).map((m) => `${m.sender || '未知'}：${String(m.plain || m.text || '').slice(0, 40)}`).join(' / ')
+            : '';
           const lastNew = newMessages.length ? newMessages[newMessages.length - 1]
             : replyWait ? [...st.recentMessages].reverse().find((m) => m && !m.isSelf) : null;
           const lastMessageUnfinished = lastNew ? looksLikeUnfinished(String(lastNew.tail || lastNew.plain || lastNew.text || '')) : false;
@@ -7987,6 +8098,9 @@ async function main() {
             ...(!replyWait ? { preSleepWaitMs, preSleepWaitRemainingMs: preSleepRemainingMs } : {}),
             ...(stickerMatch ? { stickerMatch } : {}),
             ...(unreadNotice || {}),
+            batchTruncated: batch.folded.length > 0,
+            foldedCount: batch.folded.length,
+            ...(foldedPreview ? { foldedPreview } : {}),
             newMessages,
             readThroughSeq,
             unreadCount: st.unread.length
@@ -12534,6 +12648,24 @@ async function main() {
   function adminPromptLine(compact = false) {
     return adminPromptBlock('qq', adminIdentity(), { compact });
   }
+
+  /**
+   * 语音的“当前状态”必须每轮注入：preset 里的静态文案无法知道
+   * voice.enabled / tools.sendVoice 是否已打开，旧会话还会保留旧系统提示。
+   * 这条放在记忆卡之后，明确覆盖“语音默认关闭”的旧结论。
+   */
+  function voiceStatusLine() {
+    const v = voiceCfg();
+    const enabled = v.enabled === true;
+    const tool = cfg.socialV2?.tools?.sendVoice !== false;
+    let count = 0;
+    try { count = enabled ? voiceLibrary().length : 0; } catch {}
+    const on = enabled && tool;
+    const state = `总闸${enabled ? '开' : '关'}；发语音工具${tool ? '开' : '关'}${enabled ? `；语音库 ${count} 个（text 模式不依赖语音库）` : ''}`;
+    return `【语音状态】${state}。${on
+      ? 'qq_send_voice 当前可用；工具存在就正常使用，不要因为旧提示/旧记忆里的“不能发语音”拒绝，也不要假装发过。若工具列表里没有 qq_send_voice，说明 MCP 还没重启，重启 DSH 后再试。'
+      : '当前不能发语音；只有确实需要时才按 VOICE_DISABLED / VOICE_TOOL_DISABLED 的 hint 去设置，不要反复重试或假装发送。'}\n\n`;
+  }
   function ownerMessageTag() {
     return adminMarker(adminIdentity());
   }
@@ -12618,7 +12750,7 @@ async function main() {
     const adminBlock = adminPromptLine(false);
     // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
     const memoryBlock = memoryCardPromptBlock();
-    return [base, adminBlock, biliBrief, memoryBlock].filter(Boolean).join('\n\n');
+    return [base, adminBlock, biliBrief, memoryBlock, voiceStatusLine()].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
     return roleHintForMode('v1', key, personaMode);
@@ -13760,7 +13892,8 @@ async function main() {
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
     const memoryCardText = memoryCardPromptBlock();
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const voiceLine = voiceStatusLine();
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -13768,6 +13901,7 @@ async function main() {
       admin: adminLine.length,
       bili: biliLine.length,
       memory: memoryCardLine.length,
+      voice: voiceLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
       antiAi: antiAiLine.length,
@@ -15569,7 +15703,15 @@ async function main() {
                 // 等待者要么拿不到结果、要么拿到错位的文本。
                 let learnerCollector = learnerCollectors.get(frame.sessionId) ?? null;
                 if (!learnerCollector && frame.event.type === 'turn/start') {
-                  learnerCollector = createTurnCollector();
+                  learnerCollector = createTurnCollector({ tolerantStart: true });
+                  learnerCollectors.set(frame.sessionId, learnerCollector);
+                }
+                // 兼容重连快照/事件顺序：只要还有学习 waiter，assistant/message 或 turn/end
+                // 本身就是充分证据，不能因为缺 turn/start 就让 waiter 空等 120 秒。
+                if (!learnerCollector
+                  && learnerWaiters.has(frame.sessionId)
+                  && (frame.event.type === 'assistant/message' || frame.event.type === 'turn/end')) {
+                  learnerCollector = createTurnCollector({ tolerantStart: true });
                   learnerCollectors.set(frame.sessionId, learnerCollector);
                 }
                 const learnerEnded = learnerCollector ? learnerCollector.push(frame.event) : null;
