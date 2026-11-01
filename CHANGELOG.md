@@ -1,3 +1,9 @@
+## [0.8.6-dev.8] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 ## [0.8.6-dev.7] - 2026-11-01
 
 ### dev 测试构建
@@ -116,6 +122,18 @@
 - `apply.unknown-channel / unknown-kind / git-failed` 进 30 分钟退避；
 - release 通道失败补 `code/hint`；更新中禁止切通道（`UPDATE_CHANNEL_BUSY`）；
 - helper 超时/失败清理 `.started`。
+
+## [Unreleased]
+
+### 修复（验收 A–D：密钥落盘、结构化 403、目的历史、超时 code）
+
+- 新增 `SECRET_TOKEN_RE`（github_pat/ghp/sk/AKIA/Bearer），日志/活动/公共群消息/出站统一打码；
+  入站检测到密钥写 L1 提醒，记忆 inbox 存打码文本；
+- `/api/notify/owner`、`/api/notice/timeout` 放行到端点内判断，返回带 code/hint 的结构化 403；
+  外层通用 403 也补 `CONSOLE_ONLY`；
+- 目的历史：只有 `sent` 更新 `lastText`，`silent/failed` 清空并记 `skipReason`；
+- `/api/notice/timeout` 空 code → 400 `TIMEOUT_CODE_REQUIRED`，不再共用一个静音键；
+- 公共群消息日志（`appendPublicFeed`）同样打码。
 
 ## [0.8.6] - 2026-11-01
 

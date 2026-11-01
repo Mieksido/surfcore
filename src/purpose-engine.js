@@ -197,6 +197,7 @@ function normalizeHistoryEntry(raw) {
   return {
     at,
     outcome: String(raw.outcome ?? '').slice(0, 20),
+    skipReason: String(raw.skipReason ?? '').slice(0, 40),
     kind: String(raw.kind ?? '').slice(0, 20),
     need: PURPOSE_NEEDS.includes(raw.need) ? raw.need : '',
     action: String(raw.action ?? '').slice(0, 20),
@@ -240,6 +241,7 @@ export function normalizePurposeState(raw, now = Date.now()) {
   base.lastOutcome = String(raw.lastOutcome ?? '').slice(0, 24);
   base.lastPurpose = clip(raw.lastPurpose, 120);
   base.lastText = clip(raw.lastText, 200);
+  base.lastSkipReason = String(raw.lastSkipReason ?? '').slice(0, 40);
   base.nextFireAt = Number(raw.nextFireAt) || 0;
   base.attempts = clampInt(raw.attempts, 0, 0, 20);
   base.drives = normalizeDrives(raw.drives);
@@ -370,6 +372,7 @@ export function applyPurposeOutcome(state, {
   config = DEFAULT_PURPOSE_CONFIG,
   outcome = 'sent',
   text = '',
+  skipReason = '',
   memo = null,
   planned = null,
   random = Math.random,
@@ -378,7 +381,10 @@ export function applyPurposeOutcome(state, {
   state.lastRunAt = now;
   state.lastOutcome = String(outcome ?? 'sent').slice(0, 24);
   state.lastPurpose = clip(memo?.purpose || planned?.text || state.lastPurpose || '', 120);
-  state.lastText = clip(text || state.lastText || '', 200);
+  // 只有 sent 才更新“说了什么”；silent/failed 不能沿用上一次 lastText，
+  // 否则目的历史会永远重复同一句、并让复盘误以为“说过”（2026-11-01 验收报告 C）。
+  state.lastText = state.lastOutcome === 'sent' ? clip(text || '', 200) : '';
+  state.lastSkipReason = state.lastOutcome === 'sent' ? '' : clip(skipReason || state.lastOutcome, 40);
   const need = PURPOSE_NEEDS.includes(memo?.need) ? memo.need : (PURPOSE_NEEDS.includes(planned?.need) ? planned.need : '');
   const action = memo?.action || planned?.action || '';
   const emotion = memo?.emotionText ? '' : (planned?.emotion || '');
@@ -445,6 +451,7 @@ export function applyPurposeOutcome(state, {
     emotion: emotion || planned?.emotion || '',
     purpose: state.lastPurpose,
     text: state.lastText,
+    skipReason: state.lastSkipReason || '',
     planned: clip(planned?.text || '', 120),
     sourceId: clip(planned?.sourceId || '', 80),
     goalId,
@@ -2252,6 +2259,7 @@ export function summarizePurposeState(state, { config = DEFAULT_PURPOSE_CONFIG, 
     lastOutcome: state.lastOutcome || '',
     lastPurpose: state.lastPurpose || '',
     lastText: state.lastText || '',
+    lastSkipReason: state.lastSkipReason || '',
     lastEmotion: state.lastEmotion || '',
     lastEmotionLabel: EMOTION_LABELS[state.lastEmotion] || '',
     lastEmotionText: state.lastEmotionText || '',

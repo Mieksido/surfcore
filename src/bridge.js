@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
-import { SENSITIVE_RE } from './sensitive.js';
+import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import {
@@ -689,6 +689,7 @@ function redactSensitiveText(text) {
   try {
     const flags = SENSITIVE_RE.flags.includes('g') ? SENSITIVE_RE.flags : SENSITIVE_RE.flags + 'g';
     raw = raw.replace(new RegExp(SENSITIVE_RE.source, flags), '***');
+    raw = raw.replace(new RegExp(SECRET_TOKEN_RE.source, 'g'), '***');
   } catch {}
   for (const token of KNOWN_AGENT_TOKENS) {
     if (token && raw.includes(token)) raw = raw.split(token).join('***');
@@ -728,7 +729,7 @@ function appendActivity(line) {
 const appendPublicFeedLog = createCappedLogger(PUBLIC_FEED, 5000);
 function appendPublicFeed(entry) {
   try {
-    const text = String(entry?.text ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 1200);
+    const text = redactSensitiveText(String(entry?.text ?? '').replace(/[\r\n]+/g, ' ').trim()).slice(0, 1200);
     if (!text) return;
     appendPublicFeedLog(`${JSON.stringify({
       at: new Date().toISOString(),
@@ -4463,9 +4464,13 @@ async function main() {
             || url.pathname.startsWith('/api/socialV2/')
             || url.pathname.startsWith('/api/send/')
             || url.pathname.startsWith('/api/images/')
-            || url.pathname === '/api/authorize/read';
+            || url.pathname === '/api/authorize/read'
+            // 放行到端点内判断：返回 NOTIFY_CONSOLE_ONLY / TIMEOUT_NOTICE_CONSOLE_ONLY（带 code+hint），
+            // 不能用外层通用 403 把结构化错误吞掉（2026-11-01 验收报告 A）。
+            || url.pathname === '/api/notify/owner'
+            || url.pathname === '/api/notice/timeout';
           if (!agentAllowed) {
-            sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
+            sendJson({ ok: false, code: 'CONSOLE_ONLY', error: '该接口仅控制台可用', hint: '请用设置页/控制台（x-console-token）；AI 请走对应的 v2 工具面' }, 403);
             return;
           }
         }
@@ -8632,11 +8637,16 @@ async function main() {
         // 工具进程（B站 notify / 通知测试）超时后 POST 到这里，不再只能 toast 一句。
         if (req.method === 'POST' && url.pathname === '/api/notice/timeout') {
           if (req.headers['x-agent-token']) {
-            sendJson({ ok: false, code: 'TIMEOUT_NOTICE_CONSOLE_ONLY', error: '超时提醒只允许控制台调用' }, 403);
+            sendJson({ ok: false, code: 'TIMEOUT_NOTICE_CONSOLE_ONLY', error: '超时提醒只允许控制台调用', hint: '由 B站 notify 进程携带 x-console-token 调用；AI 不应使用该接口' }, 403);
             return;
           }
           const body = await readBody();
-          const code = String(body.code ?? 'TIMEOUT').trim().slice(0, 80) || 'TIMEOUT';
+          const rawCode = String(body.code ?? '').trim();
+          if (!rawCode) {
+            sendJson({ ok: false, code: 'TIMEOUT_CODE_REQUIRED', error: '超时提醒缺少 code', hint: '调用方必须带具体错误码（如 QQ_NOTIFY_TIMEOUT），否则不同来源会共用一个静音键' }, 400);
+            return;
+          }
+          const code = rawCode.slice(0, 80);
           const message = redactKnownTokensOnly(String(body.message ?? '操作超时').trim()).slice(0, 300);
           const hint = redactKnownTokensOnly(String(body.hint ?? '').trim()).slice(0, 300);
           const source = String(body.source ?? '').trim().slice(0, 120);
@@ -9029,6 +9039,7 @@ async function main() {
     for (const token of KNOWN_AGENT_TOKENS) {
       if (token && s.includes(token)) s = s.split(token).join('***');
     }
+    try { s = s.replace(new RegExp(SECRET_TOKEN_RE.source, 'g'), '***'); } catch {}
     return s;
   }
 
@@ -11806,7 +11817,10 @@ async function main() {
         purposeRun = null;
         const outcome = stuck.sentTexts.length > 0 ? 'sent' : 'failed';
         applyPurposeOutcome(purposeState, {
-          now: Date.now(), config: cfg.purpose, outcome, text: stuck.sentTexts[0] || '', planned: stuck.planned,
+          now: Date.now(), config: cfg.purpose, outcome,
+          text: outcome === 'sent' ? (stuck.sentTexts[0] || '') : '',
+          skipReason: outcome === 'sent' ? '' : 'timeout-no-receipt',
+          planned: stuck.planned,
         });
         savePurposeState();
         log(`[目的] 回合 20 分钟没有回执，按 ${outcome} 收尾`);
@@ -11830,6 +11844,7 @@ async function main() {
         config: cfg.purpose,
         outcome: 'delivery-failed',
         text: '',
+        skipReason: 'delivery-failed',
         planned: selection.purpose,
       });
       savePurposeState();
@@ -11952,7 +11967,8 @@ async function main() {
       now: Date.now(),
       config: cfg.purpose,
       outcome,
-      text: run.sentTexts[0] || '',
+      text: outcome === 'sent' ? (run.sentTexts[0] || '') : '',
+      skipReason: outcome === 'silent' ? 'model-silent' : (outcome === 'failed' ? String(ended?.reason?.kind ?? 'failed') : ''),
       memo,
       planned: run.planned,
     });
@@ -14583,9 +14599,30 @@ async function main() {
   //   · 主人消息：全部记（私聊/群聊都记；scope 在插件侧固定为 qq，不会带去 B站）。
   //   · 群友消息：只记直接对她说、引用她、或明显有情绪/约定/道歉的，避免把整个群搬进记忆。
   //   · 私聊（非主人）：白名单好友的长消息记一条低权重的，短寒暄不记。
+  /** 入站消息里发现明确密钥：提醒用户作废，并保证后续日志/入站记录使用打码文本。 */
+  function noteSecretInInbound(key, text, isOwner) {
+    try {
+      const raw = String(text ?? '');
+      if (!raw) return;
+      const re = new RegExp(SECRET_TOKEN_RE.source, 'g');
+      if (!re.test(raw)) return;
+      if (!auditOnce('secret-inbound', key, 60 * 60 * 1000)) return;
+      gateEvents.record({
+        level: 'L1', gate: 'privacy', kind: 'security', event: 'secret-in-inbound-message', action: 'allowed',
+        subject: { key },
+        reason: { code: 'SECRET_IN_INBOUND', message: '入站消息里出现疑似密钥（已打码保存）' },
+        impact: '密钥可能已经留在聊天记录/日志/会话上下文里；如果不作废，任何能读到这些文件的人都能使用它。',
+        recommendation: '请让发送者立刻作废并重新生成该密钥；不要把它贴进 QQ。日志与活动记录已打码，但聊天平台侧原文无法撤回。',
+        confidence: 'confirmed', evidence: { isOwner: isOwner === true },
+        dedupeKey: `secret-inbound:${key}`,
+      });
+      log(`[privacy] ${key} 的入站消息里检测到疑似密钥（已打码；建议发送者立即作废）`);
+    } catch {}
+  }
+
   function recordMemoryInboxEvent({ key: conversationKey, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf }) {
     try {
-      const text = String(plainContent || textContent || '').trim();
+      const text = redactSensitiveText(String(plainContent || textContent || '').trim());
       if (!text || text.startsWith('/')) return;
       if (/^\[(图片|表情|转发消息|拍一拍)\]/.test(text)) return;
       const direct = quoteTargetIsSelf || isOwner || isDirectAddress(text, event, kind);
@@ -14706,6 +14743,7 @@ async function main() {
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';
     // 记忆卡原料：在静默/审批/命令等分支之前记录，避免「主人说的话没进记忆」。
+    noteSecretInInbound(key, plainContent || textContent, isOwner);
     recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
     if (kind === 'group') {
       recordFishWindow(key, displayName, event.user_id, { isOwner });

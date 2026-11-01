@@ -177,6 +177,8 @@ const tests = [
   'test-allowlist.mjs',
   // DSH 升级后 profile MCP / 会话 preset 审计（2026-11-01 升级后没有 qq_* 工具）。
   'test-dsh-health.mjs',
+  // 验收报告 A–D：结构化 403 / 密钥打码 / 目的历史 / 超时 code。
+  'test-acceptance-abcd.mjs',
   // dev 通道 / Pre-release 发布链路（2026-11-01）。
   'test-dev-publish.mjs',
   // 主题/对比度约束（深色、浅色都不能低对比）。

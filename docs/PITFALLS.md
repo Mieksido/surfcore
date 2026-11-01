@@ -3281,3 +3281,13 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
   helper 校验 kind；unknown channel/kind 结构化报错；插件缺陷类失败进退避。
 - **教训**：**状态文件是有生命周期的**：谁写、谁清、谁优先读，必须画清楚；
   兜底分支要选“拒绝并说明”，不能选“继续做点什么”。
+
+## 密钥落盘 / 结构化 403 被外层吞 / 目的历史串文案
+
+- **现象**：用户把 PAT 贴进 QQ，`bridge.log` 活动快照能看到原文；console-only 端点返回无 code 的 403；
+  `purpose.history` 每条 text 都是同一句。
+- **根因**：`SENSITIVE_RE` 不认裸 `github_pat_`；外层 agent-token 白名单在端点前统一 403；
+  `purpose` 的 `lastText = text || state.lastText` 在 silent 分支沿用了上一句。
+- **修法**：新增 `SECRET_TOKEN_RE` 并在所有日志/活动/公共 feed/出站打码；白名单放行两个端点 + 通用 403 带 code/hint；
+  purpose 只有 sent 写 text，silent/failed 记 skipReason；timeout code 必填。
+- **教训**：**日志出口不止一个**，脱敏要做在共用函数里；多态字段的“空值回退”会制造假历史。
