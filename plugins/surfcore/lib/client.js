@@ -41,7 +41,14 @@ window.__ModuleLoader__.load({
 
   async function browseNative(mode = "dir", title = "", filter = "") {
     // filter 只接受宿主认识的枚举（如 snowluma），不把原始 filter 串传给宿主。
-    const q = `mode=${mode === "file" ? "file" : "dir"}&title=${encodeURIComponent(title)}${filter ? `&filter=${encodeURIComponent(filter)}` : ""}`;
+    const q = `mode=${mode === "file" ? "file" : "dir"}&title=${encodeURIComponent(title)}${filter ? `&filter=${encodeURIComponent(filter)}` : ""}
+/* 状态可见性：hover / focus-visible / disabled 都必须能看出来，且不靠写死颜色 */
+.qbw-btn2:hover:not(:disabled),.qbw-btn3:hover:not(:disabled){background:var(--qbw-hover)}
+.qbw-btn:active:not(:disabled){filter:brightness(.94)}
+.qbw-btn:focus-visible,.qbw-btn2:focus-visible,.qbw-btn3:focus-visible,.qbw-tab:focus-visible,.qbw-chip:focus-visible,.qbw-area-btn:focus-visible{outline:2px solid var(--qbw-brand);outline-offset:2px}
+select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
+.qbw-modal .qbw-btn2{color:var(--qbw-text)}
+`;
     const res = await fetch(`${API}/browse?${q}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(180000) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: data?.error || `HTTP ${res.status}` };
@@ -50,15 +57,41 @@ window.__ModuleLoader__.load({
     const CSS_TAG = "surfcore/console.css";
 
     const CSS = `
+/* 主题语义层：只用 DSH 提供的 light/dark token，组件里不再写死颜色。
+   on-brand 用 bg-base：浅色主题是浅字压深品牌色，深色主题是深字压浅品牌色。 */
+:root{
+  --qbw-surface: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-1, #ffffff));
+  --qbw-surface-2: var(--dsw-alias-bg-layer-2, #f2f4f7);
+  --qbw-text: var(--dsw-alias-label-primary, #1f2328);
+  --qbw-muted: var(--dsw-alias-label-secondary, #5b6472);
+  --qbw-line: var(--dsw-alias-border-l2, #d0d5dd);
+  --qbw-line-soft: var(--dsw-alias-border-l1, #e3e6ee);
+  --qbw-brand: var(--dsw-alias-brand-primary, #2f6fed);
+  --qbw-on-brand: var(--dsw-alias-bg-base, #ffffff);
+  --qbw-hover: rgba(127,127,127,.12);
+  --qbw-ok: var(--dsw-alias-state-success-primary, #2fbf71);
+  --qbw-warn: var(--dsw-alias-state-warn-primary, #b97800);
+  --qbw-err: var(--dsw-alias-state-error-primary, #e5484d);
+  --qbw-ok-text: var(--qbw-ok);
+  --qbw-warn-text: var(--qbw-warn);
+  --qbw-err-text: var(--qbw-err);
+}
+@supports (color: color-mix(in srgb, #000 50%, #fff)){
+  :root{
+    --qbw-ok-text: color-mix(in srgb, var(--qbw-ok) 70%, var(--qbw-text));
+    --qbw-warn-text: color-mix(in srgb, var(--qbw-warn) 55%, var(--qbw-text));
+    --qbw-err-text: color-mix(in srgb, var(--qbw-err) 85%, var(--qbw-text));
+  }
+}
 .qbw-app{max-width:1020px;margin:0 auto;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:rgba(127,127,127,.04);box-shadow:0 10px 30px rgba(0,0,0,.12);overflow:hidden}
 .qbw-head{padding:18px 20px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);background:linear-gradient(135deg,rgba(31,111,235,.10),rgba(255,122,162,.08))}
-.qbw-kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);margin:0 0 4px}
+.qbw-kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--qbw-muted);margin:0 0 4px}
 .qbw-title{margin:0;font-size:19px;font-weight:600;line-height:28px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.qbw-sub{margin:4px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.qbw-sub{margin:4px 0 0;color:var(--qbw-muted);font-size:12px}
 .qbw-dots{display:inline-flex;gap:6px;margin-left:auto;flex-wrap:wrap}
 .qbw-dot{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dsw-alias-label-secondary);background:rgba(127,127,127,.10);padding:2px 8px;border-radius:999px}
-.qbw-dot i{width:7px;height:7px;border-radius:50%;background:#8a8f98;display:inline-block}
-.qbw-dot.ok i{background:#2fbf71}.qbw-dot.warn i{background:#ffb020}.qbw-dot.bad i{background:#ff5c5c}
+.qbw-dot i{width:7px;height:7px;border-radius:50%;background:var(--qbw-muted);display:inline-block}
+.qbw-dot.ok i{background:var(--qbw-ok)}.qbw-dot.warn i{background:var(--qbw-warn)}.qbw-dot.bad i{background:var(--qbw-err)}
 .qbw-tabs{display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-x:auto;background:rgba(127,127,127,.025)}
 .qbw-tab{border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;padding:8px 10px 9px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;border-radius:6px 6px 0 0}
 .qbw-tab:hover{background:rgba(127,127,127,.08);color:var(--dsw-alias-label-primary)}
@@ -67,84 +100,84 @@ window.__ModuleLoader__.load({
 .qbw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 .qbw-card{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:12px 13px;background:rgba(127,127,127,.03)}
 .qbw-area-btn{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:12px 13px;margin:0 0 8px;background:rgba(127,127,127,.03);cursor:pointer;color:inherit;text-align:left;font:inherit}
-.qbw-area-btn:hover{border-color:var(--dsw-alias-state-info-primary,#4f8cff);background:rgba(79,140,255,.06)}
+.qbw-area-btn:hover{border-color:var(--qbw-brand);background:var(--qbw-hover)}
 .qbw-area-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:2px}
 .qbw-area-arrow{font-size:20px;opacity:.45;line-height:1}
 .qbw-category{margin:10px 0 4px}
 .qbw-category-title{margin:0 0 6px;font-size:12px;font-weight:600;opacity:.85;letter-spacing:.02em}
 .qbw-row[data-tip]{position:relative}
-.qbw-row[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:0;top:100%;z-index:80;max-width:520px;margin-top:4px;padding:7px 9px;border-radius:8px;background:#18202c;color:#f4f7fb;font-size:11.5px;line-height:16px;box-shadow:0 8px 24px rgba(0,0,0,.28);white-space:normal;pointer-events:none}
+.qbw-row[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:0;top:100%;z-index:80;max-width:520px;margin-top:4px;padding:7px 9px;border-radius:8px;background:var(--qbw-surface);color:var(--qbw-text);border:1px solid var(--qbw-line);font-size:11.5px;line-height:16px;box-shadow:0 8px 24px rgba(0,0,0,.28);white-space:normal;pointer-events:none}
 .qbw-area-btn{position:relative}
 
 
 
 .qbw-card h4{margin:0 0 6px;font-size:13px;font-weight:600}
-.qbw-card p{margin:0;color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:17px}
+.qbw-card p{margin:0;color:var(--qbw-muted);font-size:11.5px;line-height:17px}
 .qbw-kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:.5px solid var(--dsw-alias-border-l2);font-size:12px}
 .qbw-kv:last-child{border-bottom:none}
-.qbw-kv span:first-child{color:var(--dsw-alias-label-tertiary)}
+.qbw-kv span:first-child{color:var(--qbw-muted)}
 .qbw-kv span:last-child{text-align:right;word-break:break-all}
 .qbw-group{margin:16px 0 8px;font-size:13px;font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.qbw-group small{font-weight:400;color:var(--dsw-alias-label-tertiary);font-size:11px}
+.qbw-group small{font-weight:400;color:var(--qbw-muted);font-size:11px}
 .qbw-rows{display:flex;flex-direction:column}
 .qbw-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px 20px;padding:9px 0;border-bottom:.5px solid var(--dsw-alias-border-l2);flex-wrap:wrap}
 .qbw-row:last-child{border-bottom:none}
 .qbw-row>div:first-child{flex:1;min-width:190px}
 .qbw-label{font-size:12.5px;line-height:19px}
-.qbw-hint{color:var(--dsw-alias-label-tertiary);margin-top:2px;font-size:11px;line-height:17px}
+.qbw-hint{color:var(--qbw-muted);margin-top:2px;font-size:11px;line-height:17px}
 .qbw-input,.qbw-select,.qbw-textarea{background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;color:var(--dsw-alias-label-primary);font-size:12.5px;min-height:28px;padding:3px 8px;min-width:180px;outline:none;font-family:inherit}
 .qbw-input:focus-visible,.qbw-select:focus-visible,.qbw-textarea:focus-visible{border-color:var(--dsw-alias-brand-primary)}
 .qbw-input.wide,.qbw-textarea.wide{min-width:320px}
 .qbw-textarea{width:100%;min-height:90px;resize:vertical;line-height:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .qbw-textarea.card{min-height:360px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.qbw-btn{background:#2f6fed;color:#fff;border:none;border-radius:6px;font-size:12.5px;min-height:29px;padding:0 12px;cursor:pointer;white-space:nowrap}
-.qbw-progress{height:6px;background:rgba(255,255,255,.14);border-radius:99px;overflow:hidden}
-.qbw-progress>i{display:block;height:100%;background:#2f6fed;border-radius:99px;transition:width .35s ease}
+.qbw-btn{background:var(--qbw-brand);color:var(--qbw-on-brand);border:none;border-radius:6px;font-size:12.5px;min-height:29px;padding:0 12px;cursor:pointer;white-space:nowrap}
+.qbw-progress{height:6px;background:var(--qbw-hover);border-radius:99px;overflow:hidden}
+.qbw-progress>i{display:block;height:100%;background:var(--qbw-brand);border-radius:99px;transition:width .35s ease}
 .qbw-progress.indet>i{width:35%!important;animation:qbw-indet 1.1s ease-in-out infinite}
 @keyframes qbw-indet{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
-.qbw-btn:disabled{opacity:.5;cursor:default}
-.qbw-btn:hover:not(:disabled){background:#2a63d4}
+.qbw-btn:disabled,.qbw-btn2:disabled,.qbw-btn3:disabled{opacity:.55;cursor:not-allowed}
+.qbw-btn:hover:not(:disabled){filter:brightness(1.07)}
 .qbw-btn2{background:transparent;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
 .qbw-btn3{background:transparent;border:1px dashed var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
-.qbw-btn.danger{background:#e5484d}
+.qbw-btn.danger{background:var(--qbw-err);color:var(--qbw-on-brand)}
 .qbw-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:10px;border-top:.5px solid var(--dsw-alias-border-l2)}
 .qbw-foot{position:sticky;bottom:0;background:rgba(127,127,127,.06);border-top:1px solid var(--dsw-alias-border-l2);padding:10px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .qbw-foot .spacer{flex:1}
-.qbw-dirty{color:#ffb020;font-size:12px}
-.qbw-ok{color:#2fbf71;font-size:12px}
+.qbw-dirty{color:var(--qbw-warn-text);font-size:12px}
+.qbw-ok{color:var(--qbw-ok-text);font-size:12px}
 .qbw-err{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
 .qbw-out{white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);background:rgba(127,127,127,.08);border-radius:8px;padding:10px 12px;max-height:280px;overflow:auto;margin-top:10px}
 .qbw-badge{display:inline-block;font-size:10.5px;line-height:16px;padding:1px 7px;border-radius:999px;background:rgba(127,127,127,.14);color:var(--dsw-alias-label-secondary);margin-left:6px}
-.qbw-badge.ok{background:rgba(47,191,113,.16);color:#2fbf71}
-.qbw-badge.warn{background:rgba(255,176,32,.16);color:#b97800}
-.qbw-badge.bad{background:rgba(229,72,77,.14);color:#e5484d}
+.qbw-badge.ok{background:color-mix(in srgb, var(--qbw-ok) 16%, transparent);color:var(--qbw-ok-text)}
+.qbw-badge.warn{background:color-mix(in srgb, var(--qbw-warn) 16%, transparent);color:var(--qbw-warn-text)}
+.qbw-badge.bad{background:color-mix(in srgb, var(--qbw-err) 14%, transparent);color:var(--qbw-err-text)}
 .qbw-list{display:flex;flex-direction:column;gap:6px}
 .qbw-item{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:9px 10px;display:flex;gap:10px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
 .qbw-item>div:first-child{flex:1;min-width:220px}
 .qbw-table{width:100%;border-collapse:collapse;font-size:12px}
 .qbw-table th,.qbw-table td{text-align:left;padding:6px 6px;border-bottom:.5px solid var(--dsw-alias-border-l2);vertical-align:top}
-.qbw-table th{color:var(--dsw-alias-label-tertiary);font-weight:500;font-size:11px}
+.qbw-table th{color:var(--qbw-muted);font-weight:500;font-size:11px}
 .qbw-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 9px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .qbw-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .qbw-chip{cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:3px 10px;font-size:11.5px;line-height:18px;background:transparent;color:var(--dsw-alias-label-secondary)}
 .qbw-chip:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
-.qbw-chip.on{border-color:var(--dsw-alias-brand-primary);background:rgba(31,111,235,.14);color:var(--dsw-alias-label-primary)}
-.qbw-warnbox{border:1px solid rgba(255,176,32,.35);background:rgba(255,176,32,.08);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12px;line-height:18px}
-.qbw-infobox{border:1px solid rgba(31,111,235,.28);background:rgba(31,111,235,.06);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12px;line-height:18px}
-.qbw-dangerbox{border:1px solid rgba(229,72,77,.30);background:rgba(229,72,77,.06);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12px;line-height:18px}
+.qbw-chip.on{border-color:var(--qbw-brand);background:color-mix(in srgb, var(--qbw-brand) 14%, transparent);color:var(--qbw-text)}
+.qbw-warnbox{border:1px solid color-mix(in srgb, var(--qbw-warn) 40%, transparent);background:color-mix(in srgb, var(--qbw-warn) 10%, transparent);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12px;line-height:18px}
+.qbw-infobox{border:1px solid color-mix(in srgb, var(--qbw-brand) 32%, transparent);background:color-mix(in srgb, var(--qbw-brand) 8%, transparent);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12px;line-height:18px}
+.qbw-dangerbox{border:1px solid color-mix(in srgb, var(--qbw-err) 34%, transparent);background:color-mix(in srgb, var(--qbw-err) 8%, transparent);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:12px;line-height:18px}
 .qbw-admin{border:1px solid rgba(31,111,235,.45);border-radius:12px;padding:12px 14px;margin:0 0 12px;background:linear-gradient(135deg,rgba(31,111,235,.10),rgba(255,122,162,.07))}
 .qbw-admin-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap}
 .qbw-admin-title{font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .qbw-admin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-top:10px}
 .qbw-admin-field{display:flex;flex-direction:column;gap:4px;font-size:12px}
-.qbw-admin-field small{color:var(--dsw-alias-label-tertiary);font-size:10.5px;line-height:15px}
+.qbw-admin-field small{color:var(--qbw-muted);font-size:10.5px;line-height:15px}
 .qbw-admin-field .qbw-input{min-width:0;width:100%}
 .qbw-admin-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:.5px dashed var(--dsw-alias-border-l2)}
 .qbw-admin-check{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer}
 .qbw-alias{border:1px solid rgba(255,122,162,.45);background:rgba(255,122,162,.07);border-radius:10px;padding:10px 12px;margin:0 0 10px}
 .qbw-alias .qbw-input{width:100%;min-width:0;margin-top:6px}
 .qbw-alias-title{font-size:13px;font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.qbw-switch{width:16px;height:16px;accent-color:#2f6fed;margin-top:2px}
+.qbw-switch{width:16px;height:16px;accent-color:var(--qbw-brand);margin-top:2px}
 .qbw-search{display:flex;gap:8px;align-items:center;margin:4px 0 10px;flex-wrap:wrap}
 .qbw-search .qbw-input{flex:1;min-width:220px}
 .qbw-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -153,9 +186,9 @@ window.__ModuleLoader__.load({
 .qbw-scroll{max-height:260px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;background:rgba(127,127,127,.03)}
 .qbw-scroll pre{margin:0;white-space:pre-wrap;font-size:11.5px;line-height:17px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .qbw-meter{height:9px;border-radius:999px;background:rgba(127,127,127,.18);overflow:hidden;margin:8px 0 6px}
-.qbw-meter>i{display:block;height:100%;border-radius:inherit;background:#2fbf71;transition:width .3s ease}
-.qbw-meter.warn>i{background:#ffb020}
-.qbw-meter.bad>i{background:#e5484d}
+.qbw-meter>i{display:block;height:100%;border-radius:inherit;background:var(--qbw-ok);transition:width .3s ease}
+.qbw-meter.warn>i{background:var(--qbw-warn)}
+.qbw-meter.bad>i{background:var(--qbw-err)}
 .qbw-meter-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12px}
 .qbw-meter-head b{font-size:15px}
 .qbw-rec{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;margin:6px 0;display:flex;gap:10px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
@@ -164,21 +197,21 @@ window.__ModuleLoader__.load({
 .qbw-rec-text{font-size:11.5px;color:var(--dsw-alias-label-secondary);line-height:17px;margin-top:2px;word-break:break-word}
 .qbw-rec-actions{display:flex;gap:6px;flex-wrap:wrap}
 .qbw-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 7px;font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-right:5px}
-.qbw-chip.on{background:rgba(47,191,113,.14);border-color:rgba(47,191,113,.4);color:#2fbf71}
-.qbw-chip.warn{background:rgba(255,176,32,.14);border-color:rgba(255,176,32,.4);color:#b97800}
-.qbw-chip.bad{background:rgba(229,72,77,.12);border-color:rgba(229,72,77,.4);color:#e5484d}
+.qbw-chip.on{background:color-mix(in srgb, var(--qbw-ok) 14%, transparent);border-color:var(--qbw-ok);color:var(--qbw-ok-text)}
+.qbw-chip.warn{background:color-mix(in srgb, var(--qbw-warn) 14%, transparent);border-color:var(--qbw-warn);color:var(--qbw-warn-text)}
+.qbw-chip.bad{background:color-mix(in srgb, var(--qbw-err) 12%, transparent);border-color:var(--qbw-err);color:var(--qbw-err-text)}
 .qbw-modal-backdrop{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center;padding:18px}
-.qbw-modal{width:100%;max-width:470px;background:#1c1f24;color:#f2f5f7;border:1px solid #3a3f46;border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.5);padding:18px 18px 14px}
+.qbw-modal{width:100%;max-width:470px;background:var(--qbw-surface);color:var(--qbw-text);border:1px solid var(--qbw-line);border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.5);padding:18px 18px 14px}
 .qbw-modal h3{margin:0 0 8px;font-size:16px;line-height:24px;display:flex;align-items:center;gap:8px}
-.qbw-modal p{margin:0 0 10px;font-size:12.5px;line-height:19px;color:#c3c9d1}
-.qbw-modal .qbw-hint{color:#9aa3ad}
-.qbw-modal .qbw-chip{background:rgba(255,255,255,.12);color:#f2f5f7}
+.qbw-modal p{margin:0 0 10px;font-size:12.5px;line-height:19px;color:var(--qbw-text)}
+.qbw-modal .qbw-hint{color:var(--qbw-muted)}
+.qbw-modal .qbw-chip{background:var(--qbw-hover);color:var(--qbw-text)}
 .qbw-modal .qbw-actions{margin-top:14px}
-/* 弹窗内所有文字强制浅色：浅色主题下主题变量是深字，会和深色卡片糊在一起 */
-.qbw-modal h3,.qbw-modal p,.qbw-modal label,.qbw-modal div,.qbw-modal span,.qbw-modal strong,.qbw-modal li{color:#f2f5f7}
-.qbw-modal .qbw-hint{color:#9aa3ad}
-.qbw-modal input.qbw-input{background:rgba(255,255,255,.08);color:#f2f5f7;border:1px solid #3a3f46}
-.qbw-modal input[type=checkbox]{accent-color:#2f6fed}
+/* 弹窗跟随主题：不要再强制浅色，否则浅色主题下浅字压浅底 */
+.qbw-modal h3,.qbw-modal p,.qbw-modal label,.qbw-modal div,.qbw-modal span,.qbw-modal strong,.qbw-modal li{color:inherit}
+.qbw-modal .qbw-hint{color:var(--qbw-muted)}
+.qbw-modal input.qbw-input{background:var(--qbw-surface-2);color:var(--qbw-text);border:1px solid var(--qbw-line)}
+.qbw-modal input[type=checkbox]{accent-color:var(--qbw-brand)}
 /* ── Token 额度页 ─────────────────────────────────────────────── */
 .qbw-budget-summary{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap;border:1px solid rgba(31,111,235,.28);background:linear-gradient(135deg,rgba(31,111,235,.10),rgba(255,122,162,.06));border-radius:12px;padding:12px 14px;margin:0 0 12px}
 .qbw-budget-summary .qbw-kicker{margin-bottom:2px}
@@ -191,17 +224,17 @@ window.__ModuleLoader__.load({
 .qbw-budget-card.total{grid-column:1/-1;order:-1;border-color:rgba(31,111,235,.35);background:linear-gradient(135deg,rgba(31,111,235,.05),rgba(127,127,127,.02))}
 .qbw-budget-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-bottom:7px}
 .qbw-budget-head h4{margin:0 0 3px}
-.qbw-budget-head p{margin:0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;max-width:440px}
-.qbw-budget-today{display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.qbw-budget-head p{margin:0;color:var(--qbw-muted);font-size:11px;line-height:16px;max-width:440px}
+.qbw-budget-today{display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:11px;color:var(--qbw-muted)}
 .qbw-budget-today b{font-size:17px;line-height:22px;color:var(--dsw-alias-label-primary)}
 .qbw-budget-lines{display:flex;flex-direction:column;gap:7px}
 .qbw-budget-line{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;padding:7px 0;border-top:.5px solid var(--dsw-alias-border-l2)}
 .qbw-budget-field{display:flex;flex-direction:column;gap:3px;font-size:11.5px;min-width:170px;flex:1}
-.qbw-budget-field>span{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.qbw-budget-field>span{color:var(--qbw-muted);font-size:11px}
 .qbw-budget-field .qbw-input{min-width:150px;width:100%}
-.qbw-budget-field small{color:var(--dsw-alias-label-tertiary);font-size:10.5px;line-height:15px}
+.qbw-budget-field small{color:var(--qbw-muted);font-size:10.5px;line-height:15px}
 .qbw-budget-meters{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:7px}
-.qbw-budget-meter-empty{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--dsw-alias-label-tertiary);padding:5px 0}
+.qbw-budget-meter-empty{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--qbw-muted);padding:5px 0}
 .qbw-budget-meter .qbw-meter-head{font-size:11px}
 .qbw-budget-meter .qbw-meter-head b{font-size:12px}
 .qbw-budget-extra{margin-top:9px;padding-top:8px;border-top:.5px dashed var(--dsw-alias-border-l2)}
@@ -604,9 +637,9 @@ window.__ModuleLoader__.load({
         h("div", { className: "qbw-modal", style: { maxWidth: "760px", maxHeight: "82vh", overflow: "auto" } },
           h("h3", null, "管理操作记录",
             h("span", { style: { fontSize: "11px", opacity: 0.6, marginLeft: "8px" } }, "最近 50 条 · 只读")),
-          err ? h("p", { style: { color: "#e66" } }, err) : null,
+          err ? h("p", { style: { color: "var(--qbw-err-text)" } }, err) : null,
           data?.health && data.health.writable === false
-            ? h("p", { style: { color: "#e6a23c" } }, `⚠️ 审计写入异常：${data.health.lastError || "未知错误"}`)
+            ? h("p", { style: { color: "var(--qbw-warn-text)" } }, `⚠️ 审计写入异常：${data.health.lastError || "未知错误"}`)
             : null,
           entries.length
             ? h("div", { style: { fontSize: "12px", lineHeight: "18px" } },
@@ -684,7 +717,7 @@ window.__ModuleLoader__.load({
               h(Btn, { kind: "qbw-btn2", onClick: checkUid, disabled: uidChecking || !String(value.biliMid ?? "").trim() },
                 uidChecking ? "核查中…" : "核查 UID 与昵称"),
               uidCheck
-                ? h("span", { className: "qbw-hint", style: { color: uidCheck.ok ? (uidCheck.match ? "#67c23a" : "#e6a23c") : "#c0392b" } },
+                ? h("span", { className: "qbw-hint", style: { color: uidCheck.ok ? (uidCheck.match ? "var(--qbw-ok-text)" : "var(--qbw-warn-text)") : "var(--qbw-err-text)" } },
                   uidCheck.ok
                     ? (uidCheck.match
                       ? `✓ 同一个人：${uidCheck.actualName}（${uidCheck.mid}）`
@@ -1482,7 +1515,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             const parts = withVer.map((x) => `${x.name} v${x.installedVersion || "?"} → ${fmtV(x.latestVersion)}`);
             return `${parts.join("　")}；更新不会动 config.json 与记忆卡。`;
           })()),
-          h("p", { style: { fontSize: "12px", color: "#e6a23c", marginTop: "2px" } },
+          h("p", { style: { fontSize: "12px", color: "var(--qbw-warn-text)", marginTop: "2px" } },
             "⚠️ 下载/更新完成后需要完全退出 DSH 再打开才会生效；只刷新设置页不会应用。"),
           (() => {
             // 更新通道：正式用户 stable（默认）；测试机才切 dev（只跟 -dev.N 预发布）
@@ -1521,7 +1554,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                       : `${item.behind} 个提交（到 ${String(item.remote || "").slice(0, 7)}）`))),
             h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
               `${item.dir} · ${item.branch ?? ""}${item.dirty ? ` · ⚠️ 本地有 ${item.dirty} 处改动` : ""}${item.ahead ? ` · ⚠️ 本地领先 ${item.ahead}` : ""} · ${item.channel === "release" ? "版本清单" : item.channel === "version" ? "提交追踪" : "git 仓库"}`),
-            item.blocked ? h("div", { className: "qbw-hint", style: { color: "#c0392b" } }, `不能自动更新：${item.blocked}`) : null,
+            item.blocked ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)" } }, `不能自动更新：${item.blocked}`) : null,
             item.blocked ? h("div", { className: "qbw-hint" }, "处理办法：本仓库有未提交改动时，先 commit/stash 再更新；或者直接用新版本的 zip 覆盖安装。") : null,
             (item.changelog ?? []).length ? h("ul", { style: { margin: "6px 0 0 18px", padding: 0, fontSize: "11.5px", lineHeight: "18px", opacity: 0.82 } },
               item.changelog.slice(0, 8).map((line, index) => h("li", { key: index }, line))) : null,
@@ -1614,7 +1647,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 `profile：${report?.profile?.name ?? "未知"} · SurfCore ${report?.versions?.surfcore ?? "?"} · DSH ${report?.versions?.dsh ?? "未知"} · ${report?.scannedAt ?? ""}`),
               h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
                 `已看：${report?.coverage?.packages ?? 0} 个包 / ${report?.coverage?.bundles?.length ?? 0} 个 bundle；已知工具 ${report?.coverage?.toolsKnown?.length ?? 0} 个`),
-              unknown.length ? h("div", { className: "qbw-hint", style: { color: "#b9770e", marginTop: "4px" } },
+              unknown.length ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-warn-text)", marginTop: "4px" } },
                 `未枚举工具的插件 ${unknown.length} 个：${unknown.map((x) => x.name).join("、")}`) : null,
               (report?.coverage?.unchecked ?? []).length
                 ? h("div", { className: "qbw-hint", style: { marginTop: "2px" } }, `未检查：${report.coverage.unchecked.join("、")}`)
@@ -1656,7 +1689,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           event.subject?.key ? h("div", { className: "qbw-hint", style: { marginTop: "2px" } }, `会话：${event.subject.key}`) : null,
           event.recommendation ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, `建议：${event.recommendation}`) : null,
           h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, "这条记录会保留；确认后不再自动弹同一事件。"),
-          repairMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px", color: "#e67e22" } }, repairMsg) : null,
+          repairMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px", color: "var(--qbw-warn-text)" } }, repairMsg) : null,
           h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
             canRepairDsh ? h(Btn, { onClick: repairDsh, disabled: repairing || !!repairMsg }, repairing ? "修复中…" : "修复 DSH 注册（MCP / bundle）") : null,
             h(Btn, { onClick: () => onAck?.(event.id) }, urgent ? "确认并关闭" : "确认"),
@@ -2012,7 +2045,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("qq"), disabled: !!busy }, "去 QQ 页改启动开关"),
               h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("bili"), disabled: !!busy }, "去 B站 页改启动开关")),
             [["qq", "QQ"], ["bili", "B站"], ["pet", "桌宠"], ["voice", "语音"]].map(([id, label]) =>
-              launch[id]?.lastError ? h("div", { className: "qbw-hint", key: `launch-err-${id}`, style: { color: "#c0392b", marginTop: "2px" } },
+              launch[id]?.lastError ? h("div", { className: "qbw-hint", key: `launch-err-${id}`, style: { color: "var(--qbw-err-text)", marginTop: "2px" } },
                 `${label}：${launch[id].lastError}`) : null),
             launchErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } },
               `${launchErr.code ? `（${launchErr.code}）` : ""}${launchErr.message}`,
@@ -2044,7 +2077,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               // 上次更新的结果必须能看见（成功/失败/待重启/未验证），不能只靠 toast 一闪而过
               const la = updates.lastApply;
               if (!la) return null;
-              const color = la.status === "failed" ? "#c0392b" : (la.status === "applied_unverified" ? "#b9770e" : undefined);
+              const color = la.status === "failed" ? "var(--qbw-err-text)" : (la.status === "applied_unverified" ? "var(--qbw-warn-text)" : undefined);
               const text = la.status === "failed"
                 ? `失败：${la.reason || "原因不明"}${la.hint ? `（${la.hint}）` : ""}`
                 : la.status === "pending_restart"
@@ -2094,11 +2127,11 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               // 查不到/失败：原因 + 建议，常驻显示（不能只留一句"不可查"）
               const bad = (updates.results ?? []).filter((x) => x.status === "unknown" || x.status === "failed" || x.status === "blocked");
               if (!bad.length) return null;
-              return h("div", { className: "qbw-hint", style: { color: "#c0392b", marginTop: "4px" } },
+              return h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)", marginTop: "4px" } },
                 bad.map((x) => `${x.name}：${x.reason || "原因不明"}${x.hint ? `（${x.hint}）` : ""}`).join("；"));
             })(),
             (updates.results ?? []).filter((item) => item.available && item.blocked && item.updateAvailable).length
-              ? h("div", { className: "qbw-hint", style: { color: "#c0392b" } },
+              ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)" } },
                 "有组件因本地改动/未推送提交被拒，详情点「查看详情」。")
               : null,
             (updates.pending ?? []).length
@@ -2441,7 +2474,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         }));
       const stepBox = (label, value, hint) => h("div", {
         key: label,
-        style: { flex: "1 1 92px", minWidth: "92px", padding: "7px 9px", border: "1px solid #e3e6ee", borderRadius: "8px", background: "#fafbff" },
+        style: { flex: "1 1 92px", minWidth: "92px", padding: "7px 9px", border: "1px solid var(--qbw-line)", borderRadius: "8px", background: "var(--qbw-surface-2)" },
       },
         h("div", { style: { fontSize: "11px", opacity: 0.65 } }, label),
         h("div", { style: { fontWeight: 600, fontSize: "15px", lineHeight: 1.4 } }, value),
@@ -2455,8 +2488,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           const pct = Math.max(0, Math.min(100, Math.round(Number(value) * 100) || 0));
           return h("div", { key: need, style: { display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" } },
             h("span", { style: { width: "34px", fontSize: "12px", opacity: 0.75 } }, needLabel[need] ?? need),
-            h("div", { style: { flex: 1, height: "7px", borderRadius: "4px", background: "#e9edf5", overflow: "hidden" } },
-              h("div", { style: { width: `${pct}%`, height: "100%", borderRadius: "4px", background: "#6aa9ff" } })),
+            h("div", { style: { flex: 1, height: "7px", borderRadius: "4px", background: "var(--qbw-surface-2)", overflow: "hidden" } },
+              h("div", { style: { width: `${pct}%`, height: "100%", borderRadius: "4px", background: "var(--qbw-brand)" } })),
             h("span", { style: { width: "34px", textAlign: "right", fontSize: "12px", opacity: 0.7 } }, `${pct}%`));
         });
       const goals = Array.isArray(st.goals) ? st.goals : [];
@@ -2483,7 +2516,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         status?.availability ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
           `载体现状：${status.availability.pet?.installed ? (status.availability.pet.running ? (status.availability.pet.online ? "桌宠在线" : "桌宠已启动 · 还没连上") : "桌宠已安装 · 未运行") : "桌宠未安装"}；` +
           `QQ ${status.availability.qq?.running ? "桥接在跑" : "桥接没在跑"}${status.availability.qq?.mode ? `（模式 ${status.availability.qq.mode}）` : ""}。`) : null,
-        status?.focus ? h("div", { className: "qbw-hint", style: { marginTop: "4px", color: "#b26a00" } },
+        status?.focus ? h("div", { className: "qbw-hint", style: { marginTop: "4px", color: "var(--qbw-warn-text)" } },
           "专注模式开着：自动主动搭话已暂停（QQ / 桌宠都不发）；手动「立即试一次」仍可用。去「桌宠」页或右键菜单关闭。") : null,
         status ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
           `今天 ${st.countToday ?? 0}/${dailyMax || "不限"} · 上次：${outcomeText}${st.lastRunAt ? `（${at(st.lastRunAt)}）` : ""} · 下次：${at(st.nextFireAt)}`,
@@ -2491,7 +2524,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           st.lastSkip?.reason ? h("div", null, `最近一次没出发：${st.lastSkip.reason}${st.lastSkip.at ? `（${at(st.lastSkip.at)}）` : ""}`) : null,
           st.pending?.length ? h("div", null, `心里还惦记着：${st.pending.slice(-3).map((p) => p.text).join("；")}`) : null) : h("div", { className: "qbw-hint" }, status?.ok === false ? "这个载体暂时读不到状态" : "读取中…"),
 
-        h("details", { open: true, style: { marginTop: "10px", borderTop: "1px dashed #e1e6f0", paddingTop: "8px" } },
+        h("details", { open: true, style: { marginTop: "10px", borderTop: "1px dashed var(--qbw-line-soft)", paddingTop: "8px" } },
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "它是怎么想的 · 当前链路"),
           h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
             "素材 → 事件理解（谁的目标）→ 评价/驱力 → 目标假设（置信度/风险）→ 选择 → 发送 → 回执/反馈。每一步都在下面可调。"),
@@ -2574,7 +2607,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         set(["purpose", "carrier"], value);
         toast(`✓ 载体改为「${value === "pet" ? "桌宠" : "QQ"}」，记得点底部保存`);
       };
-      const seg = (options, value, onChange) => h("div", { style: { display: "inline-flex", gap: "4px", padding: "2px", borderRadius: "999px", background: "#fff", border: "1px solid #e3e6ee" } },
+      const seg = (options, value, onChange) => h("div", { style: { display: "inline-flex", gap: "4px", padding: "2px", borderRadius: "999px", background: "var(--qbw-surface)", border: "1px solid var(--qbw-line)" } },
         options.map(([val, label]) => h("button", {
           key: val,
           type: "button",
@@ -2586,8 +2619,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             fontSize: "12px",
             lineHeight: 1.7,
             cursor: "pointer",
-            background: value === val ? "linear-gradient(180deg,#8ab8ff,#5f97f0)" : "transparent",
-            color: value === val ? "#fff" : "#6d6a78",
+            background: value === val ? "var(--qbw-brand)" : "transparent",
+            color: value === val ? "var(--qbw-on-brand)" : "var(--qbw-muted)",
           },
         }, label)));
       const cardStyle = (active) => ({
@@ -2595,10 +2628,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         minWidth: "220px",
         padding: "10px 12px",
         borderRadius: "10px",
-        border: `1px solid ${active ? "#6aa9ff" : "#e3e6ee"}`,
-        background: active ? "rgba(106,169,255,.08)" : "#fafbff",
+        border: `1px solid ${active ? "var(--qbw-brand)" : "var(--qbw-line)"}`,
+        background: active ? "var(--qbw-hover)" : "var(--qbw-surface-2)",
         cursor: "pointer",
-        boxShadow: active ? "0 0 0 2px rgba(106,169,255,.14)" : "none",
+        boxShadow: active ? "0 0 0 2px var(--qbw-hover)" : "none",
       });
       const petText = !status ? "读取中…"
         : !pet.installed ? "未安装桌宠：先去「桌宠」页安装，再回来选"
@@ -2738,7 +2771,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           Array.isArray(latest.reasons) && latest.reasons.length
             ? h("div", null, `依据：${latest.reasons.slice(0, 4).join("；")}`) : null)
           : h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, "还没有收过尾；下次她判断这段聊完了，这里会出现收尾记录。"),
-        h("details", { open: true, style: { marginTop: "10px", borderTop: "1px dashed #e1e6f0", paddingTop: "8px" } },
+        h("details", { open: true, style: { marginTop: "10px", borderTop: "1px dashed var(--qbw-line-soft)", paddingTop: "8px" } },
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "收尾规则"),
           h(Row, { label: "启用对话收尾判断", hint: "关掉后不会注入判断参数，也不能用 qq_close_conversation" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: cv("enabled", true) !== false, onChange: (e) => setC("enabled", e.target.checked) })),
@@ -3255,7 +3288,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("tbody", null, items.map((item, i) => {
               const rowKey = `${item.bvid}|${item.at}|${i}`;
               return h("tr", { key: rowKey },
-                h("td", { style: { whiteSpace: "nowrap", color: "var(--dsw-alias-label-tertiary)" } }, timeText(item)),
+                h("td", { style: { whiteSpace: "nowrap", color: "var(--qbw-muted)" } }, timeText(item)),
                 h("td", null,
                   item.bvid
                     ? h("a", { href: `https://www.bilibili.com/video/${item.bvid}`, target: "_blank", rel: "noreferrer" }, item.title || item.bvid)
@@ -3355,7 +3388,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           live ? h("div", null,
             h("img", {
               src: state.image, alt: "B站登录二维码",
-              style: { width: "220px", height: "220px", imageRendering: "pixelated", display: "block", margin: "12px auto", background: "#fff", padding: "10px", borderRadius: "10px" },
+              style: { width: "220px", height: "220px", imageRendering: "pixelated", display: "block", margin: "12px auto", background: "#ffffff", /* 二维码必须白底才可扫：这是唯一保留的固定白 */ padding: "10px", borderRadius: "10px" },
             }),
             h("p", { className: "qbw-hint", style: { textAlign: "center" } },
               state.phase === "scanned" ? "已扫码，请在手机上确认登录" : "打开 B站 App → 扫一扫 → 确认登录"),
@@ -3368,7 +3401,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("input", { type: "checkbox", checked: allowSameAsOwner, onChange: (e) => setAllowSameAsOwner(e.target.checked) }),
               "我只有一个 B站 号（主人=小肥鱼），允许用主人号当小肥鱼") : null) : null,
           state.phase === "confirmed" ? h("div", null,
-            h("p", { style: { textAlign: "center", fontSize: "15px", color: "#67c23a", fontWeight: 600 } }, "✅ 登录成功"),
+            h("p", { style: { textAlign: "center", fontSize: "15px", color: "var(--qbw-ok-text)", fontWeight: 600 } }, "✅ 登录成功"),
             h("p", { style: { textAlign: "center" } },
               `${state.account?.name || "（未取到昵称）"}（${state.account?.mid || "?"}）`),
             h("p", { className: "qbw-hint", style: { textAlign: "center" } },
@@ -3621,7 +3654,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("div", { style: { display: "flex", gap: "8px", marginTop: "6px", flexWrap: "wrap" } },
               h(Btn, { kind: "qbw-btn2", onClick: () => verifyAccount(target), disabled: !!chk.busy || !acc?.configured }, "核查登录"),
               target === "fish" ? h(Btn, { kind: "qbw-btn2", onClick: () => setQrFish(true) }, acc?.configured ? "重新扫码" : "扫码登录") : null),
-            chk.ok === true ? h("div", { className: "qbw-hint", style: { color: "#67c23a", marginTop: "4px" } },
+            chk.ok === true ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-ok-text)", marginTop: "4px" } },
               `✓ 登录有效：${chk.account?.name || "（未取到昵称）"}（${chk.account?.mid}）`) : null,
             chk.ok === false ? h("div", { className: "qbw-err", style: { marginTop: "4px" } },
               `✗ ${chk.error || "核查失败"}${chk.hint ? `（建议：${chk.hint}）` : ""}`) : null);
@@ -3843,7 +3876,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           placeholder: hint,
         }));
       return h("div", null,
-        h("div", { className: "qbw-infobox", style: { borderColor: "#d68910", background: "rgba(214,137,16,.10)" } },
+        h("div", { className: "qbw-infobox", style: { borderColor: "var(--qbw-warn)", background: "color-mix(in srgb, var(--qbw-warn) 10%, transparent)" } },
           h("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "人格卡：一页编辑，不再分栏"),
           "四层都在这一页，保存一次全部写入；拆分只生成草稿，不会自动覆盖你的卡。",
           h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
@@ -3867,7 +3900,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { className: "qbw-warnbox", style: { margin: "6px 0" } },
           "场景说明包含 QQ 群聊、QQ 私聊、B站、桌宠等其他平台。不同平台之间不保证隐私完全隔离，请谨慎填写；出了事不负责。"),
         box("scene", `场景补充：${sceneLabels[scene] || scene}`, "只写这个平台的差异；不知道就留空，不会清空别的层。"),
-        split ? h("div", { className: "qbw-card", style: { marginTop: "8px", borderColor: "#d68910" } },
+        split ? h("div", { className: "qbw-card", style: { marginTop: "8px", borderColor: "var(--qbw-warn)" } },
           h("h4", null, "拆分草稿（尚未保存）"),
           h("div", { className: "qbw-hint" }, "空白的建议表示“模型没有建议”，会保留你原来的内容；不会清空。"),
           ["core", "tone", "daily"].map((key) => h("div", { key, style: { marginTop: "6px" } },
@@ -4238,7 +4271,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
           h("strong", { style: { fontSize: "13px" } }, "云端用量"),
           h("span", { style: { fontSize: "11px", opacity: 0.6 } }, "每 5 秒刷新")),
-        err ? h("div", { style: { fontSize: "12px", color: "#e66" } }, err) : null,
+        err ? h("div", { style: { fontSize: "12px", color: "var(--qbw-err-text)" } }, err) : null,
         st ? h("div", { style: { display: "flex", gap: "20px", flexWrap: "wrap" } },
           cell("当前模型", st.model || "—", st.speaker ? "音色 " + st.speaker : ""),
           cell("今日", st.todayChars + " 字", st.todayCalls + " 次"),
@@ -4659,7 +4692,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           : null,
         p.installed && p.dir ? h("div", { style: { fontSize: "12px", marginTop: "4px", opacity: 0.7 } }, "路径：", h("code", null, p.dir)) : null,
         p.id === "voice-cloud" && p.needsCloudConfig
-          ? h("div", { style: { fontSize: "12px", marginTop: "4px", opacity: 0.9, color: "#e6a23c" } },
+          ? h("div", { style: { fontSize: "12px", marginTop: "4px", opacity: 0.9, color: "var(--qbw-warn-text)" } },
             "还没有密钥：安装包不预置任何凭据，请到本页下方「云端包：密钥与音色」填 AppID / Access Key / 音色 ID，否则云端语音启动不了。")
           : null,
         p.enginePort && p.running && p.engineUp === false
@@ -4707,8 +4740,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h(Btn, { disabled: busyId === "__switch", onClick: toggle }, busyId === "__switch" ? "处理中…" : (runningId === pick ? "停止" : "启动")),
             h("span", { style: { fontSize: "13px" } }, "语音系统：",
               runningId
-                ? h("b", { style: { color: "#67c23a" } }, "● 已启动")
-                : h("b", { style: { color: "#909399" } }, "○ 未启动")),
+                ? h("b", { style: { color: "var(--qbw-ok-text)" } }, "● 已启动")
+                : h("b", { style: { color: "var(--qbw-muted)" } }, "○ 未启动")),
             h("span", { style: { fontSize: "13px" } }, "当前：",
               h("b", null, (runningId || pick) === "voice-cloud" ? "云端语音包" : "本地语音包"))),
           switchMsg ? h("div", { style: { fontSize: "12px", marginTop: "6px", opacity: 0.85 } }, switchMsg) : null,
@@ -5364,7 +5397,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         onClick: (e) => { if (e.target === e.currentTarget && flow.phase !== "running") setFlow(null); },
       },
         h("div", {
-          style: { width: "min(620px, 92vw)", maxHeight: "80vh", overflow: "auto", background: "var(--qbw-bg2, #1b1d21)", border: "1px solid var(--qbw-line, #333)", borderRadius: "10px", padding: "16px 18px", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" },
+          style: { width: "min(620px, 92vw)", maxHeight: "80vh", overflow: "auto", background: "var(--qbw-surface)", color: "var(--qbw-text)", border: "1px solid var(--qbw-line)", borderRadius: "10px", padding: "16px 18px", boxShadow: "0 24px 70px rgba(0,0,0,.35)" },
         },
           h("h3", { style: { margin: "0 0 10px" } }, flow.phase === "done" ? "安装完成" : flow.phase === "error" ? "安装中断" : "一键安装"),
 

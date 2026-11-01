@@ -1,3 +1,9 @@
+## [0.8.6-dev.3] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 ## [0.8.6-dev.2] - 2026-11-01
 
 ### dev 测试构建
@@ -34,6 +40,17 @@
 - 版本规则：stable `X.Y.Z`，dev 构建 `X.Y.Z-dev.N`（同号下低于正式版）；正式版切 dev 允许安装一次（`channel-switch`）；
 - 新增 `scripts/publish-dev.mjs`：在 dev 分支打 tag、发 Pre-release、过清单门禁，不合并/不修改 main；
 - 完整 semver 比较（含预发布与 dev.N 数字排序）。
+
+## [Unreleased]
+
+### 修复（浅色/深色主题对比度：弹窗深底深字、hover/focus 不可见）
+
+- 新增 `--qbw-*` 语义 token 层，全部映射 DSH 的 light/dark token；
+- 一键安装弹窗与 `qbw-modal` 改为**跟随主题**，成对声明 surface/text，不再硬编码深色；
+- 去掉不存在的 `--dsw-alias-label-tertiary`（DSH 只有 primary/secondary）；
+- 76 个硬编码色 token 化；状态文字用 `color-mix(状态色, 正文色)` 保证可读；
+- 补 `qbw-btn2/btn3` hover、按钮 focus-visible、统一 disabled、`select option` 主题色；
+- 新增 `scripts/test-theme-tokens.mjs`：token 白名单、禁止空变量、弹窗成对颜色、WCAG fallback 计算。
 
 ## [0.8.6] - 2026-11-01
 

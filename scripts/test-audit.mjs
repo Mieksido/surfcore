@@ -173,6 +173,8 @@ const tests = [
   'test-dsh-health.mjs',
   // dev 通道 / Pre-release 发布链路（2026-11-01）。
   'test-dev-publish.mjs',
+  // 主题/对比度约束（深色、浅色都不能低对比）。
+  'test-theme-tokens.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
   'test-voice-gates.mjs',

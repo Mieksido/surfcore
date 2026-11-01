@@ -3253,3 +3253,12 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **修法**（0.8.7）：设置 → QQ → 高级设置「DSH 注册（MCP / bundle）」按钮，显式点击才跑脚本；
   L2 弹窗也带同一个按钮；只写 profile、不自动重启 DSH。
 - **教训**：修复动作要么人工一步能点，要么不给；不要让用户去复制终端命令。
+
+## 浅色主题下弹窗深底深字：未定义变量 + 没设前景色
+
+- **现象**：一键安装弹窗永远是深色，浅色主题下文字/“取消”几乎看不见（1.07:1 / 1.34:1）。
+- **根因**：`var(--qbw-bg2, #1b1d21)` 变量从未定义；弹窗没设文字色；`label-tertiary` 不是 DSH 的 token；
+  `.qbw-modal` 强制深色皮肤，却让按钮继续用 `label-primary`。
+- **修法**（0.8.7 前 dev）：新增 `--qbw-*` 语义层映射 DSH light/dark token；弹窗成对声明 surface/text；
+  状态色用 color-mix 与正文色混合；补 hover/focus/disabled；新增 `test-theme-tokens` 约束。
+- **教训**：有 light/dark 主题就必须成对声明“表面 + 前景”；引用 token 前先确认它真实存在。
