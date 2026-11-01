@@ -17,9 +17,9 @@ const ok = (cond, label, extra = '') => {
 
 try {
   // 1) 环境变量：Electron 宿主必须带 RUN_AS_NODE；node 本身不需要
-  const envElectron = helperSpawnEnv('C:\\DSH\\DeepSeek Harness.exe', {});
+  const envElectron = helperSpawnEnv(path.join('C:', 'DSH', 'DeepSeek Harness.exe'), {});
   ok(envElectron.ELECTRON_RUN_AS_NODE === '1', 'Electron 宿主 → 带 ELECTRON_RUN_AS_NODE=1');
-  const envNode = helperSpawnEnv('C:\\nodejs\\node.exe', {});
+  const envNode = helperSpawnEnv(path.join('C:', 'nodejs', 'node.exe'), {});
   ok(envNode.ELECTRON_RUN_AS_NODE === undefined, 'node.exe → 不额外加环境变量');
 
   // 2) 助手跑起来会写 .started；成功应用后写目标文件、删 pending 与 started

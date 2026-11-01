@@ -1,0 +1,2 @@
+# Preserve Windows launcher CRLF bytes in blobs and release archives.
+/start.bat -text whitespace=cr-at-eol

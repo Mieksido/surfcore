@@ -124,13 +124,14 @@ console.log('## sticker-lib 纯函数');
 
 console.log('## 配置文件');
 {
-  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+  // Offline contract tests use the shipped, credential-free configuration.
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
   const tools = cfg.socialV2?.tools ?? {};
   ok(tools.listStickers === true, 'config listStickers=true');
   ok(tools.getStickerImage === true, 'config getStickerImage=true');
   ok(tools.sendSticker === true, 'config sendSticker=true');
   ok(tools.stickerNote === true, 'config stickerNote=true');
-  // 示例配置必须保持「默认禁用」；真实 config.json 允许管理员显式打开（当前就是打开状态）。
+  // 示例配置必须保持「默认禁用」；真实 config.json 允许管理员显式打开。
   const example = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
   ok(example.socialV2?.tools?.setStickerRemark === false, '示例配置 setStickerRemark=false（默认禁用）');
   ok(typeof tools.setStickerRemark === 'boolean', 'config setStickerRemark 是布尔开关');

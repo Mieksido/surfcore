@@ -76,7 +76,8 @@ function wavFixture() {
 }
 
 export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {} } = {}) {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
+  // Product confinement returns canonical paths (macOS /var aliases /private/var).
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-')));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
   const harnessConfig = {
