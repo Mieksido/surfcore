@@ -141,7 +141,12 @@ const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-sa
 function mcpEntries() {
   const node = process.execPath;
   const servers = {
-    'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
+    // 本地补丁入口（可选）：state/local/mcp/start-snowluma-mcp.mjs 存在时优先使用。
+    // 该启动器会在每次 MCP 启动时读仓库源码并注入 state/local/patches 下的本地补丁，
+    // 这样 SurfCore 更新清空 src/ 时，用户自己的 MCP 工具不会随之消失。
+    'mcp-snowluma': { serverName: 'snowluma', script: (fs.existsSync(path.join(REPO_ROOT, 'state', 'local', 'mcp', 'start-snowluma-mcp.mjs'))
+      ? path.join(REPO_ROOT, 'state', 'local', 'mcp', 'start-snowluma-mcp.mjs')
+      : path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js')), toolCallTimeoutMs: 725000 },
     'mcp-snowluma-host': { serverName: 'snowluma-host', script: path.join(REPO_ROOT, 'src', 'mcp-host-server.js') },
     'mcp-web-search-safe': { serverName: 'web-search-safe', script: path.join(REPO_ROOT, 'src', 'mcp-web-search-safe.js') },
   };
