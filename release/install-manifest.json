@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.6",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-02T08:55:44.001Z",
+  "generatedAt": "2026-11-02T09:13:01.538Z",
   "files": {
     ".gitignore": "df9b778e654706a89497277c5e725dddc5e9e0ab2675e5ff21cda9b7fae476c0",
     ".npmrc": "a093bb2fed59d699b7f9a62a5203cc196054c624e9c39c6d908c9e7db5dd2464",
@@ -79,7 +79,8 @@
     "docs/cases/2026-10-31-ui-area-modal.md": "478c9e70156397490cbba29df376efa95b1d583bd271a71610ba2a58c05bcaaa",
     "docs/cases/2026-10-31-update-download-timeout.md": "d9ec55a271410489b74b15cca5558a49d2970639890b1b439b33f0c6cf589853",
     "docs/cases/2026-11-01-dsh-upgrade-missing-qq-tools.md": "01495f50b9294429a62abb5a23e9454d070951b5c38083739a1650c42543326b",
-    "docs/cases/README.md": "1e699ac20295a6be14b1aac6ec74adcea89c91fe4e67590de63cd5a68c1a8e0e",
+    "docs/cases/2026-11-02-issue35-client-multi-source.md": "d13c9b9e61583fb6ab6cceb3c0177c31d12445ff7edcbbe37c5d17a00a55bbf3",
+    "docs/cases/README.md": "ddf2c65e0dcae63a696994d194ecd7465b7b7cd54909649a96295b79e2190184",
     "docs/cases/_TEMPLATE.md": "f8b4d5fd6f08f8ccd7150bf8594f7b85d354878e8d66f7890d8c27cd4a172fcb",
     "docs/guides/12-LESSONS-ARCHITECTURE.md": "4b80e480cc0f0df0ed7d0400a238fb2e2f49349afd98a20296198b3ac5146662",
     "docs/guides/AGENT-INSTALL-PROMPT.md": "43dcd5fdbc2165926f8baba6ce2108b6d31014f9677c78090249ab0c1e642a11",

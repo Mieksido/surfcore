@@ -89,18 +89,34 @@ function readCompatManifest(pkgDir) {
   return { ...data, tools, file };
 }
 
+/** 单个包可声明的 bundle patch 文件集合（package.json 的 dsh.bundle.patch）。
+ * DSH 唯一的声明形式：字符串 = 一个文件；数组 = 按序多个文件（app-boot profile.ts:58-64）。
+ * 旧版扫描器只探测固定文件名 dsh.bundle.patch.yml —— DSH 根本不认这个约定，
+ * surfcore 自己（package.json 声明 cordis.patch.yml + 两个 preset patch）都扫不到。 */
+function declaredBundlePatchFiles(pkgDir, pkg) {
+  const declared = pkg?.dsh?.bundle?.patch;
+  const list = typeof declared === 'string' ? [declared]
+    : Array.isArray(declared) && declared.every((f) => typeof f === 'string') ? declared
+      : [];
+  return list.map((rel) => path.join(pkgDir, rel)).filter((file) => fs.existsSync(file));
+}
+
 function collectPackages(profileDir) {
   return packageDirs(profileDir).map((dir) => {
     const pkg = readJson(path.join(dir, 'package.json'));
     if (!pkg || typeof pkg.name !== 'string') return null;
-    const bundlePatch = path.join(dir, 'dsh.bundle.patch.yml');
+    const bundlePatchFiles = declaredBundlePatchFiles(dir, pkg);
+    const legacyBundlePatch = path.join(dir, 'dsh.bundle.patch.yml'); // 历史夹具兼容；DSH 不加载它
+    if (!bundlePatchFiles.length && fs.existsSync(legacyBundlePatch)) bundlePatchFiles.push(legacyBundlePatch);
     return {
       name: pkg.name,
       version: String(pkg.version ?? ''),
       dir,
       pkg,
-      hasBundlePatch: fs.existsSync(bundlePatch),
-      bundlePatch,
+      hasBundlePatch: bundlePatchFiles.length > 0,
+      bundlePatchFiles,
+      // 兼容旧消费点：单文件路径（无 patch 时为 null）
+      bundlePatch: bundlePatchFiles[0] ?? null,
       compat: readCompatManifest(dir),
     };
   }).filter(Boolean);
@@ -143,6 +159,133 @@ function findCompactionAutoOff(value, found = []) {
 function allowedTool(name, safeExact, safePrefixes) {
   const n = String(name ?? '');
   return safeExact.includes(n) || safePrefixes.some((prefix) => n.startsWith(prefix));
+}
+
+// ── #35 单包单来源（client-modules 硬约束）────────────────────────────────────
+// DSH client-modules 的 reconcilePackage（client/modules src/index.ts:1042-1054）
+// 对「同一客户端包被 ≥2 条不同 Loader 行解析」抛 ClientPackageCompositionError；
+// modules 是 required 插件 → 宿主启动即崩。这里按 DSH 的解析语义重演：
+//   · exactPackageSpecifier（manifest.ts:201-207）：裸说明符无 `/` 无 `:` 才是包名；
+//   · 相对/绝对路径行：nearestPackage 上溯找最近的 package.json（src/index.ts:892-953）；
+//   · 子路径说明符（pkg/sub/path）：不是包根，跳过（preset 守卫行因此安全）；
+//   · cordis:/node:/file: 内建/URL：跳过；
+//   · 同名行在多个 patch 重复声明不算多来源（cordis 同 id 覆盖合并）；只有
+//     不同行名（entry id）解析到同一包才算（sourceKey = `${baseUrl}\0${loaderName}`）。
+// 解析不了的行不计入（不冒充已确认）；fail-closed 的部分交给「未检查」coverage。
+
+/** DSH exactPackageSpecifier 的最小重演；与 scripts/test-qq-mode-plugin.mjs 保持一致。 */
+function exactPackageSpecifier(specifier) {
+  if (specifier.startsWith('@')) {
+    const parts = specifier.split('/');
+    return parts.length === 2 && parts.every(Boolean) ? specifier : undefined;
+  }
+  return specifier.length > 0 && !specifier.includes('/') && !specifier.includes(':') ? specifier : undefined;
+}
+
+/** 说明符 → 包名（nearestPackage 上溯）；解析不了返回 undefined。 */
+function resolveLoaderPackageName(specifier, patchDir, packageNames) {
+  if (typeof specifier !== 'string' || !specifier) return undefined;
+  if (specifier.startsWith('cordis:') || specifier.startsWith('node:') || specifier.startsWith('file:')) return undefined;
+  const bare = exactPackageSpecifier(specifier);
+  if (bare) return packageNames.has(bare) ? bare : undefined;
+  const pathLike = specifier.startsWith('.') || specifier.startsWith('file:') || path.isAbsolute(specifier);
+  if (!pathLike) return undefined; // 子路径说明符 → 非包根
+  let dir = path.resolve(patchDir, specifier);
+  for (;;) {
+    const candidate = path.join(dir, 'package.json');
+    if (fs.existsSync(candidate)) {
+      const name = readJson(candidate)?.name;
+      if (typeof name === 'string' && name) return packageNames.has(name) ? name : name;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** 从一个 patch 文档收集 loader 行 [{ id, name }]。
+ * 两种形态都算行（DSH 都会挂成 Loader entry）：insert 数组里的新行，
+ * 以及 profile patch 顶层的裸 {id,name} 覆盖行（override 也参与来源计数）。 */
+function collectLoaderRows(doc, found = []) {
+  if (Array.isArray(doc)) {
+    for (const op of doc) collectLoaderRows(op, found);
+    return found;
+  }
+  if (!doc || typeof doc !== 'object') return found;
+  if (Array.isArray(doc.insert)) {
+    for (const entry of doc.insert) {
+      if (entry && typeof entry === 'object' && typeof entry.name === 'string' && !entry.insert) {
+        found.push({ id: typeof entry.id === 'string' && entry.id ? entry.id : entry.name, name: entry.name });
+      }
+    }
+    return found;
+  }
+  // 裸覆盖行：顶层映射自带 id+name（profile patch 的 config override 形态）。
+  if (typeof doc.name === 'string' && typeof doc.id === 'string') {
+    found.push({ id: doc.id || doc.name, name: doc.name });
+    return found;
+  }
+  for (const value of Object.values(doc)) collectLoaderRows(value, found);
+  return found;
+}
+
+/**
+ * 单包单来源检查：扫描 profile patch + active 包的 bundle patch，找出被 ≥2 个
+ * 不同行名解析到同一「声明 dsh.client.platform === 'web'」包的冲突。
+ * @returns {{ issues: object[], scannedRows: number, unresolvedRows: number }}
+ */
+function checkClientMultiSource(profile, activePackages, add) {
+  const packageNames = new Set(activePackages.map((p) => p.name));
+  const clientPackages = new Set(
+    activePackages.filter((p) => p.pkg?.dsh?.client?.platform === 'web').map((p) => p.name),
+  );
+  // patch 文件 → 它的解析锚点（行内相对路径按文件所在目录解析）
+  const patchFiles = [{ file: profile.patchFile, doc: profile.patch }];
+  for (const pkg of activePackages) {
+    for (const file of pkg.bundlePatchFiles) {
+      patchFiles.push({ file, doc: readYaml(file), pkgName: pkg.name });
+    }
+  }
+  let scannedRows = 0;
+  let unresolvedRows = 0;
+  // packageName → Map(entryId → { name, sources: [{file, row}] })
+  const byPackage = new Map();
+  for (const { file, doc, pkgName } of patchFiles) {
+    if (!doc) continue;
+    const patchDir = path.dirname(file);
+    for (const row of collectLoaderRows(doc)) {
+      scannedRows += 1;
+      const pkg = resolveLoaderPackageName(row.name, patchDir, packageNames);
+      if (!pkg) { unresolvedRows += 1; continue; }
+      if (!clientPackages.has(pkg)) continue; // 只对声明 dsh.client.platform=web 的包判
+      if (!byPackage.has(pkg)) byPackage.set(pkg, new Map());
+      const rowsById = byPackage.get(pkg);
+      if (!rowsById.has(row.id)) rowsById.set(row.id, { name: row.name, sources: [] });
+      rowsById.get(row.id).sources.push({ file, ...(pkgName ? { bundle: pkgName } : {}) });
+    }
+  }
+  for (const [packageName, rowsById] of byPackage) {
+    if (rowsById.size < 2) continue; // 同 id 多文件重复声明 = cordis 覆盖合并，不算多来源
+    const entries = [...rowsById.entries()].map(([id, { name, sources }]) => ({
+      id,
+      name,
+      sources: sources.map((s) => path.relative(profile.dir, s.file) || s.file),
+    }));
+    add({
+      code: 'COMPAT_CLIENT_MULTI_SOURCE',
+      severity: 'blocker',
+      confidence: 'confirmed',
+      title: `客户端包 ${packageName} 被 ${entries.length} 条 Loader 行解析（DSH 启动会崩）`,
+      evidence: {
+        package: packageName,
+        entries,
+        rule: '一个声明 dsh.client.platform 的包只允许一个 active Loader 来源（client-modules reconcilePackage）',
+      },
+      impact: `任何重放/改写 modules 行的插件都会让 ClientModuleRegistry 重建时抛 ClientPackageCompositionError；modules 是 required 插件，宿主启动直接失败（Mieksido/surfcore#35）。`,
+      recommendation: `只保留一条解析到 ${packageName} 的 Loader 行：合并各行的 Config 到同一行（命名空间由行 id 推导，功能不受影响），或删除多余的行。冲突行：${entries.map((e) => `id=${e.id}（${e.sources.join('、')}）`).join('；')}。`,
+    });
+  }
+  return { scannedRows, unresolvedRows };
 }
 
 /**
@@ -215,8 +358,7 @@ export function scanPluginCompatibility({
   };
   pushAutoOff(profile.patch, profile.patchFile);
   for (const pkg of activePackages) {
-    if (!pkg.hasBundlePatch) continue;
-    pushAutoOff(readYaml(pkg.bundlePatch), pkg.bundlePatch);
+    for (const file of pkg.bundlePatchFiles) pushAutoOff(readYaml(file), file);
   }
 
   const known = [];
@@ -316,6 +458,14 @@ export function scanPluginCompatibility({
       recommendation: '检查 qq-tool-restrict 是否被正确装配；不要在 QQ 会话放行本地执行工具。',
     });
   }
+
+  // #35 单包单来源：装前体检能报、但拦不住启动期 fatal —— 它的定位是
+  // 「安装/配置变更时提前发现」，不能替代 PR1 的结构修复。
+  const multiSource = checkClientMultiSource(profile, activePackages, add);
+  base.coverage.unchecked = [
+    ...base.coverage.unchecked.filter((x) => !x.includes('Loader 来源')),
+    `客户端包 Loader 来源唯一性（已扫 ${multiSource.scannedRows} 行；${multiSource.unresolvedRows} 行解析不了，未计入判定）`,
+  ];
 
   base.coverage.toolsKnown = [...new Set([...base.coverage.toolsKnown, ...known.flatMap((k) => k.rule?.tools ?? [])])];
   base.issues = issues.sort((a, b) => {

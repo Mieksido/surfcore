@@ -130,6 +130,9 @@ const tests = [
   'test-qq-mode-plugin.mjs',
   // #35 一次性迁移（qq-mode → surfcore 命名空间）：marker 时序 / 幂等 / 不覆盖新值。
   'test-qq-mode-migrate.mjs',
+  // #35 体检规则 COMPAT_CLIENT_MULTI_SOURCE：单包单来源冲突预检 + patch 扫描器
+  // 只认 package.json dsh.bundle.patch 声明（DSH 唯一形式）的盲区修复。
+  'test-compat-multi-source.mjs',
   // SnowLuma 上游健康（被误诊成「qq-bridge 注入失败」的那个失败形态）：
   //   · good 必须取自心跳 status.good / get_status —— 取自 get_login_info 会**静默失效**
   //     （SDK 不校验 data 载荷，good 会永远停在 null，整条权威信号变成死分支）；
