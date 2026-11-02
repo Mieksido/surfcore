@@ -221,7 +221,16 @@ export function readPersonaLayerText(kind = 'core', scene = '') {
     ? layers.daily
     : kind === 'scene'
       ? (layers.scenes?.[scene] || '')
-      : layers.core;
+      : kind === 'tone'
+        ? (layers.tone || layers.core)
+        : kind === 'core'
+          ? layers.core
+          : (() => {
+            try {
+              console.warn(`[persona] 未知人格层 "${kind}"，回退核心；请检查调用方`);
+            } catch {}
+            return layers.core;
+          })();
   try { return file ? fs.readFileSync(file, 'utf8') : ''; } catch { return ''; }
 }
 

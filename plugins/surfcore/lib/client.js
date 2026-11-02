@@ -83,8 +83,10 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
     --qbw-err-text: color-mix(in srgb, var(--qbw-err) 85%, var(--qbw-text));
   }
 }
-.qbw-app{max-width:1020px;margin:0 auto;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:rgba(127,127,127,.04);box-shadow:0 10px 30px rgba(0,0,0,.12);overflow:hidden}
-.qbw-head{padding:18px 20px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);background:linear-gradient(135deg,rgba(31,111,235,.10),rgba(255,122,162,.08))}
+.qbw-app{max-width:1020px;margin:0 auto;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:rgba(127,127,127,.04);box-shadow:0 10px 30px rgba(0,0,0,.12);overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 24px)}
+.qbw-head{padding:18px 20px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);background:linear-gradient(135deg,rgba(31,111,235,.10),rgba(255,122,162,.08));flex:0 0 auto}
+.qbw-tabs{flex:0 0 auto}
+.qbw-body{flex:1 1 auto;min-height:0;padding:16px 20px 8px;overflow:auto;max-height:none}
 .qbw-kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--qbw-muted);margin:0 0 4px}
 .qbw-title{margin:0;font-size:19px;font-weight:600;line-height:28px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .qbw-sub{margin:4px 0 0;color:var(--qbw-muted);font-size:12px}
@@ -96,7 +98,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
 .qbw-tab{border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;padding:8px 10px 9px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;border-radius:6px 6px 0 0}
 .qbw-tab:hover{background:rgba(127,127,127,.08);color:var(--dsw-alias-label-primary)}
 .qbw-tab.on{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary);font-weight:600}
-.qbw-body{padding:16px 20px 8px;max-height:min(68vh,760px);overflow:auto}
+.qbw-body{padding:16px 20px 8px;overflow:auto}
 .qbw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 .qbw-card{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:12px 13px;background:rgba(127,127,127,.03)}
 .qbw-area-btn{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:12px 13px;margin:0 0 8px;background:rgba(127,127,127,.03);cursor:pointer;color:inherit;text-align:left;font:inherit}
@@ -130,19 +132,21 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
 .qbw-input.wide,.qbw-textarea.wide{min-width:320px}
 .qbw-textarea{width:100%;min-height:90px;resize:vertical;line-height:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .qbw-textarea.card{min-height:360px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.qbw-btn{background:var(--qbw-brand);color:var(--qbw-on-brand);border:none;border-radius:6px;font-size:12.5px;min-height:29px;padding:0 12px;cursor:pointer;white-space:nowrap}
+.qbw-btn{background:var(--qbw-brand);color:var(--qbw-on-brand);border:none;border-radius:6px;font-size:12.5px;font-weight:600;min-height:29px;padding:0 12px;cursor:pointer;white-space:nowrap}
 .qbw-progress{height:6px;background:var(--qbw-hover);border-radius:99px;overflow:hidden}
 .qbw-progress>i{display:block;height:100%;background:var(--qbw-brand);border-radius:99px;transition:width .35s ease}
 .qbw-progress.indet>i{width:35%!important;animation:qbw-indet 1.1s ease-in-out infinite}
 @keyframes qbw-indet{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
-.qbw-btn:disabled,.qbw-btn2:disabled,.qbw-btn3:disabled{opacity:.55;cursor:not-allowed}
+.qbw-btn:disabled,.qbw-btn2:disabled,.qbw-btn3:disabled{opacity:.68;cursor:not-allowed;border-color:var(--qbw-line)}
 .qbw-btn:hover:not(:disabled){filter:brightness(1.07)}
-.qbw-btn2{background:transparent;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
-.qbw-btn3{background:transparent;border:1px dashed var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.qbw-btn2{background:var(--qbw-surface-2);border:1px solid var(--qbw-line);color:var(--qbw-text)}
+.qbw-btn3{background:transparent;border:1px dashed var(--qbw-line);color:var(--qbw-muted)}
 .qbw-btn.danger{background:var(--qbw-err);color:var(--qbw-on-brand)}
-.qbw-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:10px;border-top:.5px solid var(--dsw-alias-border-l2)}
-.qbw-foot{position:sticky;bottom:0;background:rgba(127,127,127,.06);border-top:1px solid var(--dsw-alias-border-l2);padding:10px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.qbw-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:10px;border-top:.5px solid var(--qbw-line-soft)}
+.qbw-foot{position:sticky;bottom:0;z-index:20;background:var(--qbw-surface-2);border-top:1px solid var(--qbw-line);padding:10px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;box-shadow:0 -6px 16px rgba(0,0,0,.06)}
 .qbw-foot .spacer{flex:1}
+.qbw-foot .qbw-btn2{background:var(--qbw-surface)}
+.qbw-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:10001;max-width:min(680px,calc(100vw - 32px));padding:10px 16px;border-radius:10px;background:var(--qbw-surface);color:var(--qbw-text);border:1px solid var(--qbw-brand);box-shadow:0 10px 30px rgba(0,0,0,.28);font-size:12.5px;line-height:18px;pointer-events:none;text-align:center}
 .qbw-dirty{color:var(--qbw-warn-text);font-size:12px}
 .qbw-ok{color:var(--qbw-ok-text);font-size:12px}
 .qbw-err{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
@@ -172,6 +176,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
 .qbw-admin-field{display:flex;flex-direction:column;gap:4px;font-size:12px}
 .qbw-admin-field small{color:var(--qbw-muted);font-size:10.5px;line-height:15px}
 .qbw-admin-field .qbw-input{min-width:0;width:100%}
+.qbw-admin-field .qbw-select{min-width:0;width:100%}
 .qbw-admin-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:.5px dashed var(--dsw-alias-border-l2)}
 .qbw-admin-check{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer}
 .qbw-alias{border:1px solid rgba(255,122,162,.45);background:rgba(255,122,162,.07);border-radius:10px;padding:10px 12px;margin:0 0 10px}
@@ -207,6 +212,9 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
 .qbw-modal .qbw-hint{color:var(--qbw-muted)}
 .qbw-modal .qbw-chip{background:var(--qbw-hover);color:var(--qbw-text)}
 .qbw-modal .qbw-actions{margin-top:14px}
+.qbw-settings-modal{display:flex;flex-direction:column;overflow:hidden}
+.qbw-settings-body{min-height:0;overflow:auto;padding-right:2px;margin-top:8px}
+.qbw-settings-foot{flex:0 0 auto;margin-top:10px;background:var(--qbw-surface);position:sticky;bottom:0;z-index:2}
 /* 弹窗跟随主题：不要再强制浅色，否则浅色主题下浅字压浅底 */
 .qbw-modal h3,.qbw-modal p,.qbw-modal label,.qbw-modal div,.qbw-modal span,.qbw-modal strong,.qbw-modal li{color:inherit}
 .qbw-modal .qbw-hint{color:var(--qbw-muted)}
@@ -572,11 +580,11 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
         finally { setSaving(false); }
       };
       return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
-        h("div", { className: "qbw-modal", style: { maxWidth: "760px", maxHeight: "84vh", overflow: "auto" } },
+        h("div", { className: "qbw-modal qbw-settings-modal", style: { maxWidth: "760px", maxHeight: "84vh" } },
           h("h3", null, title),
           note ? h("p", { className: "qbw-hint" }, note) : null,
-          h("div", { style: { marginTop: "8px" } }, children),
-          h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
+          h("div", { className: "qbw-settings-body" }, children),
+          h("div", { className: "qbw-actions qbw-settings-foot" },
             onSave ? h(Btn, { onClick: save, disabled: saving || !!busy }, saving || busy === "save" ? "保存中…" : "保存") : null,
             h(Btn, { kind: "qbw-btn2", onClick: onClose, disabled: saving }, "取消"))));
     }
@@ -690,7 +698,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "取消"))));
     }
 
-    function AdminCard({ admin, onChange, qqPrivate = [], qqAllowAll = false, toast, onDiscardContext }) {
+    function AdminCard({ admin, onChange, qqPrivate = [], qqAllowAll = false, toast, onDiscardContext, onSave, busy, canSave = true }) {
       const [auditOpen, setAuditOpen] = useState(false);
       const [gentlePrompt, setGentlePrompt] = useState(null); // enable | disable
       const [uidCheck, setUidCheck] = useState(null); // {ok, match, actualName, error, hint}
@@ -801,7 +809,9 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
           ? h("div", { className: "qbw-warnbox" }, "⚠️ 只填了一边：QQ 和 B站 要分别是同一个人的两个号，两边才都认得出。")
           : null,
         h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
-          h(Btn, { kind: "qbw-btn3", onClick: () => setAuditOpen(true) }, "管理操作记录（最近 50 条）")),
+          h(Btn, { kind: "qbw-btn3", onClick: () => setAuditOpen(true) }, "管理操作记录（最近 50 条）"),
+          onSave ? h(Btn, { onClick: onSave, disabled: !!busy || !canSave }, busy ? "保存中…" : "保存管理员并重启桥接") : null,
+          onSave ? h("span", { className: "qbw-hint" }, "QQ 侧改完必须重启桥接才生效；这里只保存一次。") : null),
         gentlePrompt === "enable"
           ? h(AdminGentleEnableModal, {
             onClose: () => setGentlePrompt(null),
@@ -1070,9 +1080,6 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
     const QQ_FIELDS = [
       { group: "连接与身份", note: "QQ 桥接 / DSH 连接", fields: [
         F("dsh.baseUrl", "DSH 地址", "桥接连接本机 DSH 的 Web 地址"),
-        F("dsh.provider", "模型提供方", "例如 deepseek-account"),
-        F("dsh.model", "模型", "QQ 会话使用的模型"),
-        F("dsh.reasoningEffort", "思考强度", "low / medium / high / max"),
         F("dsh.authToken", "DSH token", "通常留空，由桥接自动发现", "password"),
         F("dsh.allowRemote", "允许远程 DSH", "默认关；关掉只连本机", "switch"),
         // ownerQQ 不在这里：它已上移到两个标签页顶部的「管理员（QQ ⇄ B站 · 同一个人）」卡片，
@@ -1311,7 +1318,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { title: "唤醒与收尾", members: ["唤醒与潜水", "二代 · 唤醒与潜水", "对话收尾", "二代 · 对话收尾判断", "二代 · 上线补历史消息"] },
       { title: "发送与上下文", members: ["二代 · 发送与节奏", "二代 · 等待与上下文", "二代 · 主动与反馈"] },
       { title: "群聊与学习", members: ["群聊（chat 模式）", "黑话学习", "联网搜索"] },
-      { title: "工具与媒体", members: ["工具面", "二代 · 工具开关", "表情包", "语音"] },
+      { title: "工具与媒体", members: ["工具面", "二代 · 工具开关", "表情包", "图片能力", "语音"] },
       { title: "其他", members: null },
     ];
 
@@ -1319,7 +1326,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { title: "身份与权限", members: ["她自己（只读）", "B站 会话权限"] },
       { title: "内容与口味", members: ["口味（文本）", "四类动态", "鱼群判定关键词（B站）", "鱼群保护（B站）"] },
       { title: "作息与分享", members: ["作息", "分享", "倾听（别人找她）", "日记与推送"] },
-      { title: "额度与工具", members: ["额度（代码闸门）", "工具链"] },
+      { title: "额度与工具", members: ["额度（代码闸门）", "B站 视频缓存", "工具链"] },
       { title: "其他", members: null },
     ];
 
@@ -1452,6 +1459,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("notify.cmd", "自定义命令", "可执行文件；消息自动作为最后一个参数", "text", { wide: true }),
         F("notify.args", "命令参数", "JSON 数组", "json"),
       ]},
+      { group: "B站 视频缓存", note: "watch-video / debrief / subtitles 共用的 shots 目录；默认保留 7 天。原片默认抽完即删，需要重抽时用 --keep-mp4。", fields: [
+        F("shots.dir", "缓存目录", "留空 = <DSH_HOME>/shots；也可以填绝对路径", "text", { wide: true, browse: "dir" }),
+        F("shots.retentionDays", "保留天数", "默认 7；0 = 不按天清理", "number", { min: 0 }),
+        F("shots.maxMB", "总大小上限（MB）", "0 = 不限；超出后从最旧文件开始清", "number", { min: 0 }),
+      ]},
       { group: "工具链", fields: [
 F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "text", { wide: true, browse: "file" }),
       ]},
@@ -1461,6 +1473,9 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     const NUMS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫"];
     function WindowsEditor({ value, onChange }) {
       const list = Array.isArray(value) ? value : [];
+      const normalizeTime = (raw) => String(raw ?? "").trim()
+        .replace(/：/g, ":")
+        .replace(/[０-９]/g, (ch) => String("０１２３４５６７８９".indexOf(ch)));
       const upd = (i, patch) => onChange(list.map((w, j) => (j === i ? { ...w, ...patch } : w)));
       const del = (i) => onChange(list.filter((_, j) => j !== i));
       const add = () => onChange([...list, { start: "20:00", end: "22:00", wakes: 1 }]);
@@ -1469,9 +1484,9 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         h("div", { className: "qbw-list" }, list.map((w, i) => h("div", { className: "qbw-item", key: i },
           h("div", { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
             h("span", { className: "qbw-hint", style: { minWidth: "18px" } }, NUMS[i] ?? String(i + 1)),
-            h("input", { className: "qbw-input", style: { width: "90px", minWidth: "90px" }, value: w.start ?? "", onChange: (e) => upd(i, { start: e.target.value }) }),
+            h("input", { className: "qbw-input", style: { width: "90px", minWidth: "90px" }, value: w.start ?? "", onChange: (e) => upd(i, { start: e.target.value }), onBlur: (e) => upd(i, { start: normalizeTime(e.target.value) }) }),
             h("span", { className: "qbw-hint" }, "–"),
-            h("input", { className: "qbw-input", style: { width: "90px", minWidth: "90px" }, value: w.end ?? "", onChange: (e) => upd(i, { end: e.target.value }) }),
+            h("input", { className: "qbw-input", style: { width: "90px", minWidth: "90px" }, value: w.end ?? "", onChange: (e) => upd(i, { end: e.target.value }), onBlur: (e) => upd(i, { end: normalizeTime(e.target.value) }) }),
             h("span", { className: "qbw-hint" }, "醒来"),
             h("input", { className: "qbw-input", style: { width: "64px", minWidth: "64px" }, type: "number", min: 1, max: 12, value: w.wakes ?? 1, onChange: (e) => upd(i, { wakes: Number(e.target.value) || 1 }) }),
             h("span", { className: "qbw-hint" }, "次")),
@@ -1515,7 +1530,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     }
 
     // ── 概览 ────────────────────────────────────────────────────────────────
-    function UpdatesModal({ status, onClose, onDone, toast }) {
+    function UpdatesModal({ status, onClose, onDone, onStaged, toast }) {
       const pending = Array.isArray(status?.pending) ? status.pending : [];
       // 远端只拿到提交号时显示「提交 abc1234」而不是 "vabc1234"（否则用户以为是乱码）
       const fmtV = (v) => {
@@ -1534,6 +1549,26 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         if (v <= 0) return "";
         return v >= 1024 * 1024 ? `${(v / 1024 / 1024).toFixed(1)} MB/s` : `${Math.round(v / 1024)} KB/s`;
       };
+      const phaseText = (d) => {
+        if (!d) return "正在准备更新…";
+        const label = d.phase === "extract"
+          ? "下载完成，正在解压"
+          : d.phase === "verify"
+            ? "下载完成，正在校验"
+            : d.phase === "backup"
+              ? "下载完成，正在备份"
+              : d.phase === "install"
+                ? "下载完成，正在安装"
+                : d.phase === "stage"
+                  ? "下载完成，正在排队"
+                  : d.phase === "pending"
+                  ? "下载完成，等待重启"
+                  : d.phase === "failed"
+                    ? "更新失败"
+                    : "下载中";
+        const stats = `${sizeText(d.bytes)}${d.total ? ` / ${sizeText(d.total)}` : ""}${d.speedBps ? ` · ${speedText(d.speedBps)}` : ""}${d.percent != null ? ` · ${d.percent}%` : ""}`;
+        return `${label} ${stats}`;
+      };
       const toggle = (id) => setSelected((prev) => {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id); else next.add(id);
@@ -1544,19 +1579,23 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         if (!ids.length) return;
         setWorking(true);
         setDl(null);
-        const poll = setInterval(async () => {
+        const readProgress = async () => {
           try {
             const st = await api("/updates");
             if (st?.download) setDl(st.download);
           } catch {}
-        }, 1000);
+        };
+        void readProgress();
+        const poll = setInterval(readProgress, 500);
         try {
           const r = await api("/updates", { method: "POST", body: { action: "apply", ids } });
+          await readProgress();
           const failed = (r.results ?? []).filter((x) => !x.ok);
           const staged = (r.results ?? []).filter((x) => x.ok && x.staged);
           if (r.ok && staged.length) {
             // 延后应用：文件已下载到 staging，宿主退出后才覆盖（避免覆盖正在使用的模块导致崩溃）
             toast(`⏳ 已下载 ${staged.length} 个组件，退出并重新打开 DSH 后应用（尚未更新）`);
+            onStaged?.(staged.length);
           } else if (r.ok) toast(`✓ 已更新 ${r.updated} 个组件${r.restartRequired ? "，请重启对应服务" : ""}`);
           else {
             const f = failed[0] ?? {};
@@ -1564,7 +1603,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           }
           onDone?.(r);
         } catch (e) { toast(`✗ 更新失败：${e.message}`); }
-        finally { clearInterval(poll); setDl(null); setWorking(false); }
+        finally { clearInterval(poll); setWorking(false); }
       };
       const dismissThis = async () => {
         setWorking(true);
@@ -1655,12 +1694,12 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               } }, "复制诊断"),
               h(Btn, { kind: "qbw-btn2", onClick: () => window.open("https://github.com/Mieksido/surfcore/releases/latest", "_blank", "noopener") }, "去下载新版")));
           })(),
-          working ? (dl?.active
-            ? h(ProgressBar, {
-                pct: dl.percent ?? 0,
-                phase: `下载中 ${sizeText(dl.bytes)}${dl.total ? ` / ${sizeText(dl.total)}` : ""}${dl.speedBps ? ` · ${speedText(dl.speedBps)}` : ""}${dl.percent != null ? ` · ${dl.percent}%` : ""}`,
-              })
-            : h(ProgressBar, { phase: "正在下载/应用更新…", indeterminate: true })) : null),
+          working ? h(ProgressBar, {
+            pct: dl?.percent ?? 0,
+            phase: phaseText(dl),
+            // 下载阶段有真实百分比；解压/校验/备份阶段没有字节进度，只保留阶段文字和下载统计。
+            indeterminate: !dl || (dl.active !== true && dl.phase !== 'pending' && dl.phase !== 'install') || dl.percent == null,
+          }) : null),
           h("div", { className: "qbw-actions", style: { flexShrink: 0, paddingTop: "10px" } },
             h(Btn, { kind: "qbw-btn2", onClick: () => (never ? dismissThis() : onClose?.()), disabled: working },
               never ? "不再提示本次" : "稍后"),
@@ -1872,8 +1911,17 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         try {
           const r = await api("/updates", { method: "POST", body: { action: "check" } });
           const n = r.pendingCount ?? 0;
-          toast(n ? `发现 ${n} 个组件有更新（安装后需重启 DSH）` : "已是最新");
+          const unknown = r.unknownCount ?? 0;
+          const pendingRestart = r.lastApply?.status === "pending_restart";
+          toast(n
+            ? `发现 ${n} 个组件有更新（安装后需重启 DSH）`
+            : pendingRestart
+              ? "✓ 更新已下载，请重启 DSH 生效"
+              : unknown
+                ? `无法判定 ${unknown} 个组件是否有更新（见详情）`
+                : "已是最新");
           if (n) setRestartHint({ staged: false, count: n });
+          else if (pendingRestart) setRestartHint({ staged: true, count: 1 });
           if (n && openOnHit) setUpdateOpen(true);
           await reload();
           return r;
@@ -2389,6 +2437,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           toast,
           onClose: () => setUpdateOpen(false),
           onDone: async () => { setUpdateOpen(false); await reload(); },
+          onStaged: (count) => setRestartHint({ staged: true, count }),
         }) : null,
         (compat || compatError) ? h(CompatModal, {
           report: compat,
@@ -2878,14 +2927,24 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     }
 
     function GroupPolicyArea({ busy, setBusy, toast }) {
-      return h(AreaModalCard, { title: "群管理", note: "小群/大群分层、人数/活跃阈值、手动覆盖；保存后生效", badge: "阈值" },
-        h(GroupPolicyPanel, { busy, setBusy, toast }));
+      const saveRef = useRef(null);
+      return h(AreaModalCard, {
+        title: "群管理",
+        note: "小群/大群分层、人数/活跃阈值、手动覆盖；保存后生效",
+        badge: "阈值",
+        busy,
+        onSave: async () => { await saveRef.current?.(); },
+      }, h(GroupPolicyPanel, {
+        busy, setBusy, toast,
+        onSaveReady: (fn) => { saveRef.current = fn; },
+      }));
     }
 
-    function GroupPolicyPanel({ busy, setBusy, toast }) {
+    function GroupPolicyPanel({ busy, setBusy, toast, onSaveReady }) {
       const [data, setData] = useState(null);
       const [policy, setPolicy] = useState(null);
       const [err, setErr] = useState("");
+      const saveRef = useRef(null);
       const load = useCallback(async () => {
         try {
           const r = await api("/group-policy");
@@ -2910,6 +2969,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         } catch (e) { toast("✗ " + e.message); } finally { setBusy(""); }
       };
       const save = () => persist(policy ?? {});
+      saveRef.current = save;
+      useEffect(() => {
+        onSaveReady?.(() => saveRef.current?.());
+      }, [onSaveReady]);
       const setOverride = (key, value) => {
         const next = { ...(policy ?? {}), overrides: { ...(policy?.overrides ?? {}), [key]: value } };
         setPolicy(next);
@@ -2944,12 +3007,128 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               h("option", { value: "large" }, "强制大群"))))
         ),
         h("div", { className: "qbw-actions", style: { marginTop: "6px" } },
-          h(Btn, { onClick: save, disabled: !!busy }, busy === "group-policy-save" ? "保存中…" : "保存群分层"),
           h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新群列表"),
-          h("span", { className: "qbw-hint" }, "保存后桥接下一条消息生效；群成员数由 OneBot 缓存 10 分钟。")));
+          h("span", { className: "qbw-hint" }, "改完点弹窗底部「保存」；保存后桥接下一条消息生效，群成员数由 OneBot 缓存 10 分钟。")));
     }
 
-    function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext }) {
+    // ── 模型与思考强度：从 DSH 模型目录动态生成，不硬编码模型名 ────────────────
+    function ModelSettingsCard({ busy, toast, reload }) {
+      const [info, setInfo] = useState(null);
+      const [provider, setProvider] = useState("");
+      const [model, setModel] = useState("");
+      const [effort, setEffort] = useState("");
+      const [saving, setSaving] = useState(false);
+      const [err, setErr] = useState("");
+      const load = useCallback(async () => {
+        try {
+          const r = await api("/dsh/model");
+          setInfo(r);
+          setProvider(r.provider ?? "");
+          setModel(r.model ?? "");
+          const allowed = (Array.isArray(r.options) ? r.options : []).filter((x) => ["low", "high", "max"].includes(x));
+          const desired = r.reasoningEffort ?? r.default ?? "max";
+          setEffort(allowed.includes(desired) ? desired : (allowed[0] ?? "max"));
+          setErr("");
+        } catch (e) {
+          setErr(e.message);
+          setInfo({ provider: "", model: "", options: ["low", "high", "max"], reasoningEffort: "max", default: "max", models: [], providers: [], catalogSource: "fallback", globalSideEffect: true });
+          setEffort("max");
+        }
+      }, []);
+      useEffect(() => { void load(); }, [load]);
+      const models = Array.isArray(info?.models) ? info.models : [];
+      const current = models.find((m) => m.provider === provider && m.model === model) ?? null;
+      const effortRows = (() => {
+        const own = Array.isArray(current?.efforts) ? current.efforts.filter((x) => ["low", "high", "max"].includes(x)) : [];
+        const fallback = Array.isArray(info?.options) ? info.options.filter((x) => ["low", "high", "max"].includes(x)) : [];
+        const def = current?.defaultEffort && ["low", "high", "max"].includes(current.defaultEffort) ? [current.defaultEffort] : [];
+        const ids = [...new Set((own.length ? own : fallback).concat(def))];
+        return ids.length ? ids : ["low", "high", "max"];
+      })();
+      const effortLabel = (id) => {
+        const custom = current?.effortLabels?.[id]?.name || info?.labels?.[id]?.name;
+        const desc = current?.effortLabels?.[id]?.description || info?.labels?.[id]?.description;
+        const base = id === "low" ? "low（最省，日常聊天）" : id === "high" ? "high（平衡）" : id === "max" ? "max（最烧，复杂任务）" : id;
+        return custom ? `${base} · ${custom}${desc ? `：${desc}` : ""}` : base;
+      };
+      const imageText = current?.imageInput === true ? "支持图片" : current?.imageInput === false ? "仅文本（图片走文字兜底）" : "图片能力未知";
+      const priceText = current?.price?.label ? `${current.price.label}` : "价目表未登记";
+      const fallbackOnly = !models.length;
+      const chooseModel = (value) => {
+        let next;
+        try { next = JSON.parse(value); } catch { return; }
+        setProvider(String(next.provider ?? ""));
+        setModel(String(next.model ?? ""));
+        const picked = models.find((m) => m.provider === String(next.provider ?? "") && m.model === String(next.model ?? ""));
+        const allowed = Array.isArray(picked?.efforts) ? picked.efforts.filter((x) => ["low", "high", "max"].includes(x)) : [];
+        if (!allowed.includes(effort)) setEffort(picked?.defaultEffort && allowed.includes(picked.defaultEffort) ? picked.defaultEffort : (allowed[0] ?? "max"));
+      };
+      const save = async () => {
+        setSaving(true);
+        setErr("");
+        try {
+          if (fallbackOnly) {
+            const r = await api("/dsh/effort", { method: "POST", body: { reasoningEffort: effort } });
+            toast(`✓ 已设为 ${r.reasoningEffort}；目录恢复前只能调强度`);
+          } else {
+            const r = await api("/dsh/model", { method: "POST", body: { provider, model, reasoningEffort: effort } });
+            toast(`✓ 已切换 ${r.provider}/${r.model} · ${r.reasoningEffort}；下一条消息生效`);
+            for (const warning of r.warnings ?? []) toast(`⚠️ ${warning}`);
+          }
+          await load();
+          await reload?.();
+        } catch (e) {
+          const message = e?.hint ? `${e.message}（${e.hint}）` : e.message;
+          setErr(message);
+          toast(`✗ ${message}`);
+        } finally { setSaving(false); }
+      };
+      if (!info && !err) return h("div", { className: "qbw-card" }, h("div", { className: "qbw-hint" }, "读取 DSH 模型目录中…"));
+      const byProvider = new Map();
+      for (const item of models) {
+        if (!byProvider.has(item.provider)) byProvider.set(item.provider, []);
+        byProvider.get(item.provider).push(item);
+      }
+      return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+        h("h4", null, "模型与思考强度", h("span", { className: "qbw-badge" }, info?.catalogSource === "dsh" ? "来自 DSH 目录" : "降级")),
+        h("p", { className: "qbw-hint" },
+          "默认 max；觉得烧就选 low（更省），high 是折中。改完下一条消息生效，不需要重启 DSH。"),
+        err ? h("div", { className: "qbw-err" }, err) : null,
+        fallbackOnly ? h("div", { className: "qbw-warnbox" }, "DSH 模型目录读取失败：现在只能调思考强度；刷新后再换模型。") : null,
+        h("div", { className: "qbw-admin-grid" },
+          h("label", { className: "qbw-admin-field" },
+            h("span", null, "模型"),
+            h("select", {
+              className: "qbw-select", id: "dshModelSelect",
+              value: JSON.stringify({ provider: provider, model: model }),
+              disabled: fallbackOnly || !!busy || saving,
+              onChange: (e) => chooseModel(e.target.value),
+            },
+              models.length
+                ? [...byProvider.entries()].map(([p, rows]) => h("optgroup", { key: p, label: p },
+                  rows.map((m) => h("option", {
+                    key: `${m.provider}/${m.model}`,
+                    value: JSON.stringify({ provider: m.provider, model: m.model }),
+                  }, `${m.name} · ${m.model}${m.imageInput === true ? " · 支持图片" : m.imageInput === false ? " · 仅文本" : ""}${m.price?.label ? ` · ${m.price.label}` : ""}`))))
+                : h("option", { value: JSON.stringify({ provider, model }) }, `${model}（当前）`)),
+            h("small", null, `图片：${imageText} ｜ 价格：${priceText}`)),
+          h("label", { className: "qbw-admin-field" },
+            h("span", null, "思考强度"),
+            h("select", {
+              className: "qbw-select", id: "dshEffortSelect",
+              value: effort,
+              disabled: !!busy || saving,
+              onChange: (e) => setEffort(e.target.value),
+            }, effortRows.map((id) => h("option", { key: id, value: id }, effortLabel(id)))),
+            h("small", null, "low 最省；max 最烧。选 low 后日常闲聊够用，复杂工具任务可能变笨。"))),
+        h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
+          h(Btn, { onClick: save, disabled: !!busy || saving || (!fallbackOnly && !model) }, saving ? "保存中…" : fallbackOnly ? "保存思考强度" : "保存模型与思考强度"),
+          h("span", { className: "qbw-hint" }, "⚠️ 会同时修改 DSH 全局默认模型（Web GUI 新会话也会用这个）；只影响下一条消息之后。")),
+        info?.globalSideEffect ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
+          "这是 DSH 的 selectModel 行为，不是桥接额外改的；介意全局默认的话，改完可回 DSH 设置里单独调整。") : null);
+    }
+
+    function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext, dirty }) {
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
       const groups = [...QQ_FIELDS];
@@ -2966,6 +3145,9 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         F("socialV2.sticker.collect.maxPerMinute", "每分钟最多收藏", "", "number", { min: 0 }),
         F("socialV2.sticker.collect.maxPerHour", "每小时最多收藏", "", "number", { min: 0 }),
         F("socialV2.sticker.collect.maxRemarkChars", "备注最大字符", "", "number", { min: 0 }),
+      ]});
+      groups.push({ group: "图片能力", note: "auto=查 DSH 模型目录；目录里找不到的第三方模型默认按“不支持”走文字兜底，避免 ACP 直接拒绝图片块。若你确认该模型支持图片，可强制选「支持」。", fields: [
+        F("socialV2.vision.imageInput", "模型图片输入", "auto / 支持 / 不支持；改完重启 DSH", "select", { options: [["auto", "自动识别"], ["true", "支持图片输入"], ["false", "不支持（文字兜底）"]] }),
       ]});
       groups.push({ group: "语音", note: "语音需要两个开关同时开：这里的「启用语音发送」总闸 + 工具面的「发语音」；改完必须重启 DSH（工具列表在 MCP 启动时固定）。text 模式不需要语音库；旧会话仍可能保留旧提示/旧记忆，必要时新建会话。", fields: [
         F("socialV2.voice.enabled", "启用语音发送", "总闸；还要在「工具面」打开「发语音」；改完重启 DSH", "switch"),
@@ -3001,7 +3183,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.bridge?.running || overview?.bridge?.ok),
           overview,
         }),
-        h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext }),
+        h(ModelSettingsCard, { busy, toast, reload }),
+        h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext, onSave: () => onSave?.(true), busy, canSave: dirty }),
         h(WhitelistCard, {
           allow: cfg?.allow ?? {},
           allowAll: cfg?.allowAllWhenEmpty === true,
@@ -3672,7 +3855,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }) : null);
     }
 
-    function BiliTab({ cfg, set, qq, setQqPath, admin, setAdmin, unified, setUnified, qqPrivate, qqAllowAll, overview, busy, setBusy, toast, reload, onSave, onAdminDiscardContext }) {
+    function BiliTab({ cfg, set, qq, setQqPath, admin, setAdmin, unified, setUnified, qqPrivate, qqAllowAll, overview, busy, setBusy, toast, reload, onSave, onAdminDiscardContext, dirty }) {
       const [query, setQuery] = useState("");
       const [cookie, setCookie] = useState({ sessdata: "", bili_jct: "", buvid3: "" });
       const [cookieMsg, setCookieMsg] = useState("");
@@ -3779,7 +3962,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.scheduler?.running),
           overview,
         }),
-        h(AdminCard, { admin, onChange: setAdmin, qqPrivate, qqAllowAll, toast, onDiscardContext: onAdminDiscardContext }),
+        h(AdminCard, { admin, onChange: setAdmin, qqPrivate, qqAllowAll, toast, onDiscardContext: onAdminDiscardContext, onSave: () => onSave?.(true), busy, canSave: dirty }),
         h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
           h("h4", null, "B站 账号"),
           h("div", { className: "qbw-kv" }, h("span", null, "登录态"), h("span", null, bili.available ? `记忆已生成 · ${bili.briefChars ?? 0} 字` : "暂无记忆（先扫码登录）")),
@@ -3906,8 +4089,21 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const classify = async () => {
         setBusy("persona-classify");
         setErr("");
+        const source = [
+          draft.core,
+          draft.tone,
+          draft.daily,
+          ...Object.values(draft.scenes ?? {}).map((scene) => scene?.text),
+        ].map((part) => String(part ?? "").trim()).filter(Boolean).join("\n\n");
+        if (!source) {
+          const message = "✗ 先写一点人格内容（核心/语气/日常/场景）再拆分";
+          setErr(message);
+          toast(message);
+          setBusy("");
+          return;
+        }
         try {
-          const r = await api("/persona/classify", { method: "POST", body: { text: draft.core || draft.tone || "" } });
+          const r = await api("/persona/classify", { method: "POST", body: { text: source } });
           setSplit(r.drafts ?? null);
           toast("✓ 已生成拆分草稿；还没有保存，请检查后再应用");
         } catch (e) {
@@ -4629,7 +4825,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             setSwitchMsg("已停止");
           } else {
             const r = await api("/voice/packs/activate", { method: "POST", body: { id: pick } });
-            setSwitchMsg(r.ok ? "已启动：" + (pick === "voice-cloud" ? "云端" : "本地") : ("启动失败：" + (r.error || "")));
+            setSwitchMsg(r.ok ? "已启动：" + (pick === "voice-cloud" ? "云端" : "本地") : ("启动失败：" + (r.error || "") + (r.hint ? ` — ${r.hint}` : "")));
           }
           await load();
         } catch (e) { setSwitchMsg("失败：" + e.message); }
@@ -4719,7 +4915,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("strong", null, p.name),
           h("span", { style: { opacity: 0.75, fontSize: "12px" } },
             fmt(p.sizeBytes) + " · 端口 " + p.port + " · " + (p.install
-              ? p.install.phase + " " + p.install.progress + "%"
+              ? p.install.phase + (p.install.transferPct != null ? ` · 下载 ${p.install.transferPct}%` : "") + ` · 总进度 ${p.install.progress}%`
               : p.running
                 ? ((p.external ? "● 运行中（外部目录）" : "● 运行中")
                   + (p.enginePort && p.engineUp === false ? " · ⚠️ 音色引擎未起" : ""))
@@ -4781,6 +4977,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           : null,
         h("div", { style: { display: "flex", gap: "8px", marginTop: "8px", flexWrap: "wrap", alignItems: "center" } },
           !p.installed ? h(Btn, { disabled: busyId === p.id, onClick: () => act(p.id, "install") }, "安装（" + fmt(p.sizeBytes) + "）") : null,
+          p.install?.phase === "失败" ? h(Btn, { disabled: busyId === p.id, onClick: () => act(p.id, "install", { force: true }) }, "继续下载 / 重试安装") : null,
           h(Btn, { kind: "qbw-btn2", disabled: busyId === "__import" || (p.import && p.import.phase !== "完成" && p.import.phase !== "失败"), onClick: () => startImportFlow(p.id) },
             p.installed ? "重新导入离线包…" : "导入离线包…"),
           p.external ? h("span", { style: { fontSize: "12px", opacity: 0.7 } }, p.dir ? `已在别处安装：${p.dir}` : "已在别处安装（端口在跑）") : null,
@@ -6156,6 +6353,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       // 浮层文案（字符串）。真正的通知函数叫 notify —— 两者别同名，否则会被误当函数传（2026-10-30）。
       const [toastText, setToastText] = useState("");
       const [err, setErr] = useState("");
+      const [warnings, setWarnings] = useState([]);
+      const [notes, setNotes] = useState([]);
       // 记忆卡容量弹窗：80/90/100% 三档；页面开着时每分钟查一次（用户不一定停在「记忆」页）。
       const [memoryAlert, setMemoryAlert] = useState(null);
       const memorySnoozeRef = useRef(0);
@@ -6200,6 +6399,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setBili(r.bili ?? {});
           setUnified(r.unified ?? {});
           setConfigStamps(r.stamps ?? null);
+          setWarnings([]);
+          setNotes([]);
           setSaved(JSON.stringify({ qq: r.qq ?? {}, bili: r.bili ?? {}, unified: r.unified ?? {} }));
         } catch (e) { setErr(`读取配置失败：${e.message}`); }
       }, []);
@@ -6261,7 +6462,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       }, [unified]);
 
       const save = async (restartBridge = false) => {
-        setBusy("save"); setErr("");
+        setBusy("save"); setErr(""); setWarnings([]); setNotes([]);
         const resetSessions = adminDiscardContext;
         const shouldRestart = restartBridge || resetSessions;
         try {
@@ -6276,6 +6477,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           } catch (e) {
             // 409：配置在加载后被别处改过。不要盲目覆盖 —— 提示重新读取。
             if (/CONFIG_STALE|已被别处修改/.test(String(e.message))) {
+              // 不要把 409 里的 stamps 直接套到当前 draft 上：那会让“再点一次保存”
+              // 覆盖掉别人刚写的配置。必须显式「重新读取」后再改。
               setErr(`保存被拒绝：${e.message}。请点「重新读取」后再改。`);
               notify(`⚠️ ${e.message}`);
               return;
@@ -6285,14 +6488,19 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           if (r.qq) setQq(r.qq);
           if (r.bili) setBili(r.bili);
           if (r.unified) setUnified(r.unified);
+          // 保存成功后同步版本戳；否则下一次保存会拿旧戳，被自己的第一次写盘判成 CONFIG_STALE。
+          if (r.stamps) setConfigStamps(r.stamps);
           const nextSaved = JSON.stringify({ qq: r.qq ?? normalizedQq, bili: r.bili ?? bili, unified: r.unified ?? normalizedUnified });
           setSaved(nextSaved);
           if (resetSessions) setAdminDiscardContext(false);
           const resetDone = r.sessionsReset === true || r.biliSessionsReset === true;
-          notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${resetSessions ? (resetDone ? "，已重置相关会话上下文" : "，没有可重置的在线会话") : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${r.warnings?.length ? "（有提示）" : ""}`);
-          if (r.warnings?.length) setErr(r.warnings.join(" "));
+          const nextWarnings = Array.isArray(r.warnings) ? r.warnings : [];
+          const nextNotes = Array.isArray(r.notes) ? r.notes : [];
+          setWarnings(nextWarnings);
+          setNotes(nextNotes);
+          notify(`✓ 已保存${budgetDirty ? "（token 额度即时生效）" : ""}${resetSessions ? (resetDone ? "，已重置相关会话上下文" : "，没有可重置的在线会话") : ""}${r.bridge ? (r.bridge.ok ? "，桥接已重启" : "，桥接重启失败") : ""}${nextWarnings.length ? "（有提示）" : ""}`);
           await loadOverview();
-        } catch (e) { setErr(`保存失败：${e.message}`); } finally { setBusy(""); }
+        } catch (e) { setErr(`保存失败：${e.message}`); setWarnings([]); setNotes([]); } finally { setBusy(""); }
       };
       const reload = async () => { await loadOverview(); await loadConfig(); await loadBudget(); };
       const reset = () => {
@@ -6342,15 +6550,15 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "overview") return h(OverviewTab, { overview, reload, busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, goTab: setTab });
         if (tab === "characters") return h(CharactersTab, { overview, busy, setBusy, toast: notify, reload, goTab: setTab, unified, setUnified: setUnifiedPath });
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
-        if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext });
-        if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext });
+        if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
+        if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload });
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
-        if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
+      if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: normalizedQq, bili, unified: normalizedUnified, setQqPath, setBiliPath, setUnifiedPath, busy });
         if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload });
         return null;
@@ -6371,15 +6579,20 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }, label))),
         h("div", { className: "qbw-body" },
           err ? h("div", { className: "qbw-err", style: { marginBottom: "8px" } }, err) : null,
+          warnings.length ? h("div", { className: "qbw-warnbox", style: { marginBottom: "8px" } },
+            h("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "⚠️ 已保存，但有以下提示："),
+            warnings.map((warning, index) => h("div", { key: index }, warning))) : null,
+          notes.length ? h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
+            notes.join(" ")) : null,
           renderTab()),
         h("div", { className: "qbw-foot" },
-          h(Btn, { onClick: () => save(false), disabled: !!busy || !dirty }, busy === "save" ? "保存中…" : "保存"),
-          h(Btn, { kind: "qbw-btn2", onClick: () => save(true), disabled: !!busy || unified?.platforms?.start?.qq === false, title: unified?.platforms?.start?.qq === false ? "QQ 启动开关已关闭；先打开再重启" : undefined }, "保存并重启 QQ 桥接"),
+          h(Btn, { onClick: () => save(true), disabled: !!busy || !dirty || unified?.platforms?.start?.qq === false, title: unified?.platforms?.start?.qq === false ? "QQ 启动开关已关闭；先打开再重启" : "保存配置并重启 QQ 桥接，让 QQ 侧设置立即生效" }, busy === "save" ? "保存中…" : "保存并生效"),
+          h(Btn, { kind: "qbw-btn2", onClick: () => save(false), disabled: !!busy || !dirty, title: "只写配置文件；QQ 侧要下次重启桥接才生效" }, "仅保存（不重启）"),
           h(Btn, { kind: "qbw-btn2", onClick: reset, disabled: !!busy || !dirty }, "撤销改动"),
           h(Btn, { kind: "qbw-btn2", onClick: reload, disabled: !!busy }, "重新读取"),
           h("span", { className: "spacer" }),
-          dirty ? h("span", { className: "qbw-dirty" }, "● 有改动还没保存（改了不点保存 = 没生效）") : h("span", { className: "qbw-ok" }, "已保存"),
-          toastText ? h("span", { style: { marginLeft: "10px", color: "var(--dsw-alias-label-secondary)" } }, toastText) : null),
+          dirty ? h("span", { className: "qbw-dirty" }, "● 有改动还没保存（改了不点保存 = 没生效）") : h("span", { className: "qbw-ok" }, "已保存")),
+        toastText ? h("div", { className: "qbw-toast", role: "status" }, toastText) : null,
         tokenAlert ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setTokenAlert(null); } },
           h("div", { className: "qbw-modal" },
             h("h3", null, "⚠️ 今日 token 额度已用到 80%"),

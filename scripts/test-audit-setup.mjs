@@ -66,6 +66,10 @@ try {
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
     assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'surfcore']);
+    assert.ok(
+      fs.readdirSync(path.join(f.home, 'profiles/web')).some((name) => name.startsWith('package.json.bak-')),
+      '写 profile package.json 前必须留备份',
+    );
   });
 
   test('legacy root [] is repaired without altering literal strings', () => {
@@ -123,6 +127,30 @@ try {
     assert.equal(result.status, 0, result.stderr);
     assert.ok(fs.existsSync(capture), `CLI was not invoked: ${result.stdout}`);
     assert.deepEqual(JSON.parse(fs.readFileSync(capture)), { args: ['plugin', '--profile', profile, 'install'], home: f.home });
+  });
+
+  if (process.platform === 'win32') test('install that trims bundles rolls profile back to backup', () => {
+    const f = fixture('rollback');
+    const bin = path.join(f.repo, 'bin');
+    fs.mkdirSync(bin);
+    const cli = path.join(bin, 'trim-dsh.mjs');
+    fs.writeFileSync(cli, `import fs from 'node:fs'; import path from 'node:path';
+const file = path.join(process.env.DSH_HOME, 'profiles', 'web', 'package.json');
+const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+pkg.dsh.profile.bundles = ['existing'];
+fs.writeFileSync(file, JSON.stringify(pkg));
+`);
+    fs.writeFileSync(path.join(bin, 'dsh.cmd'), `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`);
+    const result = f.run('web', {
+      PATH: [bin, path.dirname(process.execPath)].join(path.delimiter),
+      QQ_BRIDGE_SKIP_DSH_INSTALL: '0',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /已回滚 profile/);
+    const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json'), 'utf8'));
+    assert.deepEqual(pkg.dsh.profile.bundles, ['existing'], '回滚后不能留下 surfcore 或丢失原 bundle');
+    assert.equal(pkg.dependencies.existing, '1.0.0');
+    assert.equal(pkg.dependencies.surfcore, undefined);
   });
 } finally {
   // Resolve the exact fixture root before removing this test's temporary files.

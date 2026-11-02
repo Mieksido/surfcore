@@ -109,6 +109,27 @@
 **不要**在没有 `--verify-ref` 通过、没有真实归档核对的情况下宣布"已发布"。
 版本号只由用户在发布会话里定；编辑会话不得 bump/tag/推公开仓库（见 §1.5）。
 
+## 1.9 多会话协作：一会话一工作树（2026-11-02 事故后刚性）
+
+**同一个工作区，同一时间只允许一个会话写代码。** 第二个及以后的会话必须开独立工作树 + 独立分支，
+不允许“大家小心一点”地共用 `dev` 工作区。
+
+- 开工前先跑：`git status --porcelain`、`git worktree list`、`git log --oneline -5`；
+  **工作区里的脏文件不全是你的 → 停手**，让对应会话先收走。
+- 新会话一律：`git worktree add ..\surfcore-<topic> -b feat/<topic> dev`，之后只在那个目录改。
+- **禁止 `git add -A` / `git add .` / `git commit -a`**；只 add 自己负责的明确路径。
+- 提交前核对 `git diff --cached --stat`；出现不是自己的文件 → `git restore --staged <file>`。
+- 禁止在别人可能正在写时执行 `git switch/checkout/reset/stash/clean`。
+- `dev` 是集货区：功能分支完成并跑完测试后，用 `git merge --no-ff feat/<topic>` 合并；
+  合并后从**合并后的 HEAD** 重新生成 `release/install-manifest.json`（不要手工解冲突）。
+- **运行时也串行**：QQ 桥接 / DSH 重启、B站 tick、`publish-dev` / 发布，同一时间只允许一个会话做；
+  做之前先在会话里说明。
+- 发现污染：不要 rewrite 已 push 的历史；在 `docs/cases/` 记录，后续用干净分支补提交。
+
+完整操作手册（含事故复盘、检查清单、污染处理）：
+[`docs/guides/MULTI-SESSION-WORKFLOW.md`](docs/guides/MULTI-SESSION-WORKFLOW.md)。
+协作登记表：[`docs/COORDINATION.md`](docs/COORDINATION.md)（每个会话开工/收工都更新自己那一行）。
+
 ## 2. 环境事实（省得重新摸一遍）
 
 - 本机 DSH：`<DSH 安装目录>`，版本 `0.2.1-rc.5`（2026-11-01 升级；rc.5 有 welcome 握手 401/431 缺陷，已用豆包的

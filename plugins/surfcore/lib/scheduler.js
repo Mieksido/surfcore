@@ -27,6 +27,7 @@ import { config } from '../tools/lib/config.mjs'
 import { pendingCount as attackPending } from '../tools/lib/attacks.mjs'
 import { pinOf, noteOf } from '../tools/lib/pins.mjs'
 import { markScheduleSlot } from '../tools/lib/night-schedule.mjs'
+import { normalizeWindow, windowContains } from '../tools/lib/time-window.mjs'
 import {
   BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR,
 } from './paths.js'
@@ -719,11 +720,8 @@ export function startScheduler(ctx, opts) {
     const wins = Array.isArray(cfg?.night?.windows) ? cfg.night.windows : []
     const d = new Date(); const m = d.getHours() * 60 + d.getMinutes()
     return wins.some((w) => {
-      const [sh, sm] = String(w.start ?? '').split(':').map(Number)
-      const [eh, em] = String(w.end ?? '').split(':').map(Number)
-      const s = (sh === 24 ? 1440 : sh * 60) + (sm || 0)
-      const e = (eh === 24 ? 1440 : eh * 60) + (em || 0)
-      return m >= s && m < e
+      const normalized = normalizeWindow(w)
+      return normalized.ok && windowContains(normalized, m)
     })
   }
 
@@ -841,7 +839,7 @@ export function startScheduler(ctx, opts) {
       if (!fresh.length) { listening = false; return }
       fresh.sort((a, b) => a.t - b.t)
       const who = fresh.map((x) => `${x.who}（${x.kind === 'at' ? '@' : '回复'}）`).join('、')
-      const L = limitsNow()
+      const LIM = limitsNow()
       await ensureSession()
       await promptBili(
         {
@@ -863,10 +861,10 @@ export function startScheduler(ctx, opts) {
               '3) ⭐ **谁找你都直接回**（2026-10-20 用户改：不再走草稿 ✓）：',
               // mid 动态读配置 ✓（别把 uid 写死进代码 ✗ 开源版会带出去 ✗）
               `   · 对方是**主人**（mid ${cfg.owner?.mid ?? '（未配置）'}）→ 直接回 ✓，而且要比平时更温柔（先谢谢/回应关心，不抬杠、不回嘴）`,
-              `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${L.replyDaily} 条/天）`,
+              `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${LIM.replyDaily} 条/天）`,
               '     `comment --oid … --root … --parent … --message "…" --auto --once-per-person（仅当开关=开 ✓） --dry` → `--go` → `thread` 复核 ✓',
               '     ⚠️ 别带 --ta —— 那是"我去搭热评"，两本账分开记 ✗',
-              `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${L.mineDaily} 条/天 · 每人 ${L.minePerPerson} 条 ✓`,
+              `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${LIM.mineDaily} 条/天 · 每人 ${LIM.minePerPerson} 条 ✓`,
               '     ⚠️ oid 必须用 comment-digest 打印的坐标（19 位动态 id 不能手抄：JS 数字会丢末几位）',
               '4) 吵架 / 要隐私 / 要你代表主人承诺 → 一条都不回 ✗（直接不理，别解释）',
               '5) 别贪多：这一批处理完就停 ✓（**只有设置页「同一个人最多只回一条」= 开时**才加 --once-per-person ✓；关掉就别加 ✗）',

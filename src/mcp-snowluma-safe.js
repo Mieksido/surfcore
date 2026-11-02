@@ -1175,6 +1175,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerI
         const q = new URLSearchParams({ key, stickerId: String(stickerId) });
         const data = await agentApi(`/api/socialV2/sticker-image?${q.toString()}`, { headers: { 'x-agent-token': token }, timeoutMs: 180000 });
         if (!data?.image?.data || !data?.image?.mimeType) {
+          if (data?.text) return { content: [{ type: 'text', text: String(data.text) }] };
           return { content: [{ type: 'text', text: `表情没有可返回的图片：${errorText(data?.error, '未知')}` }], isError: true };
         }
         const content = [
@@ -1317,6 +1318,7 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
         const q = new URLSearchParams({ key });
         const data = await agentApi(`/api/socialV2/self-image?${q.toString()}`, { headers: { 'x-agent-token': token } });
         if (!data?.image?.data || !data?.image?.mimeType) {
+          if (data?.text) return { content: [{ type: 'text', text: String(data.text) }] };
           return { content: [{ type: 'text', text: `没有可返回的形象图片：${errorText(data?.error, '未知')}` }], isError: true };
         }
         return {

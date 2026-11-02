@@ -83,6 +83,20 @@ const tests = [
   'test-bili-prefix-config.mjs',
   // wait 积压：立即返回、有界批量、群聊不整段倒给模型。
   'test-v2-wait-batch.mjs',
+  // 备份轮转：真实带扩展名/横线时间戳文件名必须正确分组，keep 必须生效。
+  'test-backup-prune.mjs',
+  // 媒体兜底：p.qpic/gxh 候选、失败标签兜底、非多模态文字路径。
+  'test-media-fallback.mjs',
+  // 人格层读取：tone 必须读 persona.tone.md，不能回落核心。
+  'test-persona-layer-read.mjs',
+  // B站 shots 缓存：超期/超量清理，不碰新文件/未知文件。
+  'test-shots-cache.mjs',
+  // 作息时间窗：跨午夜、全角冒号、非法时间；listenTick 不再同名 L。
+  'test-time-window.mjs',
+  // QQ @：@我 + @别人不能一票否决；self_id 缺失回退 selfUserId。
+  'test-qq-at.mjs',
+  // 设置页连续保存：成功必须回传/同步 stamps，warning 不能当 error。
+  'test-config-save-stamps.mjs',
   // B站沉默逛 + 评论年龄闸：工具硬拦、带 code/hint。
   'test-bili-interact.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。

@@ -32,6 +32,14 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/** 启动日志可能是 Windows GBK（cmd/Python 控制台），不能一律按 UTF-8 解。 */
+function decodeProcessLog(buffer) {
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer ?? ''), 'utf8');
+  const utf8 = buf.toString('utf8');
+  if (!utf8.includes('\uFFFD')) return utf8;
+  try { return new TextDecoder('gbk').decode(buf); } catch { return utf8; }
+}
+
 /**
  * 开发期的默认安装源：**仓库同级的** `voice/packages/<id>`。
  *
@@ -79,9 +87,12 @@ export const DEFAULT_MANIFESTS = [
     id: 'voice-cloud',
     name: '云端语音包',
     version: '1.0.0',
-    sizeBytes: 60_000_000,
+    sizeBytes: 280_000_000,
     port: 8767,
     startScript: 'run.bat',
+    // 云端包不需要 run.bat 里的 `start`：直接拉 python，桥接才能收到 stderr，
+    // 否则 Python 崩在独立窗口里，桥接只能等 60 秒后报“端口没起来”。
+    directStart: { python: '.venv/Scripts/python.exe', args: ['-m', 'voxd', '--config', 'config.toml'] },
     stopScript: 'stop.bat',
     repo: 'Mieksido/surfvoicecloud',
     postInstall: ['scripts/fetch-models.mjs', 'scripts/bootstrap-env.mjs'],
@@ -91,7 +102,7 @@ export const DEFAULT_MANIFESTS = [
     voices: [{ id: 'age12-cloud', label: '小语（云端 · 女童声）' }],
     about: {
       summary: '调用火山引擎声音复刻服务，音质最好。',
-      pros: ['延迟 0.5~1.1 秒', '不占显卡', '安装约 60MB，1~3 分钟'],
+      pros: ['延迟 0.5~1.1 秒', '不占显卡', '安装约 280MB，1~3 分钟'],
       cons: ['按字符计费（火山引擎收取，与本插件无关）', '必须联网', '要自己申请两个密钥'],
       billing: '按字符计费。每天直播 3 小时约 135 万字符/月。不想付费就装本地包，效果接近且不要钱。',
       disclaimer: '这不是推销：两个包功能对等，装哪个都不影响插件其他功能。',
@@ -230,29 +241,57 @@ export async function flattenSingleDir(destDir) {
   return true;
 }
 
-async function fetchToLocal(cfg, id, src, destDir, onProgress = () => {}) {
+async function fetchToLocal(cfg, id, src, destDir, onProgress = () => {}, { mirror = '' } = {}) {
   if (/^https?:\/\//i.test(src)) {
     await fsp.mkdir(destDir, { recursive: true });
-    const tmp = path.join(os.tmpdir(), `surfcore-${id}-${Date.now()}.zip`);
-    const res = await fetch(src);
-    if (!res.ok) throw new Error(`下载失败：HTTP ${res.status}`);
-    const total = Number(res.headers.get('content-length') || 0);
-    let got = 0;
-    const file = fs.createWriteStream(tmp);
-    for await (const chunk of res.body) {
-      got += chunk.length;
-      file.write(chunk);
-      if (total) onProgress(Math.min(99, Math.round((got / total) * 100)), '下载中');
+    // 代码 zip 也走用户选的镜像；镜像失败再回原地址，不能只让模型下载吃镜像。
+    const urls = [];
+    const m = String(mirror || '').trim().replace(/\/+$/, '');
+    if (/^https?:\/\//i.test(m)) urls.push(`${m}/${src}`);
+    urls.push(src);
+    let lastError = null;
+    for (const url of urls) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const tmp = path.join(os.tmpdir(), `surfcore-${id}-${Date.now()}-${attempt}.zip`);
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+          if (!res.ok) {
+            const error = new Error(`HTTP ${res.status}`);
+            error.status = res.status;
+            throw error;
+          }
+          const total = Number(res.headers.get('content-length') || 0);
+          let got = 0;
+          const file = fs.createWriteStream(tmp);
+          for await (const chunk of res.body) {
+            got += chunk.length;
+            file.write(chunk);
+            if (total) onProgress(Math.min(99, Math.round((got / total) * 90)), '下载中');
+          }
+          await new Promise((r) => file.end(r));
+          onProgress(96, '解压中');
+          await new Promise((resolve, reject) => {
+            const p = spawn('tar', ['-xf', tmp, '-C', destDir], { stdio: 'ignore' });
+            p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`解压失败（exit ${code}）`))));
+            p.on('error', reject);
+          });
+          await fsp.rm(tmp, { force: true });
+          return;
+        } catch (error) {
+          lastError = error;
+          try { await fsp.rm(tmp, { force: true }); } catch {}
+          // 4xx 不是网络抖动，重试没意义；5xx/429/连接超时才重试。
+          const status = Number(error?.status) || 0;
+          if (status && status < 500 && status !== 429) break;
+          if (attempt < 1) await new Promise((r) => setTimeout(r, 800));
+        }
+      }
     }
-    await new Promise((r) => file.end(r));
-    onProgress(99, '解压中');
-    await new Promise((resolve, reject) => {
-      const p = spawn('tar', ['-xf', tmp, '-C', destDir], { stdio: 'ignore' });
-      p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`解压失败（exit ${code}）`))));
-      p.on('error', reject);
-    });
-    await fsp.rm(tmp, { force: true });
-    return;
+    const cause = lastError?.cause?.code || lastError?.code || lastError?.name || '';
+    const detail = cause ? `${lastError?.message || '下载失败'}（${cause}）` : (lastError?.message || '下载失败');
+    const error = new Error(`下载安装包失败：${detail}。检查网络、代理或换一个下载镜像后重试。`);
+    error.cause = lastError;
+    throw error;
   }
 
   // 本地目录 / 本地 zip
@@ -741,13 +780,13 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
         const localDir = /^https?:/i.test(src) ? null : path.resolve(src || '.');
         if (localDir && !(await exists(localDir))) {
           if (!m.repo) throw new Error(`安装源不存在：${src}（这个包没有配置在线安装地址）`);
-          src = `https://github.com/${m.repo}/archive/refs/heads/main.zip`;
+          src = `https://codeload.github.com/${m.repo}/zip/refs/heads/main`;
           rec.phase = '改用在线源';
         }
         await fetchToLocal(cfg, id, src, dir, (p, phase) => {
           rec.progress = p;
           rec.phase = phase;
-        });
+        }, { mirror });
         await flattenSingleDir(dir);
         // GitHub archive 解压出来可能带只读属性，后面复制 config / 拉模型会写不进去。
         try {
@@ -771,7 +810,8 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
             throw new Error(`安装包里缺少 ${script}（可能下载到了不完整的版本），请重试或先删掉 ${dir} 再装`);
           }
           rec.phase = script.includes('bootstrap') ? '安装 Python 依赖（首次 5~40 分钟）' : '拉取模型（可能几分钟）';
-          rec.progress = 99;
+          rec.transferPct = null;
+          rec.progress = 90;
           const okPost = await new Promise((resolve) => {
             const env = { ...process.env };
             if (mirror) env.SURFCORE_GH_MIRROR = String(mirror);
@@ -781,7 +821,10 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
             });
             rec.child = child;
             let out = '';
-            const timer = setTimeout(() => { try { child.kill(); } catch {} resolve(false); }, 45 * 60_000);
+            // 1.84GB 在国内 0.2~2MB/s 需要 30~150 分钟；45 分钟必然误杀。
+            // 卡死由包内 4 分钟无进展看门狗负责，这里只防脚本永久不退。
+            const capMs = Math.max(45 * 60_000, Number(m.postInstallTimeoutMs) || 3 * 60 * 60_000);
+            const timer = setTimeout(() => { try { child.kill(); } catch {} resolve(false); }, capMs);
             const onChunk = (d) => {
               const text = String(d);
               out = (out + text).slice(-4000); rec.log = out;
@@ -795,8 +838,9 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
               const m2 = /(\d{1,3})\s*%/.exec(text);
               if (m2) {
                 const pct = Math.min(100, Math.max(0, Number(m2[1])));
+                rec.transferPct = pct;
                 rec.progress = Math.min(99, Math.round(90 + pct * 0.09));
-                rec.phase = `${script.includes('bootstrap') ? '安装依赖' : '拉取模型'} ${pct}%`;
+                rec.phase = script.includes('bootstrap') ? '安装依赖' : '拉取模型';
               }
             };
             child.stdout?.on('data', onChunk);
@@ -909,21 +953,50 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
       }
     }
 
+    const direct = m.directStart && typeof m.directStart === 'object' ? m.directStart : null;
     const script = path.join(dir, m.startScript || 'run.bat');
-    if (!(await exists(script))) throw new Error(`包内缺少启动脚本：${m.startScript}`);
-    // stdio 必须给 stdin 一个空句柄：脚本里若还有 pause，'ignore' 会让它卡死不退。
-    // stderr 收进 rec.log，超时后杀进程树，避免留下僵尸。
-    const child = spawn('cmd', ['/c', script], {
-      cwd: dir,
-      detached: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: true,
-    });
-    let startLog = '';
-    child.stderr?.on('data', (d) => { startLog = (startLog + String(d)).slice(-2000); });
+    if (!direct && !(await exists(script))) throw new Error(`包内缺少启动脚本：${m.startScript}`);
+    const logFile = path.join(dir, 'logs', 'startup.log');
+    try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.writeFileSync(logFile, ''); } catch {}
+    // 云端包直接拉 python，不经过 run.bat 的 start；否则 Python 的 stderr 不在桥接管道里，
+    // 只能看到 cmd 的一小段输出，超时后永远不知道真正原因。
+    let child;
+    if (direct) {
+      const python = path.join(dir, String(direct.python || '.venv/Scripts/python.exe'));
+      const args = Array.isArray(direct.args) ? direct.args.map(String) : ['-m', 'voxd', '--config', 'config.toml'];
+      child = spawn(python, args, {
+        cwd: dir,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      });
+    } else {
+      child = spawn('cmd', ['/c', script], {
+        cwd: dir,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      });
+    }
+    const chunks = [];
+    let chunkBytes = 0;
+    let exitCode = null;
+    const collect = (d) => {
+      const b = Buffer.isBuffer(d) ? d : Buffer.from(String(d));
+      if (chunkBytes >= 8000) return;
+      const add = b.subarray(0, Math.max(0, 8000 - chunkBytes));
+      chunks.push(add);
+      chunkBytes += add.length;
+    };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    child.on('error', (error) => { exitCode = -1; collect(Buffer.from(`spawn error: ${error?.message ?? error}\n`)); });
+    child.on('exit', (code) => { exitCode = code; });
     child.unref();
 
-    // 最多等 60 秒（本地包要加载模型）
+    // 最多等 60 秒（本地包要加载模型）；云端直连通常 1~3 秒。
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 1000));
       if (await probePort(m.port)) {
@@ -934,8 +1007,10 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
           ...(m.enginePort && !engineUp ? { warning: m.engineWarmupHint } : {}),
         };
       }
+      // 进程已经退出且端口没起来：没必要再傻等，马上把真实报错带回去。
+      if (exitCode !== null) break;
     }
-    // 超时：把这次拉起的进程树杀掉（cmd + python 子进程），别留占端口的僵尸。
+    // 超时/早退：把这次拉起的进程树杀掉（cmd + python 子进程），别留占端口的僵尸。
     try {
       if (child.pid) {
         await new Promise((resolve) => {
@@ -944,9 +1019,21 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
         });
       }
     } catch {}
+    const logText = decodeProcessLog(Buffer.concat(chunks)).trim();
+    const logTail = logText.slice(-1200);
+    try { fs.writeFileSync(logFile, `${logText}\n`, 'utf8'); } catch {}
+    const timedOut = exitCode === null;
     return {
-      ok: false, port: m.port,
-      error: `启动超时（60 秒内端口没起来）${startLog ? `；脚本输出：${startLog.slice(-300)}` : ''}`,
+      ok: false,
+      port: m.port,
+      code: timedOut ? 'VOICE_START_TIMEOUT' : 'VOICE_START_EXITED',
+      error: `${timedOut ? '启动超时（60 秒内端口没起来）' : `启动失败（进程已退出，exit ${exitCode}）`}`
+        + `${logTail ? `；脚本输出：${logTail}` : ''}；完整日志：${logFile}`,
+      hint: timedOut
+        ? '看完整日志里的最后一行；常见原因是端口被占用、.venv 依赖缺失或模型路径不对'
+        : '进程已经退出：看完整日志里的 Python traceback，按第一行错误修复；端口被占用时先停止旧进程',
+      logFile,
+      logTail,
     };
   }
 

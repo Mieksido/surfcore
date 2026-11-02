@@ -14,6 +14,453 @@
 
 ## 待发布
 
+### 批次 2026-11-02 14:50 · 本地语音包下载/安装
+<!-- release-batch: start=2026-11-02T14:40+08:00 end=2026-11-02T14:50+08:00 commits=4d2d7c3 -->
+
+**覆盖提交**：`4d2d7c3`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 代码 zip 回退 `github.com` → `codeload.github.com`；
+- fetch 30s 超时、镜像优先、2 次重试、cause.code；
+- postInstall 45 分钟 → 默认 3 小时；
+- 进度拆分为 `download %` 与 `total %`；
+- 失败卡提供「继续下载 / 重试安装」，保留 `.part`。
+
+**没做**：
+- 语音包内 `fetch-models.mjs` 的 `curl --retry` 截断 `.part` 属于语音包侧，需要新包；
+- Python 3.12 探测/自动安装未改。
+
+**验证**：
+```text
+node scripts/test-voice-packs-default.mjs
+node scripts/test-voice-gui.mjs
+node scripts/test-voice-system.mjs
+node scripts/test-voice-cloud-credentials.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / 桥接。
+
+**风险**：
+- codeload 也可能被限制；
+- 3 小时超时可能让真正卡死的安装占更久；
+- 失败后的持久状态未落盘，只修了失败当下的重试入口。
+
+**case**：`docs/cases/2026-11-02-voice-local-install-download.md`
+
+---
+
+### 批次 2026-11-02 14:30 · 云端语音包启动诊断
+<!-- release-batch: start=2026-11-02T14:20+08:00 end=2026-11-02T14:30+08:00 commits=c415201 -->
+
+**覆盖提交**：`c415201`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 云端包直接拉 Python，去掉 `run.bat` 的 `start`；
+- 同时收 stdout/stderr，GBK 自动回退解码；
+- 进程早退立即报 `VOICE_START_EXITED`；
+- 写 `logs/startup.log`，错误带日志路径/hint；
+- 云端包体积提示 60MB → 约 280MB。
+
+**验证**：
+```text
+node scripts/test-voice-packs-default.mjs
+node scripts/test-voice-cloud-credentials.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / 桥接。
+
+**风险**：
+- 云端不再走用户改过的 run.bat；
+- 依赖坏了仍会失败，但现在能看到真实报错；
+- 日志可能含本机路径，回显前要脱敏。
+
+**case**：`docs/cases/2026-11-02-voice-start-diagnosis.md`
+
+---
+
+### 批次 2026-11-02 14:10 · 模型与思考强度可调
+<!-- release-batch: start=2026-11-02T14:00+08:00 end=2026-11-02T14:10+08:00 commits=7e70fe8 -->
+
+**覆盖提交**：`7e70fe8`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新设置页「模型与思考强度」卡：low/high/max 下拉，low 最省；
+- 模型下拉来自 DSH 目录，带图片能力/价格档位/全局副作用提示；
+- 新增 POST `/api/dsh/model`，校验 provider/model/effort；
+- 目录不可用时只允许调强度；
+- 移除高级设置三手填项。
+
+**验证**：
+```text
+node scripts/test-model-options.mjs
+node scripts/test-audit-bridge.mjs
+node plugins/surfcore/scripts/test-client-contract.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：不需要；保存后下一条消息生效。
+
+**风险**：
+- 切模型会同时改 DSH 全局默认模型；
+- 纯文本模型图片走文字兜底；
+- 不同模型思考档位/价格不同；
+- 目录不可用时不能换模型。
+
+**case**：`docs/cases/2026-11-02-model-reasoning-options.md`
+
+---
+
+### 批次 2026-11-02 13:50 · 设置页保存按钮 UX
+<!-- release-batch: start=2026-11-02T13:40+08:00 end=2026-11-02T13:50+08:00 commits=c5f1c71 -->
+
+**覆盖提交**：`c5f1c71`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 主按钮「保存并生效」（保存 + 重启 QQ 桥接），次按钮「仅保存（不重启）」；
+- 成功提示改固定 toast；
+- 设置页/弹窗固定底栏，群管理保存上移到底栏；
+- 管理员卡片局部保存；
+- 按钮对比度和禁用态调整。
+
+**验证**：
+```text
+node plugins/surfcore/scripts/test-client-contract.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / 重新加载插件。
+
+**风险**：
+- 「保存并生效」会重启 QQ 桥接，可能打断进行中的回合；
+- 群分层和全局保存仍是两个端点；
+- 没有真实浏览器截图回归。
+
+**case**：`docs/cases/2026-11-02-save-button-ux.md`
+
+---
+
+### 批次 2026-11-02 13:30 · QQ 群聊 @ 识别
+<!-- release-batch: start=2026-11-02T13:20+08:00 end=2026-11-02T13:30+08:00 commits=aa8dd2e,871c2b7 -->
+
+**覆盖提交**：`aa8dd2e`, `871c2b7`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 原始 at 段判断，不再依赖渲染后的群名片/昵称；
+- @机器人 + @别人时仍然唤醒；
+- `self_id` 缺失回退登录 `selfUserId`；
+- 兼容 CQ 字符串形式的 at；
+- 引用自己判断同步回退。
+
+**验证**：
+```text
+node scripts/test-qq-at.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / QQ 桥接。
+
+**风险**：
+- @机器人 + @别人现在会唤醒，可能增加群回合；
+- @all 仍不唤醒；
+- 如果 SnowLuma 不投递群消息，代码修了也没用，需要先看入站日志。
+
+**case**：`docs/cases/2026-11-02-qq-group-at-detection.md`
+
+---
+
+### 批次 2026-11-02 12:40 · B站监听 TDZ / 时间窗 / 群错误
+<!-- release-batch: start=2026-11-02T12:30+08:00 end=2026-11-02T12:40+08:00 commits=3c99c54 -->
+
+**覆盖提交**：`3c99c54`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `listenTick` 内层 `L` 改名 `LIM`，修 TDZ；
+- 新增共享 `time-window.mjs`：跨午夜、全角冒号/数字、非法时间不再静默变 0；
+- 保存作息窗口时非法项丢弃并 warning；
+- agent 错误只发私聊；
+- 唤醒重置保留用户显式批量窗口；
+- ZIP EOCD 预检 + 截断包换镜像；
+- 更新检查区分 unknown 和 0 更新。
+
+**验证**：
+```text
+node scripts/test-time-window.mjs
+node scripts/test-night-schedule.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 后生效。
+
+**风险**：
+- 监听修好后夜间 API 调用会增加；
+- 全角/非法窗口旧配置会被归一或丢弃；
+- `start===end` 视为非法；
+- 群聊不再显示 agent 错误，需看日志；
+- 跨大版本更新仍建议手动覆盖。
+
+**case**：`docs/cases/2026-11-02-bili-listen-time-window.md`
+
+---
+
+### 批次 2026-11-02 12:20 · B站视频缓存轮转
+<!-- release-batch: start=2026-11-02T12:10+08:00 end=2026-11-02T12:20+08:00 commits=0313d0d -->
+
+**覆盖提交**：`0313d0d`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `shots-cache.mjs`：按天/总量清理 `video/covers/subs`；
+- `watch-video` 默认删原片，`--keep-mp4` 保留；`debrief --substrip` 完成后删；
+- 目录支持 `DSH_HOME` / `shots.dir`；新增设置页缓存项；
+- `.frames-*` 改为 `finally` 清理；命令输出缓存统计。
+
+**验证**：
+```text
+node scripts/test-shots-cache.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / 重新加载插件。
+
+**风险**：
+- 7 天保留可能删用户想留的片段，可调大或另存；
+- 总量上限会从最旧开始清，默认 0 不启用；
+- 多角色仍共用 shots，未按角色隔离；
+- 自定义 `outDir` / `--out` 不参与默认清理。
+
+**case**：`docs/cases/2026-11-02-bili-shots-cache-retention.md`
+
+---
+
+### 批次 2026-11-02 12:00 · 更新幂等 + 阶段进度
+<!-- release-batch: start=2026-11-02T11:50+08:00 end=2026-11-02T12:00+08:00 commits=12c02e8 -->
+
+**覆盖提交**：`12c02e8`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- staged 更新用下载前目标键 dismiss，不再写 `vnull`；
+- 排队中的组件在重启前不算 pending；弹窗内完成下载后提示重启 DSH；
+- 进度阶段：download/extract/verify/backup/install/pending/failed；
+- 下载完成后保留已下载/总量/百分比/速度；release 下载也上报进度。
+
+**验证**：
+```text
+node plugins/surfcore/scripts/test-updates.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 后生效。
+
+**风险**：
+- 解压阶段没有真实字节进度，只显示阶段 + 下载统计；
+- pending 文件异常时可能隐藏更新提示，但 `.failed` 仍显示失败；
+- 没有真实慢速网络 live 测试。
+
+**case**：`docs/cases/2026-11-02-update-idempotency-progress.md`
+
+---
+
+### 批次 2026-11-02 11:45 · QQ 设置连续保存 CONFIG_STALE
+<!-- release-batch: start=2026-11-02T11:35+08:00 end=2026-11-02T11:45+08:00 commits=3f81fbc,0f285cd -->
+
+**覆盖提交**：`3f81fbc`, `0f285cd`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `POST /config` 保存成功后返回新 `stamps`；
+- 前端保存成功后同步 `configStamps`；409 仍要求重新读取，不自动套用新戳；
+- 例行“需要重启桥接”改 `notes`，warning 不再写进错误区；
+- 新增连续保存/stamps 回归。
+
+**验证**：
+```text
+node scripts/test-config-save-stamps.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / 重载插件。
+
+**风险**：
+- stamps 必须在所有写操作/桥接重启之后算；
+- 409 保护保留；真实并发改动仍会拒绝覆盖；
+- 没有真实 UI 双击自动化测试。
+
+**case**：`docs/cases/2026-11-02-qq-settings-save-stamps.md`
+
+---
+
+### 批次 2026-11-02 11:25 · DSH profile 安装事务回滚
+<!-- release-batch: start=2026-11-02T11:15+08:00 end=2026-11-02T11:25+08:00 commits=2711e17 -->
+
+**覆盖提交**：`2711e17`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `setup-dsh` 写 profile `package.json` 前自动备份，改为原子写；
+- 安装前记录 bundles/dependencies，安装后核对；
+- DSH reconcile 裁剪 bundles / 改写 patch 时，自动恢复备份并非零退出；
+- 安装失败/超时也回滚，不再只打日志。
+
+**验证**：
+```text
+node scripts/test-audit-setup.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：不需要重启；下次运行 setup 生效。
+
+**风险**：
+- 回滚只恢复 profile 两个文件，不恢复 `node_modules` / `pnpm-lock.yaml`；
+- 安装期间手工改 profile 可能被回滚覆盖（备份保留）；
+- 不改变 `QQ_BRIDGE_SKIP_DSH_INSTALL=1` 离线语义。
+
+**case**：`docs/cases/2026-11-02-dsh-profile-install-rollback.md`
+
+---
+
+### 批次 2026-11-02 11:10 · 人格 tone 层回落核心修复
+<!-- release-batch: start=2026-11-02T11:00+08:00 end=2026-11-02T11:10+08:00 commits=a8ebcba -->
+
+**覆盖提交**：`a8ebcba`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `readPersonaLayerText` 增加 `kind === 'tone'` 分支；
+- 未知人格层打印 warning 后回落核心，不再静默；
+- 新增临时 DSH_HOME/真实文件读取测试，断言 tone 读到 `persona.tone.md`。
+
+**验证**：
+```text
+node scripts/test-persona-layer-read.mjs
+node scripts/test-persona-layers.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：DSH 插件 / 桥接。
+
+**风险**：
+- 有 tone 文件的角色提示词会变短、语气真正生效，说话风格可能感觉变了；
+- 无 tone 文件旧角色行为不变；
+- tone 文件读取异常仍只返回空串，没有单独报错。
+
+**case**：`docs/cases/2026-11-02-persona-tone-core-fallback.md`
+
+---
+
+### 批次 2026-11-02 10:55 · 人格卡智能拆分 layer 未定义
+<!-- release-batch: start=2026-11-02T10:45+08:00 end=2026-11-02T10:55+08:00 commits=87b06f1 -->
+
+**覆盖提交**：`87b06f1`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 删除 `handlePersonaClassify` 里误引用保存函数的 `layer`；
+- 拆分发送完整草稿（core/tone/daily/scenes），空输入前端直接提示；
+- 内部错误 `PERSONA_CLASSIFY_INTERNAL`，不再说“检查人格卡内容”；
+- 补静态/接口回归。
+
+**验证**：
+```text
+node scripts/test-persona-classify.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：DSH 插件。
+
+**风险**：
+- 完整草稿更长，受 classifier 64KB 上限；
+- 拆分仍只出草稿，不自动写盘；
+- 没有真实模型 live 测试。
+
+**case**：`docs/cases/2026-11-02-persona-classify-layer.md`
+
+---
+
+### 批次 2026-11-02 10:35 · 商城表情/非多模态图片兜底
+<!-- release-batch: start=2026-11-02T10:20+08:00 end=2026-11-02T10:35+08:00 commits=2be3ced,68fada5 -->
+
+**覆盖提交**：`2be3ced`, `68fada5`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `emojiCdnCandidates` 增加 p.qpic 候选（需 uin/resId），gxh 保留最后一跳；
+- 消息段保留 `uin/resId`；
+- 取图失败/非多模态用 `summary` + 本地表情库标签转文字；
+- 新增 `socialV2.vision.imageInput` auto/true/false；
+- `/sticker-image`、`/self-image` 与 MCP 工具支持文字兜底。
+
+**验证**：
+```text
+node scripts/test-media-fallback.mjs
+node scripts/test-media-search.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：DSH（bridge/配置）。
+
+**风险**：
+- 第三方目录外模型 auto 默认按“不支持”走文字兜底；确认支持图片可强制 true；
+- p.qpic 依赖 uin/resId，缺失时不盲拼；
+- 无真实商城表情 live 测试；
+- 文字标签可能含对方可控内容，已 sanitize/限长。
+
+**case**：`docs/cases/2026-11-02-emoji-market-fallback.md`
+
+---
+
+### 批次 2026-11-02 10:10 · 备份轮转 keep=40 修复
+<!-- release-batch: start=2026-11-02T09:55+08:00 end=2026-11-02T10:10+08:00 commits=0b82105 -->
+
+**覆盖提交**：`0b82105`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `pruneBackups` 改为先剥扩展名、再用允许横线时间戳的正则解析来源；
+- 无法识别的文件跳过，不误删；
+- `backupGroupOf` 纯函数 + 真实文件名测试；
+- `pruneBackups` 返回 removed/errors，失败告警；`backupFile` 失败不再静默。
+
+**验证**：
+```text
+node scripts/test-backup-prune.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：DSH 插件；下一次写备份即触发清理。
+
+**风险**：
+- 旧目录会一次性回收，先确认每组保留 40 份符合预期；
+- 仍无备份总大小上限/压缩；
+- 同毫秒同名覆盖未单独处理；
+- `keep=40` 仍是硬编码默认，没有 UI 配置。
+
+**case**：`docs/cases/2026-11-02-backup-prune-regex.md`
+
+---
+
 ### 批次 2026-11-02 00:15 · 记忆卡最近优先
 <!-- release-batch: start=2026-11-02T00:05+08:00 end=2026-11-02T00:15+08:00 commits=90f3eba -->
 

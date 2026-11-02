@@ -455,4 +455,17 @@ assert.ok(source.includes("canRepairDsh"), "L2 弹窗遇到 dsh-profile-mcp-miss
 assert.ok(source.includes("update-channel"), "检查更新下面要有 main/dev 单选");
 assert.ok(source.includes("main（正式版") && source.includes("dev（测试版"), "两个通道文案");
 assert.ok(source.includes("switchUpdateChannel"), "切通道要调 set-channel");
+// ── 保存按钮/提示（2026-11-02）──
+assert.ok(source.includes("保存并生效"), "主保存按钮必须明确“保存并生效”");
+assert.ok(source.includes("仅保存（不重启）"), "必须保留明确的“仅保存”次按钮");
+assert.ok(source.includes('className: "qbw-toast"'), "保存成功提示必须是固定 toast");
+assert.ok(source.includes("qbw-settings-foot"), "弹窗保存按钮必须在固定底栏");
+assert.ok(source.includes("onSaveReady"), "群管理保存要交给弹窗底栏");
+assert.ok(source.includes("保存管理员并重启桥接"), "管理员卡片要有局部保存按钮");
+// ── 模型与思考强度（2026-11-02）──
+assert.ok(source.includes("function ModelSettingsCard"), "设置页要有模型/思考强度卡");
+assert.ok(source.includes("dshModelSelect"), "模型必须是目录驱动的下拉框");
+assert.ok(source.includes("dshEffortSelect"), "思考强度必须是下拉框");
+assert.ok(!source.includes("low / medium / high / max"), "不能再提示后端不支持的 medium");
+assert.ok(source.includes("会同时修改 DSH 全局默认模型"), "模型切换必须提示全局副作用");
 console.log('client contract tests OK');

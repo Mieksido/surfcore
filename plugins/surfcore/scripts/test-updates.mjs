@@ -140,6 +140,9 @@ try {
     ok(git(['rev-parse', 'HEAD'], work) === headBefore, '宿主进程内不改工作区（更新排队到退出后）');
     ok(result.results[0]?.staged === true, 'git 更新标记为 staged（退出后应用）');
     ok(result.restartRequired === true, '提示需要重启');
+    const afterStage = await svc.check({ fetch: true });
+    ok(afterStage.pendingCount === 0, 'staged 后再次检查不再把同一更新当 pending');
+    ok(afterStage.lastApply?.status === 'pending_restart', 'staged 状态显示为等待重启');
 
     // blocked 的组件不动
     const blockedSvc = createUpdatesService({
@@ -258,6 +261,14 @@ try {
     const svc = createUpdatesService({ stateDir, components: () => [{ id: 'x', name: 'X', dir: plain }] });
     const st = await svc.check({ fetch: false });
     ok(st.pendingCount === 0, '不可查的组件不会算进 pending');
+  }
+  {
+    const updatesSrc = fs.readFileSync(new URL('../lib/updates.js', import.meta.url), 'utf8');
+    const clientSrc = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+    ok(updatesSrc.includes('stagedTargets'), 'staged 用下载前捕获的目标键，不能从 no-fetch 结果算 vnull');
+    ok(updatesSrc.includes("phase: 'extract'") && updatesSrc.includes("'pending'"), '下载/解压/排队阶段可上报');
+    ok(clientSrc.includes('phaseText') && clientSrc.includes('onStaged') && clientSrc.includes('dl.phase'),
+      '进度条保留下载统计并区分阶段，staged 后弹重启提示');
   }
 } finally {
   try { fs.rmSync(base, { recursive: true, force: true }); } catch {}

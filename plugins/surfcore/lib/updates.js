@@ -790,7 +790,7 @@ async function fetchJson(url, { timeout = 15_000, maxBytes = 512 * 1024 } = {}) 
   });
 }
 
-async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 * 1024 } = {}) {
+async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 * 1024, onProgress = null } = {}) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const local = localPathOf(url);
   if (local) {
@@ -803,19 +803,31 @@ async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 
     return { ok: false, error: String(error?.message ?? error) };
   }
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     const req = mod.get(url, { timeout, headers: { 'user-agent': 'surfcore-update-download' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        resolve(downloadTo(new URL(res.headers.location, url).toString(), dest, { timeout, maxBytes }));
+        resolve(downloadTo(new URL(res.headers.location, url).toString(), dest, { timeout, maxBytes, onProgress }));
         return;
       }
       if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, error: `HTTP ${res.statusCode}` }); return; }
       const out = fs.createWriteStream(dest);
       let size = 0;
+      const total = Number(res.headers['content-length']) || 0;
       res.on('data', (chunk) => {
         size += chunk.length;
         if (size > maxBytes) { req.destroy(); res.destroy(); out.destroy(); resolve({ ok: false, error: '安装包太大' }); return; }
         out.write(chunk);
+        if (typeof onProgress === 'function') {
+          const elapsed = Math.max(1, Date.now() - startedAt);
+          try {
+            onProgress({
+              active: true, phase: 'download', url, bytes: size, total,
+              percent: total ? Math.min(100, Math.round((size / total) * 100)) : null,
+              speedBps: Math.round(size / (elapsed / 1000)), startedAt,
+            });
+          } catch {}
+        }
       });
       res.on('end', () => out.end(() => resolve({ ok: true, bytes: size })));
       res.on('error', (error) => { out.destroy(); resolve({ ok: false, error: String(error?.message ?? error) }); });
@@ -830,6 +842,25 @@ function sha256File(file) {
     return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   } catch {
     return '';
+  }
+}
+
+/** 基础 ZIP 完整性预检：HTTP 200 但被截断的包通常没有 EOCD。 */
+function hasZipEocd(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      if (size < 22) return false;
+      const readSize = Math.min(65_557, size);
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, size - readSize);
+      return buf.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
   }
 }
 
@@ -927,13 +958,13 @@ export async function inspectReleaseComponent(component, { fetch = true } = {}) 
 }
 
 /** 下一份 release 安装包到本机并校验；返回本地路径。 */
-export async function downloadReleaseAsset(component, report, { stateDir, pluginLog = () => {} } = {}) {
+export async function downloadReleaseAsset(component, report, { stateDir, pluginLog = () => {}, onProgress = null } = {}) {
   const asset = report?.asset;
   if (!asset?.url) return { ok: false, error: '清单里没有下载地址' };
   const ext = /\.zip(\?|$)/i.test(asset.url) ? '.zip' : '';
   const dir = path.join(stateDir, 'downloads');
   const dest = path.join(dir, `${String(component.id)}-${String(report.latestVersion ?? 'latest')}${ext}`);
-  const downloaded = await downloadTo(asset.url, dest, { maxBytes: Math.max(asset.size || 0, 400 * 1024 * 1024) });
+  const downloaded = await downloadTo(asset.url, dest, { maxBytes: Math.max(asset.size || 0, 400 * 1024 * 1024), onProgress });
   if (!downloaded.ok) return { ok: false, error: `下载失败：${downloaded.error}` };
   if (asset.sha256) {
     const actual = sha256File(dest);
@@ -1019,8 +1050,18 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 
   function pendingOf(results) {
     const now = Date.now();
+    // 有排队中的更新（等 DSH 退出后应用）时，重启前不要把它再当成“有可用更新”。
+    // 这也兼容旧版误写成 vnull 的 dismissed 记录。
+    const pendingFile = path.join(stateDir, 'updates-pending.json');
+    let queuedComponent = '';
+    try {
+      if (fs.existsSync(pendingFile) && !fs.existsSync(`${pendingFile}.failed`)) {
+        queuedComponent = String(JSON.parse(fs.readFileSync(pendingFile, 'utf8'))?.component ?? '');
+      }
+    } catch {}
     return (results ?? []).filter((item) => {
       if (!(item?.available && item.updateAvailable)) return false;
+      if (queuedComponent && String(item.id) === queuedComponent) return false;
       if (item.blocked) return false; // 本地有改动/分叉/缺证据，更新不了，别反复弹
       if (!(item.installedVersion || item.local)) return false;
       const target = targetKeyOf(item);
@@ -1175,6 +1216,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   function status() {
     const results = state.results ?? [];
     const pending = pendingOf(results);
+    const unknown = results.filter((row) => row && !row.available && row.status === 'unknown' && !row.blocked);
     return {
       ok: true,
       checking,
@@ -1184,6 +1226,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       results,
       pending,
       pendingCount: pending.length,
+      unknown,
+      unknownCount: unknown.length,
       lastApply: state.lastApplyFailure ?? readLastApply(),
       channel: channel() === 'dev' ? 'dev' : 'stable',
       download: downloadProgress,
@@ -1241,7 +1285,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       }
       state = { ...state, results, lastCheckAt: now(), lastError: '' };
       persist();
-      pluginLog(`[updates] 检查完成：${pendingOf(results).length} 个组件有更新`);
+      const pendingCount = pendingOf(results).length;
+      const unknownCount = results.filter((row) => row && !row.available && row.status === 'unknown' && !row.blocked).length;
+      pluginLog(`[updates] 检查完成：${pendingCount} 个组件有更新${unknownCount ? `；${unknownCount} 个无法判定` : ''}`);
       return status();
     } catch (error) {
       // 整次检查失败：写清原因，界面必须显示"检查失败"，不能显示"最新"
@@ -1405,7 +1451,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             continue;
           }
           const totalBytes = Number(r.headers.get('content-length')) || 0;
-          downloadProgress = { active: true, url: candidate, bytes: 0, total: totalBytes, percent: totalBytes ? 0 : null, speedBps: 0, startedAt };
+          downloadProgress = { active: true, phase: 'download', url: candidate, bytes: 0, total: totalBytes, percent: totalBytes ? 0 : null, speedBps: 0, startedAt };
           fh = fs.openSync(zipFile, 'w');
           let bytes = 0;
           while (true) {
@@ -1424,7 +1470,14 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             idleTimer = setTimeout(() => controller.abort(), idleMs); // 有数据就续命
           }
           fs.closeSync(fh); fh = null;
-          downloadProgress = { ...downloadProgress, active: false, bytes, percent: downloadProgress?.percent ?? null };
+          downloadProgress = { ...downloadProgress, active: false, phase: 'extract', bytes, percent: totalBytes ? 100 : downloadProgress?.percent ?? null };
+          // HTTP 200 不代表包完整：截断的 zip 没有 EOCD。这里先预检，
+          // 失败就换下一个镜像，不要等 Expand-Archive 才报“包坏了”。
+          if (!hasZipEocd(zipFile)) {
+            tried.push({ url: candidate, outcome: 'bad-zip' });
+            try { fs.rmSync(zipFile, { force: true }); } catch {}
+            continue;
+          }
           downloaded = { bytes, elapsedMs: Date.now() - startedAt, url: candidate };
           break;
         } catch (error) {
@@ -1440,8 +1493,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       }
 
       if (!downloaded) {
-        downloadProgress = { ...(downloadProgress ?? {}), active: false };
+        downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };
         const last = tried[tried.length - 1] ?? {};
+        const badZip = tried.some((x) => x.outcome === 'bad-zip');
         const httpStatus = /^http-(\d+)$/.exec(String(last.outcome || ''))?.[1];
         const info = classifyDownloadFailure({
           aborted: tried.some((x) => x.outcome === 'timeout'),
@@ -1450,18 +1504,21 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           error: last.outcome,
         });
         return fail({
-          ok: false, status: 'failed', stage: 'download', code: info.code,
-          reason: info.code === 'download.timeout'
+          ok: false, status: 'failed', stage: badZip ? 'verify' : 'download', code: badZip ? 'verify.unzip-failed' : info.code,
+          reason: badZip
+            ? '下载完成但 ZIP 不完整（没有 EOCD/可能被截断），已尝试其他镜像仍失败'
+            : info.code === 'download.timeout'
             ? `下载超时：${Math.round(idleMs / 1000)} 秒没有新数据（或超过总上限）`
             : info.code === 'download.write-failed'
               ? `下载内容写入失败：磁盘空间/目录权限（${String(last.outcome).slice(0, 80)}）`
               : `下载失败：${String(last.outcome ?? '所有地址都不可用').slice(0, 160)}`,
-          hint: info.hint,
-          retryable: info.code !== 'download.write-failed',
+          hint: badZip ? '网络/代理可能截断了大文件：稍后重试，或到 Release 页手动下载 zip 覆盖' : info.hint,
+          retryable: true,
           diagnostics: { tried },
         });
       }
       pluginLog(`[updates] 下载完成：${(downloaded.bytes / 1024 / 1024).toFixed(2)} MB，${(downloaded.elapsedMs / 1000).toFixed(1)} 秒（${downloaded.url}）`);
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'extract' };
       try {
         await new Promise((resolve, reject) => {
           execFile('powershell', ['-NoProfile', '-Command',
@@ -1469,6 +1526,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           { windowsHide: true, timeout: 120_000 }, (error) => (error ? reject(error) : resolve()));
         });
       } catch (error) {
+        downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };
         return fail({
           ok: false, status: 'failed', stage: 'verify', code: 'verify.unzip-failed',
           reason: `安装包解压失败：${String(error?.message ?? error).slice(0, 160)}`,
@@ -1477,6 +1535,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         });
       }
 
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'verify' };
       const entries = fs.readdirSync(stagingRoot, { withFileTypes: true }).filter((d) => d.isDirectory() && /^surfcore-/.test(d.name));
       const src = entries.length ? path.join(stagingRoot, entries[0].name) : '';
       if (!src || !fs.existsSync(path.join(src, 'package.json'))) {
@@ -1537,6 +1596,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       }
 
       const txn = `${item.id}-${stamp}`;
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'backup' };
       const backup = backupTarget(dir, plan.overwrite, txn, {
         component: item.id, from: report?.installedVersion ?? '', to: report?.latestVersion ?? '',
         manifest: pkg.manifest.version ?? '',
@@ -1549,12 +1609,14 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         });
       }
 
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'stage' };
       const staged = stageDeferredApply({
         kind: 'zip', component: String(item.id), target: dir, staging: src, to: String(report?.latestVersion ?? ''),
         txn, backup: backup.dir, from: report?.installedVersion ?? '',
         manifest: { version: pkg.manifest.version ?? '', files: Object.keys(pkg.manifest.files).length },
         meta: { version: String(report?.latestVersion ?? ''), sha: String(report?.remoteSha ?? '') },
       });
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: staged.ok ? 'pending' : 'failed' };
       if (!staged.ok) {
         return fail({
           ok: false, status: 'failed', stage: 'stage', code: staged.code ?? 'stage.failed',
@@ -1641,6 +1703,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       await check({ fetch: true });
       const all = list();
       const results = [];
+      const stagedTargets = new Map();
       for (const item of all) {
         if (!wanted.has(String(item.id))) continue;
         const report = (state.results ?? []).find((row) => row.id === item.id);
@@ -1661,14 +1724,24 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         if (report.channel === 'version' || report.channel === 'dev') {
           // dev 构建也是 tag 归档：和稳定版走同一条 zip 流水线（校验/暂存/回滚都复用）。
           const done = await updateFromZip(item, report);
+          if (done?.ok && done.staged) stagedTargets.set(String(item.id), targetKeyOf(report));
           results.push({ id: item.id, ...done });
           continue;
         }
 
         if (report.channel === 'release') {
           // 构建产物型（桌宠）：下 zip → 校验 → 交给组件自己的安装器。
-          const downloaded = await downloadReleaseAsset(item, report, { stateDir, pluginLog });
-          if (!downloaded.ok) { results.push({ id: item.id, ok: false, code: downloaded.code ?? 'download.failed', error: downloaded.error, hint: downloaded.hint ?? '检查网络后重试；持续失败可手动下载安装包' }); continue; }
+          const downloaded = await downloadReleaseAsset(item, report, {
+            stateDir,
+            pluginLog,
+            onProgress: (p) => { downloadProgress = p; },
+          });
+          if (!downloaded.ok) {
+            downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };
+            results.push({ id: item.id, ok: false, code: downloaded.code ?? 'download.failed', error: downloaded.error, hint: downloaded.hint ?? '检查网络后重试；持续失败可手动下载安装包' });
+            continue;
+          }
+          downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'install' };
           if (typeof item.installZip !== 'function') {
             results.push({ id: item.id, ok: false, error: '这个组件没有配置安装器（installZip）' });
             continue;
@@ -1694,6 +1767,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             kind: 'git', component: String(item.id), target: dir,
             branch: String(item.branch || report.branch || 'main'), to: String(report.latest ?? ''),
           });
+          if (staged.ok) stagedTargets.set(String(item.id), targetKeyOf(report));
           pluginLog(`[updates] ${item.id} 已排队 git 更新，等 DSH 退出后执行（pid=${staged.pid ?? '?'}）`);
           results.push({
             id: item.id, ok: true, staged: true, needRestart: true,
@@ -1734,15 +1808,24 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         });
         continue;
       }
-      // 更新完再体检一次，让界面拿到最新状态
-      await check({ fetch: false });
+      // 只有“已经真正落地”的组件才需要重新拉远端校准；staged 组件还没覆盖文件，
+      // 这里绝不能做 no-fetch 检查（它会把 latestVersion 洗成 null，dismiss 再次写成 vnull）。
+      if (results.some((row) => row.ok && !row.staged)) {
+        await check({ fetch: true });
+      }
       // 已排队（staged）的组件：记成"已处理"，重启前不再弹同一个提醒。
       // 以前不记账 → 用户点了更新、还没重启，下次检查又弹一遍（2026-10-28 反馈）。
       try {
         for (const row of results) {
           if (!row.ok || !row.staged) continue;
-          const report = (state.results ?? []).find((x) => x.id === row.id);
-          const key = report?.remote ?? `v${report?.latestVersion ?? ''}`;
+          // 用下载前捕获的目标键；最后的 check({fetch:false}) 会把 latestVersion 洗成 null，
+          // 不能再从它算 key（否则又写成 vnull，重启前重复弹 update）。
+          const key = stagedTargets.get(String(row.id))
+            ?? (() => {
+              const report = (state.results ?? []).find((x) => x.id === row.id);
+              if (!report) return '';
+              return report.remote ?? (report.latestVersion ? `v${report.latestVersion}` : '');
+            })();
           if (key) state.dismissed[row.id] = key;
         }
         persist();

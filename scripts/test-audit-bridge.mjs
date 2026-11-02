@@ -361,7 +361,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       ['POST', '/api/roles/rename'], ['POST', '/api/roles/delete'],
       ['GET', '/api/preset/sim-prompt'], ['POST', '/api/preset/sim-prompt'],
       ['GET', '/api/preset/sim-prompt/backups'], ['POST', '/api/preset/sim-prompt/restore'],
-      ['GET', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
+      ['GET', '/api/dsh/model'], ['POST', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
       ['GET', '/api/whitelist'], ['POST', '/api/whitelist'], ['POST', '/api/restart'],
       ['POST', '/api/console/token'], ['GET', '/api/role'], ['POST', '/api/role'],
     ];
@@ -380,6 +380,12 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     // 同一批管理端点，管理员（仅控制台令牌）应可正常访问
     const adminOk = await call('/api/dsh/model', 'GET', adminOnly);
     assert.equal(adminOk.status, 200, '管理员应能访问 /api/dsh/model');
+    const adminJson = JSON.parse(adminOk.body || '{}');
+    assert.ok(Array.isArray(adminJson.models), '模型目录接口必须返回 models 数组（目录不可用也要是空数组）');
+    assert.ok(Array.isArray(adminJson.providers), '模型目录接口必须返回 providers 数组');
+    const badModel = await call('/api/dsh/model', 'POST', adminOnly, {});
+    assert.equal(badModel.status, 400, '缺少 provider/model 必须 400，不能静默保存');
+    assert.equal(JSON.parse(badModel.body || '{}').code, 'MODEL_REQUIRED');
     console.log('PASS agent token cannot reach persona/prompt/effort/whitelist admin endpoints');
   } catch (error) { failures++; console.error('FAIL agent token admin isolation:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }

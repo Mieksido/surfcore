@@ -5,18 +5,32 @@
 
 ---
 
-## 快照：2026-11-02 00:15（dev.8 + 记忆“最近优先”/ wait /B站/语音/黑话）
+## 快照：2026-11-02 14:50（dev.9 + 本地语音下载/语音启动诊断/模型/思考强度/设置保存 UX/QQ 群 @/B站监听/时间窗/缓存/更新/人格/媒体/备份/记忆/语音）
 
 ### 当前事实
 
 - **分支**：`dev` 是集货区；`main` 固定为已发布的 `0.8.6`（`42ec20d`）。
 - **稳定版**：`0.8.6`（Release 标题 `SurfCore v0.8.6`）；`/releases/latest` 仍是它。
-- **dev 构建**：`0.8.6-dev.8`（本地构建提交 `1f621ca`）。
-- **本地 dev HEAD**：`90f3eba fix(memory): prioritize recent records over early initial`；版本 `0.8.6-dev.8`；工作区干净。
-- **测试**：`npm run test:audit` **119/119**；插件测试全绿；清单见 manifest（本次提交后重新生成）。
+- **dev 构建**：`0.8.6-dev.9`（本地构建提交 `d9cdccd`）。
+- **本地 dev HEAD**：`4d2d7c3 fix(voice): make local pack install resumable and honest`；版本 `0.8.6-dev.9`；工作区有另一会话未提交的 docs/README、docs/handoffs、MC 平台/工具测试，与本批无关。
+- **测试**：`npm run test:audit` **130/130**（含另一会话未提交的 MC 测试；本批新增本地语音下载/进度断言）；插件测试全绿；清单见 manifest（本次提交后重新生成）。
 
 ### 本批内容（都在 dev，未进稳定版）
 
+- **本地语音包下载**：codeload 回退；代码 zip 30s 超时/镜像/重试/cause；postInstall 45min→3h；下载% 与总进度分开；失败可继续下载；
+- **语音包启动诊断**：云端直接拉 Python；stdout/stderr 双收；GBK 回退解码；早退 `VOICE_START_EXITED`；`logs/startup.log`；体积 60MB→280MB；
+- **模型与思考强度**：新设置页目录驱动模型下拉 + low/high/max 下拉；POST /api/dsh/model 校验；目录不可用只调强度；
+- **设置保存 UX**：主按钮「保存并生效」；固定 toast；设置页/弹窗固定底栏；群管理保存上移；管理员局部保存；按钮对比度；
+- **QQ 群 @**：原始 at 段判断；@我+@别人仍唤醒；self_id 缺失回退 selfUserId；CQ at 兼容；
+- **B站 监听/时间窗**：listenTick 的 `L` 改名；共享 time-window 支持跨午夜/全角冒号；非法窗口保存提示；群错误只私聊；
+- **B站 视频缓存**：watch 默认删原片；debrief 保留到字幕条后删；shots 按天/总量清理；目录可配；
+- **更新**：staged 用下载前目标键 dismiss；排队中不再 pending；弹窗内提示重启；进度阶段化，保留下载统计；
+- **QQ 设置保存**：保存成功返回并同步 stamps，连续保存不再 CONFIG_STALE；409 的 stamps 可用；warning 不再当 error；
+- **DSH 安装事务**：setup 备份 profile、原子写、安装后核对；DSH reconcile 裁剪 bundles 时自动回滚；
+- **人格语气层**：`readPersonaLayerText('tone')` 真正读 `persona.tone.md`；未知层 warning，不再静默回落核心；
+- **人格卡拆分**：删除 `handlePersonaClassify` 未定义 `layer`；空输入/内部错误/模型不可用分开提示；前端送完整草稿；
+- **图片/表情**：p.qpic + gxh 候选；取图失败用 summary/本地标签兜底；`vision.imageInput` 文字模式；
+- **备份轮转**：真实时间戳/扩展名文件名正确分组，`keep=40` 生效；失败可见，无关文件不误删；
 - **记忆卡最近优先**：`recent` 先收最近 N 天的 owner 记录，不再被 initial 挤空；recent 8→12，initial/owner priority 下调；
 - **记忆卡初次相遇**：拆开 firstMet/pinned；初次相遇可取消置顶、可忘记；删除后自动接管；reload 失败不再假装成功；
 - **QQ wait**：有积压先返回，不再从 wait 时刻重新等静默；默认 20 条/4000 字有界批量，群聊超出折叠，私聊不静默删除；

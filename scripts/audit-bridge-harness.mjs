@@ -49,6 +49,8 @@ import * as purposeEngine from '../src/purpose-engine.js';
 import * as conversationClosure from '../src/conversation-closure.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
+import * as qqAt from '../src/qq-at.js';
+import * as modelOptions from '../src/model-options.js';
 import { createBiliMemory } from '../src/bili-memory.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
@@ -253,6 +255,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshBaseUrl: async () => null,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
+    ...qqAt,
+    ...modelOptions,
     ...voiceDiagnostics,
     ...allowlist,
     ...callname,

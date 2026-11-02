@@ -3291,3 +3291,13 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **修法**：新增 `SECRET_TOKEN_RE` 并在所有日志/活动/公共 feed/出站打码；白名单放行两个端点 + 通用 403 带 code/hint；
   purpose 只有 sent 写 text，silent/failed 记 skipReason；timeout code 必填。
 - **教训**：**日志出口不止一个**，脱敏要做在共用函数里；多态字段的“空值回退”会制造假历史。
+
+## 多会话共用工作区：别人的改动被卷进你的提交
+
+- **现象**：语音修复提交 `4d2d7c3` 里混进了 Minecraft 的 UI（`client.js` +45 行）；
+  MC 后端改动一直未提交，向量记忆的 handoff 文档也躺在同一工作区。
+- **根因**：多个会话共用同一个 working tree + index；`git add -A` 把别人未提交的文件一起提交，
+  `git switch/checkout/reset` 会覆盖别人的未提交改动。
+- **修法**：一会话一工作树（`git worktree add ..\surfcore-<topic> -b feat/<topic> dev`）；
+  禁止 `git add -A`，只 add 自己路径；提交前看 `git diff --cached --stat`；合并/重启/发版串行。
+- **教训**：**工作区是共享资源，不是每个会话的私有草稿纸。** 只要第二个会话开始写，就必须隔离。

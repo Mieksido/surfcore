@@ -12,11 +12,14 @@
  * 这个文件只做纯计算，方便单测；whale-night.mjs 负责读写状态和叫醒。
  */
 
+import { normalizeWindow, parseClock, windowContains as sharedWindowContains } from './time-window.mjs'
+
 export const DEFAULT_MIN_GAP_MIN = 20
 
 export function hhmmToMin(value) {
-  const [h, m] = String(value ?? '').split(':').map(Number)
-  return (h === 24 ? 1440 : (Number(h) || 0) * 60) + (Number(m) || 0)
+  const parsed = parseClock(value, { allow24: true })
+  // 保持旧 API：非法值返回 0；真正排程用 normalizeNightWindows 过滤，不会把它当成 0 点窗口。
+  return parsed == null ? 0 : parsed
 }
 
 export function minToHHMM(min) {
@@ -29,28 +32,28 @@ export function normalizeNightWindows(windows = []) {
   const list = Array.isArray(windows) && windows.length
     ? windows
     : [{ start: '20:00', end: '24:00', wakes: 1 }]
-  const toMin = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : hhmmToMin(v))
-  return list.map((w) => {
-    const start = toMin(w.start)
-    let end = toMin(w.end)
-    if (end <= start) end += 1440
-    const label = w.label ?? `${minToHHMM(start)}–${minToHHMM(end)}`
-    return {
-      start,
-      end,
-      wrap: end > 1440,
-      label,
-      wakes: Math.max(0, Math.floor(Number(w.wakes ?? 1) || 0)),
-    }
-  }).filter((w) => w.end > w.start)
+  const out = []
+  for (const raw of list) {
+    const normalized = normalizeWindow(raw)
+    if (!normalized.ok) continue
+    out.push({
+      start: normalized.start,
+      end: normalized.end,
+      wrap: normalized.wrap,
+      label: raw?.label ?? normalized.label,
+      wakes: normalized.wakes,
+    })
+  }
+  if (!out.length) {
+    const fallback = normalizeWindow({ start: '20:00', end: '24:00', wakes: 1 })
+    if (fallback.ok) out.push({ ...fallback, label: fallback.label })
+  }
+  return out
 }
 
 /** 某个分钟是否落在窗口内（支持跨午夜）。 */
 export function windowContains(w, min) {
-  const m = Number(min)
-  if (!w) return false
-  if (w.wrap) return m >= w.start || m < w.end - 1440
-  return m >= w.start && m < w.end
+  return sharedWindowContains(w, min)
 }
 
 /**

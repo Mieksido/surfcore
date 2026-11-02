@@ -13,6 +13,7 @@ import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 
 const argv = process.argv.slice(2)
 const bvid = argv.find((a) => !a.startsWith('--'))
@@ -85,7 +86,7 @@ try { body = JSON.parse(rawText).body ?? [] } catch { console.error('字幕不�
 if (!body.length) { console.error('字幕 JSON 里 body 是空的'); process.exit(5) }
 console.log(`字幕行数: ${body.length}   覆盖 ${fmt(body[0].from)} → ${fmt(body.at(-1).to ?? body.at(-1).from)}`)
 
-const outDir = typeof opt.out === 'string' ? opt.out : path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.dsh', 'shots', 'subs')
+const outDir = typeof opt.out === 'string' ? opt.out : shotsPath('subs')
 fs.mkdirSync(outDir, { recursive: true })
 const base = path.join(outDir, `${bvid}-${pick.lan}`)
 fs.writeFileSync(base + '.json', rawText)
@@ -99,3 +100,6 @@ console.log(`PLAIN: ${base}-plain.txt（纯文本，适合直接喂模型）`)
 const n = Number(opt.print ?? 12)
 console.log(`\n--- 前 ${n} 行 ---`)
 for (const l of body.slice(0, n)) console.log(`[${fmt(l.from)}] ${l.content}`)
+
+if (typeof opt.out === 'string') console.log('（自定义 --out：跳过默认 shots 清理）')
+else try { console.log(formatShotsStats(pruneShots())) } catch {}

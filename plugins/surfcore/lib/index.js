@@ -833,7 +833,7 @@ export function apply(ctx) {
         return;
       }
     }
-    const result = { ok: true, saved: {}, warnings: [] };
+    const result = { ok: true, saved: {}, warnings: [], notes: [] };
     // ── 管理员：QQ ⇄ B站 默认是同一个人 ────────────────────────────────────
     // 合体层 admin 是唯一真相；旧格式（qq.ownerQQ / bili.owner）是投影。
     // 合并逻辑放在 src/admin-identity.js 的 projectAdminSave（纯函数，有单测），
@@ -877,14 +877,15 @@ export function apply(ctx) {
       result.saved.qq = true;
       result.qq = saved.config;
       result.qqBackup = saved.backup;
-      result.warnings.push('QQ 配置已保存；桥接只在启动时读 config.json，需要「重启桥接」才会生效。');
+      result.notes.push('QQ 配置已保存；桥接只在启动时读 config.json，需要「重启桥接」才会生效。');
     }
     if (body.bili && typeof body.bili === 'object') {
       const saved = saveBiliConfig(body.bili);
       result.saved.bili = true;
       result.bili = saved.config;
       result.biliBackup = saved.backup;
-      result.warnings.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
+      if (Array.isArray(saved.warnings) && saved.warnings.length) result.warnings.push(...saved.warnings);
+      result.notes.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
     }
     // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
     const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;
@@ -1005,6 +1006,13 @@ export function apply(ctx) {
         if (!restart.ok) result.warnings.push(`桥接重启失败：${restart.error ?? restart.message ?? '未知'}`);
       }
     }
+    // 保存成功后把新的版本戳一并返回：否则前端仍拿加载时的旧戳，
+    // 下一次保存会被自己的第一次写盘判成 CONFIG_STALE（issue #40）。
+    result.stamps = {
+      qq: fileStamp(QQ_CONFIG),
+      bili: fileStamp(BILI_CONFIG),
+      unified: fileStamp(path.join(STATE_DIR, 'config.json')),
+    };
     json(res, 200, result);
   }
 
@@ -1131,19 +1139,31 @@ export function apply(ctx) {
     }
     try {
       const body = JSON.parse(await readBody(req) || '{}');
-      let text = String(body.text ?? '');
-    if (layer === 'daily') text = withDailyIdentity(text);
+      const text = String(body.text ?? '');
       const drafts = await personaClassifier.classify(text);
       drafts.daily = withDailyIdentity(drafts.daily);
       json(res, 200, { ok: true, drafts, note: '这是草稿；请检查/编辑后逐层保存。' });
     } catch (error) {
+      const code = String(error?.code || 'PERSONA_CLASSIFY_FAILED');
+      const message = String(error?.message ?? error);
+      const unavailable = code.includes('UNAVAILABLE') || code.includes('NO_MODEL');
+      const internal = error instanceof ReferenceError || /is not defined|is not a function|Cannot read|undefined is not/i.test(message);
+      const hint = internal
+        ? '这是插件内部错误，不是人格卡内容问题；请把错误码/报错发给作者，或手动填写各层'
+        : code === 'PERSONA_CLASSIFY_EMPTY_INPUT'
+          ? '先写一点人格内容（核心/语气/日常/场景）再拆分'
+          : code === 'PERSONA_CLASSIFY_TOO_LARGE'
+            ? '人格卡超过 64KB，先精简或手动分层'
+            : code === 'PERSONA_CLASSIFY_BAD_JSON'
+              ? '模型输出不是可解析的 JSON；可以重试，或手动填写各层'
+              : unavailable
+                ? '确认 DSH 模型服务已就绪；也可以手动填写各层'
+                : '检查人格卡内容，或手动填写各层';
       json(res, 400, {
         ok: false,
-        code: String(error?.code || 'PERSONA_CLASSIFY_FAILED'),
-        error: String(error?.message ?? error),
-        hint: String(error?.code || '').includes('UNAVAILABLE')
-          ? '确认 DSH 模型服务已就绪；也可以手动填写各层'
-          : '检查人格卡内容，或手动填写各层',
+        code: internal ? 'PERSONA_CLASSIFY_INTERNAL' : code,
+        error: internal ? `人格拆分内部错误：${message}` : message,
+        hint,
       });
     }
   }

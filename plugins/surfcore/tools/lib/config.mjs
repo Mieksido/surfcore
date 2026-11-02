@@ -63,6 +63,9 @@ export const DEFAULTS = {
   //   定时醒来的 she 一条 bili.mjs 都跑不了。默认只给这一个会话完全访问；
   //   想收紧就改成 workspace-write，下一次 tick 生效。
   agent: { sandbox: 'danger-full-access' },
+  // B站视频缓存（watch-video / debrief / subtitles 共用）：
+  // dir 留空 = <DSH_HOME>/shots；retentionDays=0 不按天清；maxMB=0 不限总大小。
+  shots: { dir: '', retentionDays: 7, maxMB: 0 },
 }
 
 const merge = (base, over) => {

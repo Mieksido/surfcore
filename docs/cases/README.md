@@ -6,6 +6,16 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-02 | [群聊 @ 机器人不唤醒](2026-11-02-qq-group-at-detection.md) | 原始 at 段判断；@我+@别人仍唤醒；self_id 回退 | 待发布 |
+| 2026-11-02 | [B站监听变量重名/跨午夜/全角冒号](2026-11-02-bili-listen-time-window.md) | 修复监听 TDZ；共享时间窗；群错误只私聊 | 待发布 |
+| 2026-11-02 | [B站视频缓存无限增长](2026-11-02-bili-shots-cache-retention.md) | 默认删原片；shots 按天/总量清理；目录可配 | 待发布 |
+| 2026-11-02 | [更新完成又提示更新 + 进度条只闪一下网速](2026-11-02-update-idempotency-progress.md) | staged dismiss 修正；阶段进度；重启提示 | 待发布 |
+| 2026-11-02 | [QQ 高级设置经常保存失败](2026-11-02-qq-settings-save-stamps.md) | 保存后同步 stamps；warning 不再当 error | 待发布 |
+| 2026-11-02 | [DSH 安装后 profile bundles 被裁剪](2026-11-02-dsh-profile-install-rollback.md) | 备份/原子写/安装后核对/自动回滚 | 待发布 |
+| 2026-11-02 | [人格语气层被核心覆盖](2026-11-02-persona-tone-core-fallback.md) | tone 必须读 persona.tone.md；未知层 warning | 待发布 |
+| 2026-11-02 | [人格卡智能拆分 layer is not defined](2026-11-02-persona-classify-layer.md) | 删除未定义变量；完整草稿；内部错误可见 | 待发布 |
+| 2026-11-02 | [商城表情取图失败 + 非多模态看图报错](2026-11-02-emoji-market-fallback.md) | p.qpic/标签兜底；非多模态文字路径 | 待发布 |
+| 2026-11-02 | [备份轮转 keep=40 不生效](2026-11-02-backup-prune-regex.md) | 真实文件名解析；按组保留；失败可见 | 待发布 |
 | 2026-11-02 | [记忆卡总在回忆第一天](2026-11-02-memory-recent-first.md) | recent 不再被 owner/initial 挤空；最近优先 | 待发布 |
 | 2026-11-01 | [记忆卡初次相遇无法取消置顶/忘记](2026-11-01-memory-anchor-unpin.md) | 拆开 firstMet/pinned；可取消；可删除；reload 失败可见 | 待发布 |
 | 2026-11-01 | [wait 积压消息不立即返回](2026-11-01-wait-backlog-batch.md) | 有未读立即返回；有界批量；群聊折叠/私聊保留 | 待发布 |

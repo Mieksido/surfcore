@@ -21,6 +21,7 @@ import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-p
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
+import { atInfo } from './qq-at.js';
 import {
   historyWatermark, normalizeHistoryConfig,
   selectMissedHistory, summarizeHistoryCatchup,
@@ -47,6 +48,7 @@ import {
   normalizePurposeState, parsePurposeMemo, planNextFire, selectPurpose, summarizePurposeState,
 } from './purpose-engine.js';
 import { resolvePriceTable } from './model-prices.js';
+import { catalogChoices, findCatalogModel } from './model-options.js';
 import {
   DEFAULT_QQ_FISH_GUARD, appendFishGuardTrigger, assessFishDensity, fishGuardPromptLine, fishGuardReasonText,
   isFishName, normalizeQqFishGuard,
@@ -1007,6 +1009,9 @@ function loadConfig() {
           maxRemarkChars: 20       // 收藏时备注最大长度
         }
       },
+      // 图片能力：auto=查 DSH 模型目录；true/false=操作者强制。
+      // 非多模态模型设为 false 后，媒体工具只回文字标签，不再把 image block 交给 ACP。
+      vision: { imageInput: 'auto' },
       proactive: {
         enabled: true,
         checkIntervalMinMs: 30 * 60 * 1000,
@@ -1146,6 +1151,14 @@ function loadConfig() {
       ...((cfg.socialV2?.sticker?.collect) ?? {})
     }
   };
+
+  cfg.socialV2.vision = {
+    imageInput: 'auto',
+    ...(cfg.socialV2?.vision ?? {}),
+  };
+  cfg.socialV2.vision.imageInput = ['auto', 'true', 'false'].includes(String(cfg.socialV2.vision.imageInput).toLowerCase())
+    ? String(cfg.socialV2.vision.imageInput).toLowerCase()
+    : 'auto';
 
   // socialV2.media：图片/表情的数量与体积上限。旧配置没有这一段，必须深度合并出默认值，
   // 否则 `{...defaults, ...file.socialV2}` 里缺失的 media 会取到 undefined（等于无上限判断）。
@@ -1627,7 +1640,9 @@ function extractMediaFromSegments(segments) {
     const emojiFields = {
       emojiId: String(d.emoji_id ?? d.emojiId ?? ''),
       emojiPackageId: String(d.emoji_package_id ?? d.emojiPackageId ?? ''),
-      emojiKey: String(d.key ?? '')
+      emojiKey: String(d.key ?? ''),
+      uin: String(d.uin ?? d.uin_str ?? d.uinStr ?? ''),
+      resId: String(d.res_id ?? d.resId ?? '')
     };
     if (seg.type === 'image') {
       media.push({
@@ -3241,6 +3256,9 @@ async function main() {
   /** sessionId -> 最近一次已知的实际模型。切换模型会让单价差好几倍，所以按会话记。 */
   const sessionModels = new Map();
   const nominalModel = () => cfg.dsh?.model || 'deepseek-flash';
+  /** 当前模型是否声明支持 image 输入：true / false / null（未知，先尝试）。 */
+  let imageInputSupport = null;
+  const imageInputCache = new Map(); // provider/model -> boolean | null
 
   function rememberModel(sessionId, selection) {
     const model = selection?.model;
@@ -5326,12 +5344,23 @@ async function main() {
           let labels = {};
           let providerDefault = null;
           let catalogSource = 'fallback';
+          let catalog = null;
+          let choices = { models: [], providers: [] };
           try {
             if (!modelCatalogInFlight) {
               modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
                 .finally(() => { modelCatalogInFlight = null; });
             }
-            const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            choices = catalogChoices(catalog, { priceTable: resolvePriceTable(cfg.pricing) });
+            if (!findCatalogModel(choices.models, provider, model)) {
+              choices.models.unshift({
+                provider, model, name: model, imageInput: null, efforts: [],
+                effortLabels: {}, defaultEffort: null,
+                price: { tier: 'unknown', label: '价目表未登记' },
+              });
+              if (!choices.providers.includes(provider)) choices.providers.unshift(provider);
+            }
             const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
             const entry = (group?.models ?? []).find((m) => m?.id === model);
             const efforts = entry?.reasoning?.efforts ?? [];
@@ -5359,12 +5388,92 @@ async function main() {
             default: REASONING_EFFORT_DEFAULT,
             providerDefault,
             catalogSource,
+            // 目录不可用时只回当前模型，前端不要凭旧缓存瞎给选项。
+            models: choices.models,
+            providers: choices.providers,
             // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
             // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
             globalSideEffect: true,
           });
           return;
         }
+        if (req.method === 'POST' && url.pathname === '/api/dsh/model') {
+          const body = await readBody();
+          const provider = String(body.provider ?? '').trim();
+          const model = String(body.model ?? '').trim();
+          if (!provider || !model) {
+            sendJson({ ok: false, code: 'MODEL_REQUIRED', error: 'provider 和 model 不能为空', hint: '从 DSH 模型目录下拉里选择' }, 400);
+            return;
+          }
+          let catalog;
+          try {
+            catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session.modelCatalog');
+          } catch (error) {
+            sendJson({
+              ok: false, code: 'MODEL_CATALOG_UNAVAILABLE',
+              error: `读取 DSH 模型目录失败：${String(error?.message ?? error).slice(0, 180)}`,
+              hint: '稍后重试；目录不可用时只保留当前模型，避免选到不可用的模型',
+            }, 503);
+            return;
+          }
+          const choices = catalogChoices(catalog, { priceTable: resolvePriceTable(cfg.pricing) });
+          let picked = findCatalogModel(choices.models, provider, model);
+          // 目录临时不列当前模型时，允许“保持当前模型”，但不能借此切到陌生模型。
+          const currentProvider = String(cfg.dsh?.provider || 'deepseek-official');
+          const currentModel = String(cfg.dsh?.model || 'deepseek-flash');
+          if (!picked && provider === currentProvider && model === currentModel) {
+            picked = { provider, model, name: model, efforts: [], effortLabels: {}, defaultEffort: null, imageInput: null, price: { tier: 'unknown', label: '价目表未登记' } };
+          }
+          if (!picked) {
+            sendJson({
+              ok: false, code: 'MODEL_NOT_FOUND',
+              error: `DSH 模型目录里没有 ${provider}/${model}`,
+              hint: '刷新模型列表后重选；不要手填目录外的模型',
+            }, 400);
+            return;
+          }
+          const allowedEfforts = (picked.efforts ?? []).filter((e) => REASONING_EFFORT_OPTIONS.includes(e));
+          const requestedEffort = String(body.reasoningEffort ?? cfg.dsh?.reasoningEffort ?? REASONING_EFFORT_DEFAULT).trim().toLowerCase();
+          let effort;
+          try { effort = normalizeReasoningEffort(requestedEffort); }
+          catch (error) {
+            sendJson({ ok: false, code: 'MODEL_EFFORT_INVALID', error: error?.message ?? '思考强度无效', hint: '可选 low / high / max' }, 400);
+            return;
+          }
+          if (allowedEfforts.length && !allowedEfforts.includes(effort)) {
+            sendJson({
+              ok: false, code: 'MODEL_EFFORT_UNSUPPORTED',
+              error: `${picked.name || model} 不支持 ${effort}`,
+              hint: `这个模型可选：${allowedEfforts.join(' / ')}`,
+            }, 400);
+            return;
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
+          atomicWriteJson(configFile, file);
+          cfg.dsh = { ...(cfg.dsh ?? {}), provider, model, reasoningEffort: effort };
+          modelSelectionEpoch += 1;
+          imageInputSupport = null;
+          const warnings = [];
+          if (picked.imageInput === false) warnings.push('这个模型未声明图片输入：QQ 图片/表情将只发文字标签，不会发 image block');
+          if (picked.imageInput == null) warnings.push('模型目录没有声明图片能力：未知，按文字兜底更安全');
+          if (picked.price?.tier === 'expensive') warnings.push('这个模型比默认 flash 贵不少，请留意 token 花费');
+          log(`控制台：DSH 模型已设为 ${provider}/${model}，思考强度 ${effort}（对已有会话于下一条消息生效）`);
+          sendJson({
+            ok: true,
+            provider,
+            model,
+            reasoningEffort: effort,
+            imageInput: picked.imageInput,
+            price: picked.price ?? null,
+            globalSideEffect: true,
+            nextMessage: true,
+            warnings,
+          });
+          return;
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/dsh/effort') {
           const body = await readBody();
           let effort;
@@ -5845,6 +5954,12 @@ async function main() {
                 }
               }
             }
+          }
+          // vision：图片能力 auto / true / false
+          if (body.vision && typeof body.vision === 'object') {
+            merged.vision = { ...(current.vision ?? {}), ...body.vision };
+            const mode = String(merged.vision.imageInput ?? 'auto').toLowerCase();
+            merged.vision.imageInput = ['auto', 'true', 'false'].includes(mode) ? mode : 'auto';
           }
           // feedback：数值/布尔归一化
           if (body.feedback && typeof body.feedback === 'object') {
@@ -6945,6 +7060,16 @@ async function main() {
           if (req.headers['x-agent-token'] && !v2ToolEnabled('getStickerImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_sticker_image' }, 403); return; }
           try {
             const entry = await getStickerImageData(stickerId);
+            if (imageInputSupport === false) {
+              sendJson({
+                ok: true,
+                key,
+                sticker: { id: entry.id, desc: entry.desc || '', localNote: entry.localNote || '', tags: entry.tags || [], url: entry.url, md5: entry.md5 },
+                image: null,
+                text: mediaFallbackText({ emojiId: entry.id, desc: entry.desc, localNote: entry.localNote }, '表情', { textOnly: true }),
+              });
+              return;
+            }
             const fetched = await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES);
             const dims = getImageDimensions(fetched.buffer);
             if (dims && dims.width * dims.height > MAX_MEDIA_PIXELS) {
@@ -6978,6 +7103,10 @@ async function main() {
           if (req.headers['x-agent-token'] && !v2ToolEnabled('getSelfImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_self_image' }, 403); return; }
           const selfPath = path.join(ROOT, 'assets', 'deepseek娘.png');
           try {
+            if (imageInputSupport === false) {
+              sendJson({ ok: true, key, image: null, text: '当前模型不支持图片输入，无法查看 Q 版形象；可以用角色卡/设定里的文字描述自己。' });
+              return;
+            }
             if (!fs.existsSync(selfPath)) { sendJson({ ok: false, error: '未找到 AI 形象图片 assets/deepseek娘.png' }, 404); return; }
             const buf = fs.readFileSync(selfPath);
             const mimeType = mimeFromBuffer(buf) || 'image/png';
@@ -9629,10 +9758,30 @@ async function main() {
   // https://gxh.vip.qq.com/club/item/parcel/item/<id 前两位>/<id>/raw300.gif）。
   // 市场表情不在网关缓存里（get_image 返回 image not found in cache），url 又可能缺失，
   // 这条兜底能救回这一类；只接受纯十六进制 id，绝不把任意字符串拼进 URL。
-  function emojiCdnCandidates(emojiId) {
-    const id = String(emojiId ?? '').trim();
-    if (!/^[0-9a-f]{16,64}$/i.test(id)) return [];
-    return [`https://gxh.vip.qq.com/club/item/parcel/item/${id.slice(0, 2)}/${id}/raw300.gif`];
+  function emojiCdnCandidates(mediaOrId) {
+    const media = mediaOrId && typeof mediaOrId === 'object' ? mediaOrId : { emojiId: mediaOrId };
+    const id = String(
+      media.emojiId
+      || (typeof mediaOrId === 'string' ? mediaOrId : '')
+      || emojiIdFromFileName(media.file)
+      || ''
+    ).trim();
+    const uin = String(media.uin ?? '').trim();
+    const resId = String(media.resId ?? '').trim();
+    const urls = [];
+    // 收藏/商城表情的公开 CDN：p.qpic.cn/qq_expression/<uin>/<resId>/0
+    // 报告实测该路径对收藏表情可用；商城表情若缺 uin/resId，则跳过，不盲拼。
+    if (/^\d{5,12}$/.test(uin) && id && /^[0-9a-f]{16,64}$/i.test(id)) {
+      const safeRes = resId && /^[A-Za-z0-9_]+$/.test(resId)
+        ? resId
+        : `${uin}_0_0_0_${id}_0_0`;
+      urls.push(`https://p.qpic.cn/qq_expression/${uin}/${safeRes}/0`);
+    }
+    if (/^[0-9a-f]{16,64}$/i.test(id)) {
+      // 2026-10 实测 gxh.vip 已 404；保留为最后一跳，不再作为唯一兜底。
+      urls.push(`https://gxh.vip.qq.com/club/item/parcel/item/${id.slice(0, 2)}/${id}/raw300.gif`);
+    }
+    return urls;
   }
 
   // 有些网关不带 emoji_id，但 file 名里就嵌着它（实测 "f9-<32 位 hex>.gif"）。
@@ -9669,8 +9818,11 @@ async function main() {
       if (!/^https?:\/\//i.test(s) || urls.includes(s)) return;
       urls.push(s);
     };
+    const candidates = emojiCdnCandidates(media);
+    // p.qpic 是收藏表情实测可用的公开路径，先试它；rkey 常过期，gxh 已 404。
+    for (const candidate of candidates.filter((u) => u.includes('p.qpic.cn'))) pushUrl(candidate);
     pushUrl(media.url);
-    for (const candidate of emojiCdnCandidates(emojiId)) pushUrl(candidate);
+    for (const candidate of candidates.filter((u) => !u.includes('p.qpic.cn'))) pushUrl(candidate);
 
     const tryUrls = async () => {
       for (const url of urls) {
@@ -9762,6 +9914,33 @@ async function main() {
     return { text: fallbackText };
   }
 
+  function stickerMetaFor(media) {
+    const id = String(media?.emojiId || media?.stickerId || '').trim();
+    const entry = id && Array.isArray(stickerEntries)
+      ? stickerEntries.find((item) => item && (String(item.id) === id || String(item.md5 || '') === String(media?.md5 || '')))
+      : null;
+    return sanitizeMediaSummary(
+      media?.summary || media?.desc || media?.localNote || entry?.desc || entry?.localNote || entry?.content || '',
+      60,
+    );
+  }
+
+  /**
+   * 取图失败/模型不支持图片时的文字兜底。
+   * 只给已知标签，不能假装看过原图；summary 是对方可控文本，已 sanitize/限长。
+   */
+  function mediaFallbackText(media, noun = '图片', { textOnly = false } = {}) {
+    const label = stickerMetaFor(media);
+    if (label) {
+      return textOnly
+        ? `【${noun}：${label}】（当前模型不支持图片输入，仅知标签）`
+        : `【${noun}：${label}】（原图没取到，仅知标签）`;
+    }
+    return textOnly
+      ? `（${noun}：当前模型不支持图片输入，原图未展示）`
+      : `（${noun}获取失败）`;
+  }
+
   async function resolveMediaList(mediaList) {
     const parts = [];
     let index = 0;
@@ -9773,6 +9952,28 @@ async function main() {
         continue;
       }
       if (!media || typeof media !== 'object') continue;
+      if (imageInputSupport === false) {
+        const kind = media.kind === 'face' ? 'face' : (media.kind === 'sticker' ? 'sticker' : 'image');
+        const noun = kind === 'image' ? '图片' : '表情';
+        const text = mediaFallbackText(media, noun, { textOnly: true });
+        if (typeof parts === 'undefined') {
+          out.push({
+            index,
+            kind,
+            ...(media.file ? { file: String(media.file) } : {}),
+            ...(media.url ? { url: String(media.url) } : {}),
+            ...(media.faceId ? { faceId: String(media.faceId) } : {}),
+            ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
+            ...(media.summary ? { summary: String(media.summary) } : {}),
+            ...(media.subType ? { subType: String(media.subType) } : {}),
+            imageOmitted: true,
+            text,
+          });
+        } else {
+          parts.push({ type: 'text', text });
+        }
+        continue;
+      }
       if (media.kind === 'face') {
         const face = await fetchFaceMedia(media);
         if (face.buffer) {
@@ -9800,7 +10001,7 @@ async function main() {
           parts.push({ type: 'text', text: label });
           parts.push({ type: 'image', mediaType: img.mimeType || 'image/jpeg', data: img.buffer.toString('base64'), name: `qq-${sticker ? 'sticker' : 'image'}-${index}.${(img.mimeType || 'image/jpeg').split('/')[1]}` });
         } else {
-          parts.push({ type: 'text', text: `${label}（获取失败）` });
+          parts.push({ type: 'text', text: mediaFallbackText(media, noun) });
         }
       }
     }
@@ -9818,6 +10019,28 @@ async function main() {
         continue;
       }
       if (!media || typeof media !== 'object') continue;
+      if (imageInputSupport === false) {
+        const kind = media.kind === 'face' ? 'face' : (media.kind === 'sticker' ? 'sticker' : 'image');
+        const noun = kind === 'image' ? '图片' : '表情';
+        const text = mediaFallbackText(media, noun, { textOnly: true });
+        if (typeof parts === 'undefined') {
+          out.push({
+            index,
+            kind,
+            ...(media.file ? { file: String(media.file) } : {}),
+            ...(media.url ? { url: String(media.url) } : {}),
+            ...(media.faceId ? { faceId: String(media.faceId) } : {}),
+            ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
+            ...(media.summary ? { summary: String(media.summary) } : {}),
+            ...(media.subType ? { subType: String(media.subType) } : {}),
+            imageOmitted: true,
+            text,
+          });
+        } else {
+          parts.push({ type: 'text', text });
+        }
+        continue;
+      }
       if (media.kind === 'face') {
         const face = await fetchFaceMedia(media);
         if (face.buffer) {
@@ -9863,7 +10086,7 @@ async function main() {
             text: ''
           });
         } else {
-          out.push({ ...base, text: `（${noun}获取失败）` });
+          out.push({ ...base, text: mediaFallbackText(media, noun) });
         }
       }
     }
@@ -10029,6 +10252,36 @@ async function main() {
   // 返回 'applied' | 'not-found' | 'failed'。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
   // 本地映射已失效，调用方必须退役重建，否则每条消息都会对着一个不存在的会话重试。
+  // 当前模型能力检测：DSH 模型目录的 inputModalities 里有没有 image。
+  // auto 查不到时返回 null（未知 → 保持旧行为，先尝试 image）；
+  // 第三方目录外模型可以在设置页强制 false，避免 ACP 直接拒绝。
+  async function detectImageInput(provider, model) {
+    const mode = String(cfg.socialV2?.vision?.imageInput ?? 'auto').toLowerCase();
+    if (mode === 'false') return false;
+    if (mode === 'true') return true;
+    const key = `${provider}/${model}`;
+    if (imageInputCache.has(key)) return imageInputCache.get(key);
+    let support = null;
+    try {
+      const catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session.modelCatalog');
+      const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
+      const entry = (group?.models ?? []).find((m) => m?.id === model);
+      const mods = entry?.inputModalities ?? entry?.modalities?.input ?? entry?.capabilities?.inputModalities;
+      if (Array.isArray(mods)) {
+        support = mods.some((m) => /image|vision|image_url/i.test(String(m?.id ?? m?.type ?? m)));
+      }
+    } catch {}
+    // 目录里找不到的第三方模型（例如百炼）：无法证明支持 image，默认走文字兜底，
+    // 避免 ACP 直接拒绝整个工具结果。确认它支持图片时可在设置页强制 true。
+    if (support === null) {
+      const defaultProvider = String(cfg.dsh?.provider || 'deepseek-official');
+      const defaultModel = String(cfg.dsh?.model || 'deepseek-flash');
+      if (provider !== defaultProvider || model !== defaultModel) support = false;
+    }
+    imageInputCache.set(key, support);
+    return support;
+  }
+
   async function ensureChatModel(sessionId) {
     if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch) return 'applied';
     const provider = String(cfg.dsh?.provider || 'deepseek-official');
@@ -10039,7 +10292,17 @@ async function main() {
       try {
         const result = unwrap(await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort }), 'session.selectModel');
         modelAppliedSessions.set(sessionId, modelSelectionEpoch);
-        log(`已设置会话模型 ${sessionId} -> ${result.selected.provider}/${result.selected.model} (${result.selected.reasoningEffort ?? '默认'})`);
+        const selectedProvider = String(result.selected.provider || provider);
+        const selectedModel = String(result.selected.model || model);
+        imageInputSupport = await detectImageInput(selectedProvider, selectedModel);
+        if (imageInputSupport === false) {
+          const key = `${selectedProvider}/${selectedModel}`;
+          if (!imageInputCache.has(`logged:${key}`)) {
+            imageInputCache.set(`logged:${key}`, true);
+            log(`⚠️ 模型 ${key} 未声明 image 输入：图片/表情工具将只回文字标签，避免 ACP 拒绝`);
+          }
+        }
+        log(`已设置会话模型 ${sessionId} -> ${selectedProvider}/${selectedModel} (${result.selected.reasoningEffort ?? '默认'})`);
         return 'applied';
       } catch (error) {
         lastError = error;
@@ -10282,6 +10545,24 @@ async function main() {
     }
     if (changed) saveSocialV2State();
     return changed;
+  }
+
+  /**
+   * 无行动/未设置唤醒条件时的重置。
+   * 保留用户显式改过的批量窗口：默认配置仍可刷新，但别把用户手动调的节奏一起吞掉。
+   */
+  function resetWakeConfigV2(st) {
+    const prev = st?.wakeConfig ?? {};
+    const def = defaultWakeConfigV2();
+    const userConfigured = prev.confirmedBy && prev.confirmedBy !== 'default';
+    st.wakeConfig = {
+      ...def,
+      ...(userConfigured && Number(prev.batchWindowMs) >= 1000
+        ? { batchWindowMs: Math.min(3600000, Math.round(Number(prev.batchWindowMs))) }
+        : {}),
+      noActionCount: 0,
+    };
+    return st.wakeConfig;
   }
 
   // 沉睡前强制观察窗口：防止 AI 聊两句就立刻潜水。
@@ -13255,6 +13536,8 @@ async function main() {
       if (m?.url) item.url = String(m.url);
       if (m?.faceId) item.faceId = String(m.faceId);
       if (m?.emojiId) item.emojiId = String(m.emojiId);
+      if (m?.uin) item.uin = String(m.uin);
+      if (m?.resId) item.resId = String(m.resId);
       if (m?.summary) item.summary = sanitizeMediaSummary(m.summary);
       if (m?.subType) item.subType = String(m.subType);
       return item;
@@ -13542,7 +13825,8 @@ async function main() {
     const large = groupProfileNow.large;
     if (tr.anyMessage && !large) return 'anyMessage';
     if (tr.atMention) {
-      const atSelf = Array.isArray(event?.message) && event.message.some((seg) => seg?.type === 'at' && String(seg.data?.qq) === String(event?.self_id ?? ''));
+      // self_id 缺失时回退登录后拿到的 selfUserId；原始 at 段比渲染后的昵称/群名片可靠。
+      const atSelf = atInfo(event?.message, [event?.self_id, selfUserId]).atSelf;
       if (atSelf || quoteTargetIsSelf) return 'atMention';
     }
     if (tr.nameMention && selfNickname) {
@@ -14848,7 +15132,7 @@ async function main() {
     }
     // 引用对象是机器人自己时，视为直接对 AI 说（即使当前文字没有 @/关键词）。
     // 因此必须先解析 quoteTargetIsSelf 再做空文本过滤，避免“只引用不附文”被漏掉。
-    const quoteTargetIsSelf = await isQuoteTargetSelf(event.message ?? [], kind, id, event.self_id);
+    const quoteTargetIsSelf = await isQuoteTargetSelf(event.message ?? [], kind, id, event.self_id ?? selfUserId);
     if (!isSessionAllowedInCurrentMode(key)) {
       // 封闭模式只放行主人私聊；拒绝也要留审计（按会话限频，避免群消息刷屏）。
       if (currentMode === 'closed-agent' && auditOnce('closed-agent-deny', key, 60_000)) {
@@ -15141,15 +15425,10 @@ async function main() {
     // 在线时行为和以前一样，照常回消息。
     if (currentMode === 'chat' && kind === 'group' && !isOwner && cfg.chat?.presence?.enabled !== false) {
       const st = presenceState(key);
-      // 只要这条消息 @ 的是别人，就不算「叫醒我」——避免群里 @ 别的机器人时把自己叫起来
-      const segs0 = Array.isArray(event?.message) ? event.message : [];
-      const selfId0 = String(event?.self_id ?? '');
-      const atOther0 = segs0.some((seg) => {
-        if (seg?.type !== 'at') return false;
-        const qq = String(seg.data?.qq ?? '');
-        return qq !== '' && qq !== 'all' && qq !== selfId0;
-      });
-      const called = !atOther0 && (quoteTargetIsSelf || isDirectAddress(textContent, event, kind));
+      // 只要这条消息 @ 的是别人，就不算「叫醒我」——但**同时 @ 我**时仍然算。
+      // self_id 缺失时回退 selfUserId，避免 SnowLuma 事件字段差异把 @ 全丢掉。
+      const atState = atInfo(event?.message, [event?.self_id, selfUserId]);
+      const called = atState.atSelf || (!atState.atOther && (quoteTargetIsSelf || isDirectAddress(textContent, event, kind)));
       if (called) {
         if (!st.online) log(`[生物钟] 被叫醒 ${key}`);
         wakePresence(key);
@@ -15814,7 +16093,7 @@ async function main() {
                     const limit = Number(cfg.socialV2?.wake?.noActionLimit) || 3;
                     if (st.wakeConfig.noActionCount >= limit) {
                       log(`[reserved2] ${key} 连续 ${st.wakeConfig.noActionCount} 次唤醒无行动，重置唤醒配置`);
-                      st.wakeConfig = defaultWakeConfigV2();
+                      resetWakeConfigV2(st);
                       st.bootstrapSent = true;
                       st.wakeConfig.noActionCount = 0;
                     }
@@ -15880,7 +16159,7 @@ async function main() {
                     log(`[reserved2] ${key} 未设置唤醒条件，发送提醒 (${currentMiss}/${maxReminders})`);
                   } else {
                     const st = getSocialV2State(key);
-                    st.wakeConfig = defaultWakeConfigV2();
+                    resetWakeConfigV2(st);
                     saveSocialV2State();
                     log(`[reserved2] ${key} 连续未设置唤醒条件，已重置为默认唤醒配置`);
                   }
@@ -16044,7 +16323,11 @@ async function main() {
                 // 以前这里只发 QQ、不写日志：出问题时 bridge.log 里什么都没有，排查只能靠猜（PR #24）。
                 log(`⚠️ agent 处理出错 (${key})：${safeMsg}`);
                 appendActivity(`${key} agent 处理出错：${safeMsg.slice(0, 80)}`);
-                await sendToQQ(key, `⚠️ agent 处理出错：${safeMsg}`);
+                // 群聊只记日志：模型/工具错误对群友无意义，还会泄露内部实现细节。
+                // 私聊仍回给当事人，便于他/她知道这次没处理成功。
+                if (String(key).startsWith('private:')) {
+                  await sendToQQ(key, `⚠️ agent 处理出错：${safeMsg}`);
+                }
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {

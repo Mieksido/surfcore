@@ -1,3 +1,9 @@
+## [0.8.6-dev.10] - 2026-11-02
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 ## [0.8.6-dev.9] - 2026-11-02
 
 ### dev 测试构建
@@ -5,6 +11,102 @@
 - dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
 
 ## [Unreleased]
+
+### 本地语音包安装下载
+
+- 代码 zip 回退改为 codeload，避免 github.com 主站 10s 连接超时。
+- 代码 zip 下载加 30s 超时、镜像优先、2 次重试和 `cause.code` 诊断。
+- postInstall 45 分钟硬超时改为默认 3 小时（可配 `postInstallTimeoutMs`）。
+- 进度拆成真实下载百分比和总进度，不再 51% 文案配 95% 进度条。
+- 安装失败提供「继续下载 / 重试安装」，保留 `.part` 与已完成分卷。
+
+### 语音包启动诊断
+
+- 云端语音包改为直接拉 Python，不再经过 `run.bat` 的 `start`，避免 Python 报错留在独立窗口。
+- 启动同时收 stdout/stderr；Windows GBK 输出自动回退解码，不再显示乱码。
+- 子进程提前退出立即报 `VOICE_START_EXITED`，不再固定等 60 秒。
+- 启动失败写 `logs/startup.log`，错误里带完整日志路径和 hint。
+- 云端包体积提示从 60MB 修正为约 280MB。
+
+### 模型与思考强度
+
+- 新设置页增加「模型与思考强度」卡：low / high / max 下拉，low 明确标注最省。
+- 模型下拉从 DSH `session.modelCatalog` 动态生成，显示图片能力与价格档位；不硬编码模型名。
+- 新增 `POST /api/dsh/model`：目录校验、思考档位校验、全局副作用提示；失败带 code/hint。
+- 移除高级设置里三个手填字段，避免与模型卡打架。
+- 目录不可用时只允许调思考强度，不给假模型选项。
+
+### 设置保存 UX
+
+- 主按钮改为「保存并生效」（保存 + 重启 QQ 桥接）；「仅保存（不重启）」降为次按钮。
+- 保存成功提示改为页面固定 toast，长页面也能看到。
+- 设置页改成固定底栏布局；弹窗保存按钮固定在弹窗底部。
+- 群管理弹窗底部有「保存」；管理员卡片增加局部「保存管理员并重启桥接」。
+- 次按钮改为实底/明确边框，主按钮加粗，禁用态更明显。
+
+### QQ 群聊 @
+
+- 修复“同条消息也 @ 别人时，@ 机器人不算唤醒”的一票否决。
+- @ 判断改看原始 at 段，不再依赖渲染后的群名片/昵称；兼容 CQ 字符串。
+- `self_id` 缺失时回退登录后的 `selfUserId`；引用自己判断同样回退。
+
+### B站监听/时间窗
+
+- 修复 `listenTick` 内层 `const L` 与外层 listen 配置重名导致的 TDZ，评论区监听不再每次都抛错。
+- `inWindow` 支持跨午夜；全角冒号/数字自动归一；非法窗口保存时提示并丢弃。
+- `night-schedule` 与监听共用同一套时间窗解析，避免跨午夜行为漂移。
+- agent 处理错误只私聊，不再发群。
+- 无行动/未设置唤醒条件重置时保留用户显式改过的批量窗口。
+- ZIP 下载增加 EOCD 预检；HTTP 200 截断包换镜像重试。
+- 更新检查区分 unknown 与“0 个更新”。
+
+### B站 视频缓存
+
+- 新增 `shots` 缓存轮转：默认保留 7 天，可选总大小上限，清理 `video/covers/subs`。
+- `watch-video` 默认抽完帧删原片；需要重抽用 `--keep-mp4`。
+- `debrief --substrip` 会先保留原片，字幕条完成后再删。
+- `covers/subs/video` 目录支持 `DSH_HOME` 和 `shots.dir` 配置，不再写死 `~/.dsh`。
+- `.frames-*` 失败也会清理；命令输出缓存文件数/占用。
+
+### 更新
+
+- 修复 staged 更新后 dismiss 键写成 `vnull`，重启前反复提示同一更新。
+- 排队中的组件不再算 pending；更新弹窗内完成下载后明确提示“重启 DSH”。
+- 更新进度增加下载/解压/校验/备份/排队阶段；下载完成后保留总量/百分比/网速。
+- release 通道下载也上报进度。
+
+### 设置保存
+
+- 修复 QQ 高级设置连续保存 `CONFIG_STALE`：保存成功返回并同步新 `stamps`，第二次保存不再被第一次写盘挡住。
+- 409 仍要求「重新读取」，不自动套用 stamps，避免覆盖真正的并发修改。
+- 例行“需要重启桥接”提示改走 `notes`，warning 不再写进错误区。
+
+### 安装/兼容
+
+- `setup-dsh` 写 profile 前备份 `package.json`，并改成原子写。
+- `dsh plugin install` 后核对 bundles/dependencies/patch；被 DSH reconcile 裁剪时自动回滚 profile，不再让 17 个插件被连坐。
+- 安装失败/超时不再只打日志；恢复 profile 后非零退出。
+
+### 人格卡
+
+- 修复 `persona.tone.md` 被忽略：`readPersonaLayerText('tone')` 以前回落核心，导致核心重复/语气失效。
+- 未知人格层不再静默回落核心，会 warning；新增真实文件读取测试。
+- 修复「智能拆分当前人格」引用未定义 `layer` 导致每次报 `layer is not defined`。
+- 拆分发送完整草稿（核心/语气/日常/场景），空输入与内部错误给明确 code/hint。
+- 内部错误不再伪装成“检查人格卡内容”。
+
+### 图片/表情
+
+- 商城/收藏表情增加 p.qpic 候选，gxh 降为最后一跳；保留 `uin/resId`。
+- 取图失败/非多模态时用 `summary` + 本地表情库标签转文字，不再只回“获取失败”。
+- 新增 `socialV2.vision.imageInput`（auto/true/false）；非多模态模型不再向 ACP 塞 image block。
+- `qq_get_message_images` / sticker / self-image 支持文字兜底。
+
+### 备份轮转
+
+- 修复 `pruneBackups` 正则不匹配真实文件名（横线时间戳 + 扩展名），导致 `keep=40` 不生效、backups 无限增长。
+- 新增 `backupGroupOf` 纯函数；`pruneBackups` 返回清理结果并在失败时告警；`backupFile` 失败不再静默。
+- 新增真实文件名轮转测试，无关文件不误删。
 
 ### 记忆卡
 
