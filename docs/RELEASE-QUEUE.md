@@ -12,6 +12,14 @@
 ## 待发布
 
 ### 批次 2026-11-02 17:30 · issue #35：单 Loader 来源根治 + 体检预检（三分支，未合并）
+
+> **状态更新 2026-11-03 00:35**：已向上游 `Mieksido/surfcore` 发起 **PR #54**（`SCVMofic:pr/issue-35-fix` → `main`，
+> 10 个提交，含 #102 stop 脚本编码热修与清单补同步），PR 描述含 A1 vs 子包方案对比 + 三条共同必做项提醒，
+> issue #35 下已留言指路（comment-6587404809）。上游合并动作由发布会话跟进；本地三分支保留作历史。
+> PR 分支 `pr/issue-35-fix` 基于 `docs/issue-35-pr3-governance`（`777c88c`）+ 清单补同步提交。
+> 附带现场修复：本地 `config.json` 的 `snowluma.launcherPath/homeDir` 手填单反斜杠导致 JSON 非法，已转正斜杠
+> （备份 `qq-config-2026-11-02T20-10-22-099Z`）；该文件未跟踪、不进 PR。
+
 <!-- release-batch: start=2026-11-02T14:00+08:00 end=2026-11-02T17:30+08:00 commits=52a2630,76b6877,e82edd0,e834473,3975ea2,(PR3 docs commit) -->
 
 **覆盖分支/提交**（基于 main `59ec306`，逐分支提 PR，合并顺序 PR1 → PR2 → PR3）：
