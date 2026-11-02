@@ -138,7 +138,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const success = (value) => ({ result: { ok: true, value } });
   const api = {
     events: { follow: (id) => calls.follows.push(id) },
-    // settings.describe 的默认桩：没有 qq-mode 命名空间 ⇒ refreshMode() 回退到本地 mode.json。
+    // settings.describe 的默认桩：没有 surfcore 命名空间（#35 合并后的 mode/ownerQQ 载体）
+    // ⇒ refreshMode() 回退到本地 mode.json。
     // 测试可覆盖它来验证「DSH 设置里的空 ownerQQ 不得覆盖 config.json」等契约。
     settings: {
       describe: async () => success({ namespaces: [] }),

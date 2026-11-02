@@ -21,6 +21,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   ALIGN_FILE, BACKUP_DIR, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_DIR, BILI_MJS,
@@ -70,6 +71,7 @@ import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
 import { normalizeAllowlist } from '../../../src/allowlist.js';
 import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_VERSION, electronDownloadUrl } from './pet.js';
+import { migrateLegacyQqMode } from './qq-mode-migrate.js';
 import { createPetChatService } from './pet-chat.js';
 import { createPetPurposeService } from './pet-purpose.js';
 import { createPetApiService } from './pet-api.js';
@@ -174,8 +176,31 @@ function QQ_STATE_DIR() {
   return path.join(path.dirname(QQ_CONFIG), 'state');
 }
 
+// ⚠️ 工程坑：仓库里钉的 @deepseek-ai/schemastery@3.18.1 只发布了 lib/index.cjs，
+// 但 package.json 的 import 条件指向不存在的 lib/index.mjs；纯 ESM `import` 会直接
+// ERR_MODULE_NOT_FOUND。这里用 createRequire 显式取 CJS，行为一致且不依赖宿主的解析策略。
+const require = createRequire(import.meta.url);
+const z = require('@deepseek-ai/schemastery');
+
+// mode/ownerQQ 的 Config：0.8.6 及之前由独立的第二条 Loader 行（- id: qq-mode，
+// name: ./lib/qq-mode.js）承载，但那两行都解析到 surfcore 包，违反 DSH
+// client-modules「一个客户端包只能有一个 active Loader 来源」的约束——平时只
+// warn，任何改写 modules 行的插件（如 vision-router）都会让宿主启动崩溃
+// （Mieksido/surfcore#35）。现在并进主行：命名空间随这条行的 id（surfcore），
+// 由 entry id 推导，与导出名/文件路径无关。
+export const Config = z.object({
+  mode: z.union([
+    z.const('chat'),
+    z.const('closed-agent'),
+    z.const('reserved'),
+    z.const('reserved2'),
+    z.const('simulation'),
+  ]).default('reserved2').extra('volatile', true),
+  ownerQQ: z.string().description('管理员 QQ（ownerQQ）；留空表示不通过 DSH 设置覆盖 config.json').extra('volatile', true),
+});
+
 export const name = 'surfcore';
-export const inject = ['webServer', 'connection', 'sessionController'];
+export const inject = ['webServer', 'connection', 'sessionController', 'settings'];
 
 export function apply(ctx) {
   ensureDirs();
@@ -183,6 +208,26 @@ export function apply(ctx) {
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。
   try { resumePendingApply({ stateDir: STATE_DIR, pluginLog }); } catch (error) { pluginLog('[updates] 启动重试失败：', String(error?.message ?? error)); }
+
+  // #35 一次性迁移：旧 qq-mode 命名空间（profile patch 里的 volatile 覆盖行）
+  // 的 mode/ownerQQ 搬进 surfcore 命名空间。只读旧文件、写回走 settings.update，
+  // marker 记录在 state 目录；settings 服务没就绪时下次启动重试。
+  try {
+    const profileDir = path.join(DSH_HOME, 'profiles', process.env.DSH_PROFILE || 'desktop');
+    migrateLegacyQqMode({
+      profilePatchFile: path.join(profileDir, 'cordis.patch.yml'),
+      markerFile: path.join(STATE_DIR, 'qq-mode-migrated.json'),
+      updateSettings: (ns, patch) => ctx.get('settings')?.update?.(ns, patch),
+      readCurrentNamespace: () => {
+        const settings = ctx.get('settings');
+        const rows = settings?.describe?.({ redactSecrets: false }) ?? [];
+        return rows.find((item) => item.ns === 'surfcore')?.value ?? null;
+      },
+      log: (msg) => pluginLog(msg),
+    }).catch((error) => pluginLog('[qq-mode-migrate] 迁移异常（下次启动重试）：', String(error?.message ?? error)));
+  } catch (error) {
+    pluginLog('[qq-mode-migrate] 迁移调度失败：', String(error?.message ?? error));
+  }
 
   // 2026-10-22 起：`surface_core` 迁移期的一次性逻辑**已整段删除**。
   // 原因：当年为了把旧工作区改名，留了「有 .legacy-workspace 标记就删/移旧目录」的代码；
@@ -720,7 +765,9 @@ export function apply(ctx) {
       const settings = ctx.get('settings');
       if (settings?.describe) {
         const rows = settings.describe({ redactSecrets: true });
-        const row = rows.find((item) => item.ns === 'qq-mode');
+        // #35 合并后命名空间是 surfcore（由 Loader entry id 推导）；旧 qq-mode 行
+        // 只在用户还没重启过 DSH 的旧进程里存在，读它只为过渡期显示兜底。
+        const row = rows.find((item) => item.ns === 'surfcore') ?? rows.find((item) => item.ns === 'qq-mode');
         dshMode = row?.value?.mode ?? null;
       }
     } catch {}
@@ -1391,7 +1438,8 @@ ${body}`;
         const settings = ctx.get('settings');
         if (settings?.describe) {
           const rows = settings.describe({ redactSecrets: true });
-          const row = rows.find((item) => item.ns === 'qq-mode');
+          // #35 合并后命名空间是 surfcore；旧 qq-mode 行仅作过渡期显示兜底。
+          const row = rows.find((item) => item.ns === 'surfcore') ?? rows.find((item) => item.ns === 'qq-mode');
           if (row) dshSetting = row.value;
         }
       } catch {}
@@ -1412,12 +1460,14 @@ ${body}`;
     const settings = ctx.get('settings');
     if (settings?.update) {
       try {
-        await settings.update('qq-mode', {
+        // #35 合并后写 surfcore 命名空间；settings.update 按 entry id 找行，
+        // 旧 qq-mode 行删除后写它会直接抛 No configurable plugin entry。
+        await settings.update('surfcore', {
           ...(mode ? { mode } : {}),
           ...(ownerQQ !== undefined ? { ownerQQ: ownerQQ ?? '' } : {}),
         });
       } catch (error) {
-        pluginLog('写 DSH qq-mode 设置失败（本地 mode.json 已写）：', error?.message ?? error);
+        pluginLog('写 DSH surfcore 设置失败（本地 mode.json 已写）：', error?.message ?? error);
       }
     }
     if (ownerQQ !== undefined) {

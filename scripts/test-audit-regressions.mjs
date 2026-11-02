@@ -195,13 +195,13 @@ await test('R6 DSH 设置 ownerQQ 留空时保留 config.json 的值', async () 
   const h = await bridgeHarness();
   try {
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved2', ownerQQ: '' } }] } }
+      result: { ok: true, value: { namespaces: [{ ns: 'surfcore', value: { mode: 'reserved2', ownerQQ: '' } }] } }
     });
     await h.refreshMode();
     assert.equal(h.cfg.ownerQQ, 123, '空串表示「不覆盖」，不能把 ownerQQ 抹成 null');
 
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved2', ownerQQ: 456 } }] } }
+      result: { ok: true, value: { namespaces: [{ ns: 'surfcore', value: { mode: 'reserved2', ownerQQ: 456 } }] } }
     });
     await h.refreshMode();
     assert.equal(h.cfg.ownerQQ, 456, '非空值仍然要能覆盖');

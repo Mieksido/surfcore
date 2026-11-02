@@ -3343,7 +3343,10 @@ async function main() {
       if (typeof defaultPreset === 'string' && defaultPreset) {
         dshDefaultPreset = defaultPreset;
       }
-      const ns = s.namespaces.find((n) => n.ns === 'qq-mode');
+      // #35 合并后命名空间是 surfcore（由 Loader entry id 推导）；旧 qq-mode 行
+      // 只在尚未重启的旧 DSH 进程里存在，读它只为过渡期兜底。新 namespace 的
+      // mode 字段是 volatile：值缺失/默认时回退本地，避免把没设置过的人钉在 reserved2。
+      const ns = s.namespaces.find((n) => n.ns === 'surfcore') ?? s.namespaces.find((n) => n.ns === 'qq-mode');
       // 规范化后再比较：`simulation` 也走这里（见 MODE_INPUT_ALIASES）。
       // 读取必须 user 层优先：DSH 0.2.0-rc.2 写完 settings 后同进程内 value 不更新，
       // 只读 value 会让控制台切的模式被 5 秒轮询改回去（issue #22）。
@@ -4649,7 +4652,7 @@ async function main() {
           try {
             // unwrap() 在 result.ok 为 false 时直接抛错，所以能执行到下一行即代表写穿已成功
             // （不要在这里再判断 updated?.ok —— 解包后的值恒为真，那样的分支是死代码）。
-            unwrap(await api.settings.update({ ns: 'qq-mode', patch: { mode: requestedMode } }), 'settings.update');
+            unwrap(await api.settings.update({ ns: 'surfcore', patch: { mode: requestedMode } }), 'settings.update');
             dshSynced = true;
           } catch (error) {
             log(`控制台：模式写穿 DSH 设置失败（${error?.message ?? error}）；本次仅写本地，下次 DSH 轮询会覆盖回滚`);

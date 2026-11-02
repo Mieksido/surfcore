@@ -8,7 +8,6 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
-    "./qq-mode": "./lib/qq-mode.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./qq-tool-restrict.mjs": "./qq-tool-restrict.mjs"

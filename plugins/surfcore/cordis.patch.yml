@@ -1,17 +1,20 @@
 # ============================================================================
 # surfcore —— QQ × B站 合体插件
 # ============================================================================
-# 一个 bundle，两半：
-#   · surfcore           主插件（host：配置/记忆/对齐/扩展 + client：设置窗口）
-#   · qq-mode                 仅保留 QQ 桥接模式命名空间的 Config（桥接仍通过
-#                             DSH settings 写 qq-mode，不能删；不是第二个用户插件）
+# 只有一条主行：
+#   · surfcore             host（配置/记忆/对齐/扩展）+ client（设置窗口）
+#                          + mode/ownerQQ 的 Config（DSH 设置里的命名空间）
 #
 # ⚠️ 主行 id 必须与包名一致（surfcore），否则设置页/插件详情会找不到。
-# ⚠️ qq-mode 的 name 用相对路径：锚定在本 patch 文件旁边，随包移动，不写死 profiles。
+#    mode/ownerQQ 的 Settings 命名空间随这条行的 id（surfcore）。
+# ⚠️ 一个客户端包（package.json 声明 dsh.client.platform 的包）只允许一条
+#    active Loader 来源。0.8.6 及之前这里曾有过第二条 `- id: qq-mode` 行
+#    （name: ./lib/qq-mode.js），同样解析到 surfcore 包：平时只产生 warn，
+#    任何改写/重放 modules 行的插件（如 vision-router）都会让
+#    ClientModuleRegistry 重建时抛 ClientPackageCompositionError，宿主直接
+#    起不来（Mieksido/surfcore#35）。别再加回来；同类冲突装前会被
+#    COMPAT_CLIENT_MULTI_SOURCE 体检规则报出。
 - insert:
     - id: surfcore
       name: surfcore
-      config: {}
-    - id: qq-mode
-      name: ./lib/qq-mode.js
       config: {}

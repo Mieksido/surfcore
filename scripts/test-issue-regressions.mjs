@@ -37,7 +37,7 @@ await test('#22 refreshMode 采纳控制台刚写入的 user 层（否则 5 秒�
     h.api.settings.describe = async () => ({
       result: { ok: true, value: {
         namespaces: [
-          { ns: 'qq-mode', value: { mode: 'reserved2', ownerQQ: '10001' }, user: { mode: 'chat' } }
+          { ns: 'surfcore', value: { mode: 'reserved2', ownerQQ: '10001' }, user: { mode: 'chat' } }
         ]
       } }
     });
@@ -46,7 +46,7 @@ await test('#22 refreshMode 采纳控制台刚写入的 user 层（否则 5 秒�
 
     // 老行为兜底：从没在控制台写过（user 为空）时仍读 value。
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved' }, user: {} }] } }
+      result: { ok: true, value: { namespaces: [{ ns: 'surfcore', value: { mode: 'reserved' }, user: {} }] } }
     });
     await h.refreshMode();
     assert.equal(h.getMode(), 'reserved');
@@ -54,13 +54,13 @@ await test('#22 refreshMode 采纳控制台刚写入的 user 层（否则 5 秒�
     // ownerQQ：user 层空串表示「不覆盖 config.json」。
     h.cfg.ownerQQ = 20002;
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'chat', ownerQQ: 30003 }, user: { ownerQQ: '' } }] } }
+      result: { ok: true, value: { namespaces: [{ ns: 'surfcore', value: { mode: 'chat', ownerQQ: 30003 }, user: { ownerQQ: '' } }] } }
     });
     await h.refreshMode();
     assert.equal(h.cfg.ownerQQ, 20002, 'user 层空串不得把 config.json 的 ownerQQ 抹掉');
 
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'chat' }, user: { ownerQQ: '40004' } }] } }
+      result: { ok: true, value: { namespaces: [{ ns: 'surfcore', value: { mode: 'chat' }, user: { ownerQQ: '40004' } }] } }
     });
     await h.refreshMode();
     assert.equal(h.cfg.ownerQQ, 40004, 'user 层显式 ownerQQ 必须生效');
