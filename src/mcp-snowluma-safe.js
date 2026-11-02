@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
 import { EMOTION_LABELS } from './sticker-semantics.js';
+import { toModelImages, fallbackNote } from './gif-middleware.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -38,6 +39,33 @@ const cfg = loadConfig();
 
 function getConfig() {
   return loadConfig();
+}
+
+// ── 动图展开（GIF 中间层）──────────────────────────────────────────────────
+// 四个出图点（消息图片 / 收藏表情 / 自己的形象 / 合并转发内图片）都走这里：
+// 能展开就换成"一张胶片条 + 一行信封"，展不开就原样返回并附一句人话。
+// 绝不能让失败阻断消息 —— 这条路上宁可退回首帧，也不能让工具调用报错。
+async function expandImageContent(img) {
+  const mimeType = img?.mimeType;
+  const data = img?.data;
+  if (!mimeType || !data) return { parts: [], note: '' };
+  const original = { type: 'image', mimeType, data };
+  let buf = null;
+  try { buf = Buffer.from(String(data), 'base64'); } catch { buf = null; }
+  if (!buf || !buf.length) return { parts: [original], note: '' };
+  try {
+    const out = await toModelImages(buf, mimeType, getConfig()?.socialV2?.gif || {});
+    if (out?.ok) {
+      return {
+        parts: [{ type: 'image', mimeType: out.images[0].mimeType, data: out.images[0].data }],
+        note: out.envelope
+      };
+    }
+    return { parts: [original], note: fallbackNote(out?.reason, out?.meta) };
+  } catch {
+    // 中间层自己炸了也不该影响看图：直接给原图。
+    return { parts: [original], note: '' };
+  }
 }
 
 function getAccess() {
@@ -1093,7 +1121,7 @@ server.tool(
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
     'qq_get_message_images',
-    '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；二代模式下必须携带会话令牌。看图时先认人再聊内容：图里如果出现你自己的账号、主页、资料卡、头像或动态，那就是你自己，先认出来再说，别当成别人的页面。',
+    '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；二代模式下必须携带会话令牌。**动图（GIF/动画 WebP）会自动展开成一张 16 帧胶片条**，按时间先后排成 4×4 网格，并附一行说明（总帧数/时长/网格布局）——看到网格图就按"这是动图的采样帧"理解，不要当成一张完整的画。看图时先认人再聊内容：图里如果出现你自己的账号、主页、资料卡、头像或动态，那就是你自己，先认出来再说，别当成别人的页面。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可为负数；二代也可用本地 seq）'),
@@ -1114,8 +1142,10 @@ if (cfg.socialV2?.tools?.getImages !== false) {
         const textParts = [];
         for (const img of images) {
           if (img?.data && img?.mimeType) {
+            const ex = await expandImageContent(img);
             textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]`);
-            content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
+            if (ex.note) textParts.push(ex.note);
+            content.push(...ex.parts);
           } else {
             textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : '（获取失败）'}]`);
           }
@@ -1177,9 +1207,10 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerI
         if (!data?.image?.data || !data?.image?.mimeType) {
           return { content: [{ type: 'text', text: `表情没有可返回的图片：${errorText(data?.error, '未知')}` }], isError: true };
         }
+        const ex = await expandImageContent(data.image);
         const content = [
-          { type: 'text', text: `表情 ${data.sticker?.id || stickerId}${data.sticker?.desc ? '（备注：' + data.sticker.desc + '）' : ''} 的图片内容：` },
-          { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
+          { type: 'text', text: `表情 ${data.sticker?.id || stickerId}${data.sticker?.desc ? '（备注：' + data.sticker.desc + '）' : ''} 的图片内容：${ex.note ? '\n' + ex.note : ''}` },
+          ...ex.parts
         ];
         return { content };
       } catch (error) {
@@ -1319,10 +1350,11 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
         if (!data?.image?.data || !data?.image?.mimeType) {
           return { content: [{ type: 'text', text: `没有可返回的形象图片：${errorText(data?.error, '未知')}` }], isError: true };
         }
+        const ex = await expandImageContent(data.image);
         return {
           content: [
-            { type: 'text', text: '这是你的默认 Q 版形象：' },
-            { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
+            { type: 'text', text: `这是你的默认 Q 版形象：${ex.note ? '\n' + ex.note : ''}` },
+            ...ex.parts
           ]
         };
       } catch (error) {
@@ -1398,7 +1430,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerR
 if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   server.tool(
     'qq_get_forward_msg',
-    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。**这是 QQ 聊天记录，不是 B站/其他平台的内容**：返回里的 platform=QQ、source=forwarded-chat-record、notice 就是这个意思；里面可能是群友之间的旧对话，也可能包含你自己以前在别处说过的话，按聊天记录理解，不要当成「我在B站发过的东西」。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_recent_messages` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。只能查看当前会话确实收到过的转发消息 id，不能任意读取。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
+    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。**这是 QQ 聊天记录，不是 B站/其他平台的内容**：返回里的 platform=QQ、source=forwarded-chat-record、notice 就是这个意思；里面可能是群友之间的旧对话，也可能包含你自己以前在别处说过的话，按聊天记录理解，不要当成「我在B站发过的东西」。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_recent_messages` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。只能查看当前会话确实收到过的转发消息 id，不能任意读取。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型（其中动图会展开成 16 帧胶片条，见附带的网格说明）；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1445,8 +1477,10 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
             const mediaImages = Array.isArray(mediaRes?.images) ? mediaRes.images : [];
             for (const img of mediaImages) {
               if (img?.data && img?.mimeType) {
-                content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
+                const ex = await expandImageContent(img);
+                content.push(...ex.parts);
                 imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}${img.text ? ' ' + img.text : ''}]`);
+                if (ex.note) imageTexts.push(ex.note);
               } else {
                 imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}（${img.text || '获取失败'}）]`);
               }
