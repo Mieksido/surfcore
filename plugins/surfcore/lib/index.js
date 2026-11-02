@@ -3395,6 +3395,28 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     });
   }
 
+  async function proxyDshFollowDefault(req, res) {
+    if (String(req.method || 'GET').toUpperCase() !== 'POST') {
+      json(res, 405, { ok: false, code: 'DSH_FOLLOW_METHOD', error: '只支持 POST', hint: '在设置页点「跟随 DSH 默认模型」开关' });
+      return;
+    }
+    let body;
+    try { body = JSON.parse((await readBody(req)) || '{}'); }
+    catch { json(res, 400, { ok: false, code: 'DSH_FOLLOW_BODY', error: '请求体不是合法 JSON' }); return; }
+    const result = await callBridge('/api/dsh/follow-default', { method: 'POST', body, timeoutMs: 8000 });
+    const data = result.data ?? {};
+    const status = result.status || (result.ok ? 200 : 502);
+    json(res, status, {
+      ...data,
+      ...(result.ok ? {} : {
+        ok: false,
+        code: data.code || 'DSH_FOLLOW_BRIDGE',
+        error: data.error || result.error || 'QQ 桥接不可用',
+        hint: data.hint || '先启动/重启 QQ 桥接；桥接版本旧时升级 SurfCore',
+      }),
+    });
+  }
+
   async function handleDshRepair(req, res) {
     if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'DSH_REPAIR_METHOD', error: '只支持 POST', hint: '从设置页点「修复 DSH 注册」' }); return; }
     let body = {};
@@ -3621,6 +3643,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/updates`) { await handleUpdates(req, res); return; }
     if (pathname === `${API_PREFIX}/dsh/model`) { await proxyDshModel(req, res); return; }
     if (pathname === `${API_PREFIX}/dsh/effort`) { await proxyDshEffort(req, res); return; }
+    if (pathname === `${API_PREFIX}/dsh/follow-default`) { await proxyDshFollowDefault(req, res); return; }
     if (pathname === `${API_PREFIX}/dsh/repair`) { await handleDshRepair(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/bili/`)) { await handleBili(req, res, url); return; }
     if (pathname === `${API_PREFIX}/logs`) { handleLogs(res, url); return; }

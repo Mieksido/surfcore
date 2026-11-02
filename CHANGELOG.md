@@ -1,3 +1,11 @@
+## [0.8.8] - 2026-11-03
+
+### 修复
+
+- 设置页取消「跟随 DSH 默认模型」不再报 404：宿主补上 `/dsh/follow-default` 代理路由，桥接已有的实现终于能被调用。
+- 代理对非 POST、非法 JSON、桥接不可用分别返回 `DSH_FOLLOW_METHOD` / `DSH_FOLLOW_BODY` / `DSH_FOLLOW_BRIDGE` + hint，不再只给一句“未知接口”。
+- 新增 `test-dsh-follow-route`：静态校验“前端调用的路径 ⊆ 宿主注册的路由”，防同类漏代理再次发生。
+
 ## [0.8.7] - 2026-11-03
 
 ### 发布/测试

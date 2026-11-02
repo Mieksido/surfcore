@@ -3992,3 +3992,11 @@ npm run test:audit
 - 不给旧角色自动生成 tone 文件。
 - tone 读取失败仍静默空串。
 - 没在真实运行桥接上看 `/api/socialV2/prompt` 全文。
+
+## 前端有、宿主漏注册：DSH 跟随开关 404
+
+- **现象**：0.8.7 设置页取消「跟随 DSH 默认模型」报 `未知接口：/dsh-surfcore/api/dsh/follow-default`。
+- **根因**：桥接和前端都实现了，宿主 `index.js` 的 `/dsh/*` 代理白名单漏了 `follow-default`；
+  读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
+- **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
+- **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。

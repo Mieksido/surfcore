@@ -115,6 +115,8 @@ const tests = [
   'test-model-settings.mjs',
   // QQ 工作区跟随 DSH 默认模型 + 不认 reasoningEffort 的模型回退。
   'test-dsh-model-follow.mjs',
+  // 跟随开关的宿主代理路由（2026-11-03：前端有、宿主漏注册 → 404）。
+  'test-dsh-follow-route.mjs',
   // 设置页连续保存：成功必须回传/同步 stamps，warning 不能当 error。
   'test-config-save-stamps.mjs',
   // B站沉默逛 + 评论年龄闸：工具硬拦、带 code/hint。

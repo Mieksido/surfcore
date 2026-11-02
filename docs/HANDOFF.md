@@ -5,6 +5,38 @@
 
 ---
 
+## 快照：2026-11-03 04:05（v0.8.7 正式发布）
+
+### 当前事实
+
+- **稳定版**：`0.8.7`（Release `SurfCore v0.8.7`；tag `v0.8.7` → 远端 `90872a7`）。
+- **远端 main**：`90872a7`（tree `2f4bae0`）；**本地 main**：`3a3100e`（release commit）；
+  **公开镜像**：`D:\deepseekwork\opensource\surfcore` @ `f849cc4`（tree 与远端一致）。
+- **本地 dev**：`7ed599c`（已把 main 合回 dev），版本 `0.8.7`。
+- **归档核对**：下载 tag zip → `release-manifest --verify` **678 / 不符 0 / 缺失 0**。
+- **测试**：`npm run test:audit` **142/142**；插件测试 0 失败；本地清单 `678 / 0`。
+
+### 本版范围
+
+`0.8.6` 以来**全部 dev**：74 个提交、约 105 个文件，包含 11-03 的 5 个批次
+（模型跟随 / QQ 晚注册工具 / B站 @ 楼层 / #sl 过滤 / 人格语气）和 05:50 及更早的队列批次
+（多群记忆、模型证据链、监听错误、schemastery、zip 更新迁移、node 路径、outbox、语音总闸等）。
+
+### 发布路径（重要）
+
+- 本地源码仓库含 `video/`，公开镜像不含；**不要直接把本地 main 树推到 GitHub**；
+- 正确流程：本地 `main` 出 release commit → 按 `git diff 42ec20d..HEAD` 同步变更到
+  `D:\deepseekwork\opensource\surfcore` → 镜像生成自己的 manifest → tag → 用 API 发布镜像；
+- 镜像 commit 与远端 API commit 的 hash 不同，但 **tree 必须一致**（本次 `2f4bae0`）。
+
+### 下一版
+
+- dev 构建从 `0.8.7-dev.1` 开始；
+- MC / 贴吧 / 抖音 / 微信 / 向量记忆仍是未完成分支，不在这版；
+- 更新器「本地改动备份并覆盖」修复已包含在 0.8.7。
+
+---
+
 ## 快照：2026-11-02 14:50（dev.9 + 本地语音下载/语音启动诊断/模型/思考强度/设置保存 UX/QQ 群 @/B站监听/时间窗/缓存/更新/人格/媒体/备份/记忆/语音）
 
 ### 当前事实
