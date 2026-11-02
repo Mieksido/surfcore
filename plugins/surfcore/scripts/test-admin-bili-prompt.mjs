@@ -30,7 +30,13 @@ process.env.SURFCORE_BILI_CONFIG = biliConfigFile;
 const { adminBlockForBili } = await import('../lib/scheduler.js');
 
 try {
-  // 1) 升级兼容：合体层没有 admin 时，从 B站 owner.mid 推导出主人。
+  // 1) 升级兼容 + 新默认：合体层没有 admin 时不再默认注入温柔规则。
+  const legacyOff = adminBlockForBili();
+  assert.equal(legacyOff, '', '缺省必须关闭温柔模式，不注入管理员块');
+  fs.writeFileSync(unifiedFile, JSON.stringify({
+    version: 1,
+    admin: { qq: '10001', biliMid: '20002', biliName: '测试B站昵称', displayName: '主人', gentle: true },
+  }));
   const block = adminBlockForBili();
   assert.ok(block.includes('20002'), 'B站 提示词必须认出主人 mid');
   assert.ok(block.includes('测试B站昵称'), 'B站 提示词必须认出主人昵称');
@@ -54,8 +60,7 @@ try {
     admin: { qq: '10001', biliMid: '20002', biliName: '测试B站昵称', displayName: '主人', gentle: false },
   }));
   const mild = adminBlockForBili();
-  assert.ok(mild.includes('20002'), '身份仍要保留');
-  assert.ok(!mild.includes('绝不回嘴'), '关掉后不得再注入语气规则');
+  assert.equal(mild, '', '关掉后不再注入任何管理员专属提示词');
 
   // 4) 完全没配置：返回空串，不能凭空造规则。
   fs.writeFileSync(biliConfigFile, JSON.stringify({ owner: { mid: '', name: '' } }));

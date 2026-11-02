@@ -84,7 +84,7 @@ test('social autonomy and visual, forwarding, sticker and web capabilities remai
     'qq_collect_sticker', 'qq_sticker_note', 'qq_get_self_image',
     'qq_set_sticker_remark', '只有管理端明确开启后才能用',
     'qq_list_voices', 'qq_send_voice', 'verified=true 才代表这条语音确实落地',
-    '语音**默认是关闭的**', '不要假装发了语音',
+    '是否可用以工具是否存在和返回为准', 'VOICE_TOOL_DISABLED', '不要假装发了语音',
     // text→本地 TTS：模型得知道能「说一句」并带语气标记，否则永远只发文字
     '传 text 把这句话**现场合成**成语音条', '语气标记', '[不耐烦]', '别每句都标',
     'mcp__web-search-safe__web_search', 'mcp__web-search-safe__web_fetch',

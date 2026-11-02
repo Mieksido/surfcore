@@ -100,7 +100,7 @@ try {
   assert.equal(before.status, 200);
   assert.deepEqual(before.data.unified.admin.qq, '10001');
   assert.deepEqual(before.data.unified.admin.biliMid, '20002');
-  assert.equal(before.data.unified.admin.gentle, true, '温柔模式默认开');
+  assert.equal(before.data.unified.admin.gentle, false, '温柔模式默认关闭');
   assert.equal(readJson(unifiedFile).admin, undefined, 'GET 只读，不能偷偷写文件');
 
   // 2) 设置页正常保存（全量 qq/bili/unified，没动管理员）：两份 owner 不能被抹掉。

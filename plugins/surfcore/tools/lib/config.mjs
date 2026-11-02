@@ -16,7 +16,11 @@ import { DEFAULT_BILI_FISH_GUARD } from './fish-guard.mjs'
 import { DEFAULT_LIMITS } from './limits.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
-export const configPath = process.env.SURFCORE_BILI_CONFIG || path.join(HOME, '.dsh', 'surfcore', 'bili.config.json')
+// 与插件侧 paths.js 同一优先级：显式文件 > DSH_HOME > HOME/.dsh。
+// 2026-11-01：这里以前只认 HOME/.dsh，和插件的 DSH_HOME 分叉；
+// 自定义 DSH_HOME 的用户在设置页清空前缀，daily 仍读旧文件。
+const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh')
+export const configPath = process.env.SURFCORE_BILI_CONFIG || path.join(DSH_HOME, 'surfcore', 'bili.config.json')
 
 /** 中性默认值：不含任何作者的个人信息，换个人也能跑。 */
 export const DEFAULTS = {
@@ -32,7 +36,9 @@ export const DEFAULTS = {
     // 每个偏好关键词的权重（0~5；0 = 停用，1 = 默认）。键名就是关键词本身。
     weights: {},
   },
-  notify: { type: 'none', url: '', template: 'text', cmd: '' },   // none | desktop | webhook | command（见 commands/notify.mjs）
+  notify: { type: 'none', url: '', template: 'text', cmd: '', timeoutMutes: [] },   // none | desktop | qq | webhook | command（见 commands/notify.mjs）
+  // 沉默逛：只看不说。enabled=false 时禁止评论/回复/搭话/动态/分享/私信，但仍可看/评分/写日记。
+  interact: { enabled: true, maxCommentAgeDays: 14 },
   aliases: [],                  // 历史昵称（兜底用；当前昵称仍从 nav 动态读）
   // 使用者本人（分享型评论要 @ 的人）：mid 用于白名单/查询，name 用于正文里的 @昵称
   // （acc/info 查询会风控，所以 name 缓存一份；改过就用 thread 的 `@到:` 验一下）
@@ -57,6 +63,9 @@ export const DEFAULTS = {
   //   定时醒来的 she 一条 bili.mjs 都跑不了。默认只给这一个会话完全访问；
   //   想收紧就改成 workspace-write，下一次 tick 生效。
   agent: { sandbox: 'danger-full-access' },
+  // B站视频缓存（watch-video / debrief / subtitles 共用）：
+  // dir 留空 = <DSH_HOME>/shots；retentionDays=0 不按天清；maxMB=0 不限总大小。
+  shots: { dir: '', retentionDays: 7, maxMB: 0 },
 }
 
 const merge = (base, over) => {

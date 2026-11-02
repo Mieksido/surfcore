@@ -120,18 +120,44 @@ function normalizeDir(dir) {
  * 纯版本号检查（不需要 .git）：读本地 package.json，跟 GitHub 最新 release/tag 比。
  * 目的：zip 安装、开发副本也能知道"最新是 0.4.8，我是 0.4.6"。
  */
-function parseSemver(value) {
+function parseVersionParts(value) {
   const text = String(value ?? '').replace(/^v/i, '').trim();
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(text);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  const m = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text);
+  if (!m) return null;
+  return { core: [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)], pre: m[4] ? m[4].split('.') : [] };
 }
 
+/**
+ * 完整 semver 比较（含预发布）：
+ *   0.8.6 > 0.8.6-dev.2 > 0.8.6-dev.1；0.8.7-dev.1 > 0.8.6。
+ * 以前只比 core，导致 0.8.6-dev.N 与 0.8.6 相等，dev 通道永远判“没更新”。
+ */
 function semverCompare(a, b) {
-  const x = parseSemver(a);
-  const y = parseSemver(b);
+  const x = parseVersionParts(a);
+  const y = parseVersionParts(b);
   if (!x || !y) return 0;
   for (let i = 0; i < 3; i += 1) {
-    if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
+    if (x.core[i] !== y.core[i]) return x.core[i] > y.core[i] ? 1 : -1;
+  }
+  if (!x.pre.length && !y.pre.length) return 0;
+  if (!x.pre.length) return 1;   // 正式版高于同号预发布
+  if (!y.pre.length) return -1;
+  const len = Math.max(x.pre.length, y.pre.length);
+  for (let i = 0; i < len; i += 1) {
+    const a1 = x.pre[i];
+    const b1 = y.pre[i];
+    if (a1 === undefined) return -1;
+    if (b1 === undefined) return 1;
+    const an = /^\d+$/.test(a1);
+    const bn = /^\d+$/.test(b1);
+    if (an && bn) {
+      const d = Number(a1) - Number(b1);
+      if (d !== 0) return d > 0 ? 1 : -1;
+    } else if (an !== bn) {
+      return an ? -1 : 1; // 数字标识符低于字母标识符
+    } else if (a1 !== b1) {
+      return a1 > b1 ? 1 : -1;
+    }
   }
   return 0;
 }
@@ -211,6 +237,18 @@ export function writeInstalledMeta(dir, meta) {
 `, 'utf8');
   } catch {}
 }
+
+/**
+ * 首次 zip 解压安装没有安装证据。只允许对“看起来确实是 SurfCore 的解压目录”做一次性迁移，
+ * 且必须由 UI 明确确认、先备份；git 工作副本永远不走这条路。
+ */
+function isTrustedZipInstall(dir) {
+  try {
+    if (!dir || fs.existsSync(path.join(dir, '.git'))) return false;
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    return pkg?.name === 'surfcore';
+  } catch { return false; }
+}
 const releaseManifestCache = new Map(); // versionUrl -> { json, at }
 
 /**
@@ -287,7 +325,33 @@ async function fetchLatestRelease(repo) {
   return best;
 }
 
-export async function inspectVersionComponent(component, { fetch: doFetch = true } = {}) {
+/** 测试通道：从 GitHub pre-releases 里挑 semver 最高的 v*-dev.N。 */
+async function fetchLatestDevRelease(repo) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=50`, {
+      headers: ghHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const list = await res.json();
+    const devs = (Array.isArray(list) ? list : []).filter((x) => x
+      && x.prerelease === true
+      && /^v?\d+\.\d+\.\d+-dev\.\d+$/.test(String(x.tag_name ?? '')));
+    if (!devs.length) return null;
+    devs.sort((a, b) => semverCompare(b.tag_name, a.tag_name));
+    const best = devs[0];
+    return {
+      tag: String(best.tag_name),
+      url: String(best.zipball_url ?? ''),
+      source: 'dev-prerelease',
+      publishedAt: String(best.published_at ?? ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectVersionComponent(component, { fetch: doFetch = true, channel = 'stable', firstInstall = false } = {}) {
   const id = String(component?.id ?? '').trim();
   const name = String(component?.name ?? id);
   const dir = normalizeDir(component?.dir);
@@ -343,6 +407,49 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
   if (!installedVersion && !meta) return { ...base, available: false, installedVersion: '', reason: '目录里没有 version.json / .installed-meta.json（还没装好，或装到了别的目录）' };
   if (!doFetch) return { ...base, available: true, installedVersion, latestVersion: null, updateAvailable: false, reason: '本次未拉取' };
 
+  // ── 测试通道（dev）：只认 GitHub pre-release 的 -dev.N，完全不碰稳定版的 latest ──
+  if (channel === 'dev') {
+    const dev = await fetchLatestDevRelease(repo).catch(() => null);
+    const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta)
+      || (firstInstall === true && isTrustedZipInstall(dir));
+    if (!dev) {
+      return {
+        ...base, available: true, installedVersion, latestVersion: null,
+        updateAvailable: false, status: 'latest', code: 'DEV_NO_BUILD', channel: 'dev',
+        reason: '测试通道暂时没有 dev 构建',
+        hint: '让开发机先发一个 vX.Y.Z-dev.N 的 Pre-release，再点「检查更新」',
+      };
+    }
+    const latestVersion = String(dev.tag).replace(/^v/i, '');
+    const installedIsDev = /-/.test(installedVersion);
+    const cmp = semverCompare(latestVersion, installedVersion);
+    let updateAvailable = cmp > 0;
+    let code = cmp > 0 ? 'new-dev-build' : 'up-to-date';
+    let reason = cmp > 0
+      ? `测试通道有新构建：v${installedVersion} → v${latestVersion}`
+      : `已是最新测试构建（v${installedVersion}）`;
+    // 从正式版显式切到测试通道：dev 版本号低于同号正式版，按“通道切换”允许安装一次。
+    if (!installedIsDev && installedVersion) {
+      updateAvailable = true;
+      code = 'channel-switch';
+      reason = `切换到测试通道：v${installedVersion} → v${latestVersion}（dev 低于同号正式版，只按通道切换安装一次）`;
+    }
+    if (updateAvailable && !hasEvidence) {
+      return {
+        ...base, available: true, installedVersion, latestVersion,
+        updateAvailable: true, status: 'blocked', code: 'evidence-insufficient', channel: 'dev',
+        blocked: '目录里没有安装清单/安装记录，无法确认归属',
+        reason: `有测试构建 v${latestVersion}，但这个目录没有安装证据`,
+        hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请手动下载该版本 zip 覆盖一次，装好后会自动补登记',
+      };
+    }
+    return {
+      ...base, available: true, installedVersion, latestVersion,
+      updateAvailable, status: updateAvailable ? 'update' : 'latest', code, channel: 'dev',
+      downloadUrl: dev.url, reason,
+    };
+  }
+
   // 提交级比对：语音包这类"没有发版号"的组件，按远端 main 的 commit 判断有没有新提交。
   // 同时尽量取远端版本号：只显示 7 位 sha 时用户会以为是乱码（2026-10-29 反馈）。
   const remoteSha = await fetchCommitSha(repo).catch(() => '');
@@ -388,7 +495,7 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
         // 有更新，但先看有没有"安装证据"：既无安装清单也无安装记录时不能自动覆盖，
         // 必须在这里标成 blocked —— 否则用户点了更新会失败、下次检查又弹同一条（2026-10-29 反馈）。
         const hasManifest = fs.existsSync(path.join(dir, '.installed-manifest.json'));
-        const evidence = hasManifest || Boolean(meta);
+        const evidence = hasManifest || Boolean(meta) || (firstInstall === true && isTrustedZipInstall(dir));
         if (!evidence) {
           return {
             ...base, available: true, installedVersion, latestVersion: remoteVer,
@@ -396,7 +503,7 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
             status: 'blocked', code: 'evidence-insufficient',
             blocked: '目录里没有安装清单/安装记录，无法确认归属',
             reason: `有新版 v${remoteVer}，但这个目录没有安装证据（无 .installed-manifest.json / .installed-meta.json）`,
-            hint: '为安全不自动覆盖：请手动下载新版 zip 覆盖一次；装好后新版会自动补登记，之后可自动更新',
+            hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请手动下载新版 zip 覆盖一次，装好后新版会自动补登记，之后可自动更新',
           };
         }
         return {
@@ -454,14 +561,15 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
   }
   const latestVersion = latest.tag.replace(/^v/i, '');
   const cmp = semverCompare(latestVersion, installedVersion);
-  const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta);
+  const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta)
+    || (firstInstall === true && isTrustedZipInstall(dir));
   if (cmp > 0 && !hasEvidence) {
     return {
       ...base, available: true, installedVersion, latestVersion,
       updateAvailable: true, status: 'blocked', code: 'evidence-insufficient',
       blocked: '目录里没有安装清单/安装记录，无法确认归属',
       reason: `有新版 v${latestVersion}，但这个目录没有安装证据`,
-      hint: '为安全不自动覆盖：请手动下载新版 zip 覆盖一次；装好后新版会自动补登记',
+      hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请手动下载新版 zip 覆盖一次，装好后新版会自动补登记',
     };
   }
   return {
@@ -637,20 +745,9 @@ export async function fastForwardComponent(component) {
 // 构建产物型组件（桌宠）：源码在 git，但用户装的是 zip。检查 = 读 version.json 比版本号；
 // 更新 = 下 zip → 校验 sha256 → 交给组件自己的安装器（保留用户数据由安装器负责）。
 
-/** semver 比较：0.10.0 > 0.9.0；预发布（含 -）低于同号正式版。返回 1/0/-1。 */
+/** semver 比较：0.10.0 > 0.9.0；正式版 > 同号预发布；dev.2 > dev.1。返回 1/0/-1。 */
 export function compareVersions(a, b) {
-  const core = (value) => String(value ?? '').trim().replace(/^v/i, '').split(/[-+]/)[0]
-    .split('.').map((part) => Number.parseInt(part, 10) || 0);
-  const pa = core(a);
-  const pb = core(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
-    if (x !== y) return x > y ? 1 : -1;
-  }
-  const isPre = (value) => /[-+]/.test(String(value ?? '').trim().replace(/^v/i, ''));
-  if (isPre(a) !== isPre(b)) return isPre(a) ? -1 : 1;
-  return 0;
+  return semverCompare(a, b);
 }
 
 function readJsonSafe(file) {
@@ -707,7 +804,7 @@ async function fetchJson(url, { timeout = 15_000, maxBytes = 512 * 1024 } = {}) 
   });
 }
 
-async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 * 1024 } = {}) {
+async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 * 1024, onProgress = null } = {}) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const local = localPathOf(url);
   if (local) {
@@ -720,19 +817,31 @@ async function downloadTo(url, dest, { timeout = 180_000, maxBytes = 400 * 1024 
     return { ok: false, error: String(error?.message ?? error) };
   }
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     const req = mod.get(url, { timeout, headers: { 'user-agent': 'surfcore-update-download' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        resolve(downloadTo(new URL(res.headers.location, url).toString(), dest, { timeout, maxBytes }));
+        resolve(downloadTo(new URL(res.headers.location, url).toString(), dest, { timeout, maxBytes, onProgress }));
         return;
       }
       if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, error: `HTTP ${res.statusCode}` }); return; }
       const out = fs.createWriteStream(dest);
       let size = 0;
+      const total = Number(res.headers['content-length']) || 0;
       res.on('data', (chunk) => {
         size += chunk.length;
         if (size > maxBytes) { req.destroy(); res.destroy(); out.destroy(); resolve({ ok: false, error: '安装包太大' }); return; }
         out.write(chunk);
+        if (typeof onProgress === 'function') {
+          const elapsed = Math.max(1, Date.now() - startedAt);
+          try {
+            onProgress({
+              active: true, phase: 'download', url, bytes: size, total,
+              percent: total ? Math.min(100, Math.round((size / total) * 100)) : null,
+              speedBps: Math.round(size / (elapsed / 1000)), startedAt,
+            });
+          } catch {}
+        }
       });
       res.on('end', () => out.end(() => resolve({ ok: true, bytes: size })));
       res.on('error', (error) => { out.destroy(); resolve({ ok: false, error: String(error?.message ?? error) }); });
@@ -747,6 +856,25 @@ function sha256File(file) {
     return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   } catch {
     return '';
+  }
+}
+
+/** 基础 ZIP 完整性预检：HTTP 200 但被截断的包通常没有 EOCD。 */
+function hasZipEocd(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      if (size < 22) return false;
+      const readSize = Math.min(65_557, size);
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, size - readSize);
+      return buf.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
   }
 }
 
@@ -844,13 +972,13 @@ export async function inspectReleaseComponent(component, { fetch = true } = {}) 
 }
 
 /** 下一份 release 安装包到本机并校验；返回本地路径。 */
-export async function downloadReleaseAsset(component, report, { stateDir, pluginLog = () => {} } = {}) {
+export async function downloadReleaseAsset(component, report, { stateDir, pluginLog = () => {}, onProgress = null } = {}) {
   const asset = report?.asset;
   if (!asset?.url) return { ok: false, error: '清单里没有下载地址' };
   const ext = /\.zip(\?|$)/i.test(asset.url) ? '.zip' : '';
   const dir = path.join(stateDir, 'downloads');
   const dest = path.join(dir, `${String(component.id)}-${String(report.latestVersion ?? 'latest')}${ext}`);
-  const downloaded = await downloadTo(asset.url, dest, { maxBytes: Math.max(asset.size || 0, 400 * 1024 * 1024) });
+  const downloaded = await downloadTo(asset.url, dest, { maxBytes: Math.max(asset.size || 0, 400 * 1024 * 1024), onProgress });
   if (!downloaded.ok) return { ok: false, error: `下载失败：${downloaded.error}` };
   if (asset.sha256) {
     const actual = sha256File(dest);
@@ -867,7 +995,7 @@ export async function downloadReleaseAsset(component, report, { stateDir, plugin
   return { ok: true, path: dest, bytes: downloaded.bytes };
 }
 
-export function createUpdatesService({ stateDir, components, blockedReason = () => '', pluginLog = () => {}, githubToken = () => '' }) {
+export function createUpdatesService({ stateDir, components, blockedReason = () => '', pluginLog = () => {}, githubToken = () => '', channel = () => 'stable' }) {
   const file = path.join(stateDir, 'updates.json');
   const now = () => Date.now();
   let state = { dismissed: {}, lastCheckAt: 0, results: [], lastError: '', lastApplyFailure: null, applyBackoff: {} };
@@ -936,8 +1064,18 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 
   function pendingOf(results) {
     const now = Date.now();
+    // 有排队中的更新（等 DSH 退出后应用）时，重启前不要把它再当成“有可用更新”。
+    // 这也兼容旧版误写成 vnull 的 dismissed 记录。
+    const pendingFile = path.join(stateDir, 'updates-pending.json');
+    let queuedComponent = '';
+    try {
+      if (fs.existsSync(pendingFile) && !fs.existsSync(`${pendingFile}.failed`)) {
+        queuedComponent = String(JSON.parse(fs.readFileSync(pendingFile, 'utf8'))?.component ?? '');
+      }
+    } catch {}
     return (results ?? []).filter((item) => {
       if (!(item?.available && item.updateAvailable)) return false;
+      if (queuedComponent && String(item.id) === queuedComponent) return false;
       if (item.blocked) return false; // 本地有改动/分叉/缺证据，更新不了，别反复弹
       if (!(item.installedVersion || item.local)) return false;
       const target = targetKeyOf(item);
@@ -1049,7 +1187,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             ? '上次暂存已过期（等 DSH 退出的时间太久）：点「立即更新」重新下载即可'
             : code === 'verify.version-mismatch'
               ? '发布包与清单不一致：手动下载该版本覆盖，重试无效'
-              : '备份与 staging 仍保留；可重试或手动覆盖 zip',
+              : code === 'apply.unknown-kind'
+                ? '更新助手不认识这种任务类型（插件缺陷）：请反馈，并手动下载 zip 覆盖'
+                : '备份与 staging 仍保留；可重试或手动覆盖 zip',
           at: j.at ?? null,
         };
       }
@@ -1066,7 +1206,6 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         const files = fs.readdirSync(doneDir).filter((f) => f.endsWith('.json')).sort();
         if (files.length) {
           const j = JSON.parse(fs.readFileSync(path.join(doneDir, files[files.length - 1]), 'utf8'));
-          // 助手做了更新后版本校验；verified:true 才能叫成功，否则只能是"已应用未验证"
           if (j.verified === true) {
             return {
               status: 'success', code: 'apply.verified', component: j.component ?? '',
@@ -1091,6 +1230,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   function status() {
     const results = state.results ?? [];
     const pending = pendingOf(results);
+    const unknown = results.filter((row) => row && !row.available && row.status === 'unknown' && !row.blocked);
     return {
       ok: true,
       checking,
@@ -1100,15 +1240,44 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       results,
       pending,
       pendingCount: pending.length,
+      unknown,
+      unknownCount: unknown.length,
       lastApply: state.lastApplyFailure ?? readLastApply(),
+      channel: channel() === 'dev' ? 'dev' : 'stable',
       download: downloadProgress,
       githubTokenConfigured: githubTokenConfigured(),
       showPrompt: pending.length > 0,
     };
   }
 
-  async function check({ fetch = true } = {}) {
+  /** 清理 N 天前的 staging 残留（成功更新后 helper 只删解压目录，外层 pkg.zip 会留下）。 */
+  function cleanupStaleStaging(maxAgeMs = 3 * 24 * 3600_000) {
+    const root = path.join(stateDir, 'staging');
+    let activeStaging = '';
+    try {
+      const pending = JSON.parse(fs.readFileSync(path.join(stateDir, 'updates-pending.json'), 'utf8'));
+      activeStaging = path.resolve(String(pending.staging ?? ''));
+    } catch {}
+    let removed = 0;
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const full = path.join(root, entry.name);
+        // 正在排队等 DSH 退出的 staging 不能被清理，否则 helper 找不到包
+        if (activeStaging && activeStaging.startsWith(path.resolve(full) + path.sep)) continue;
+        try {
+          const st = fs.statSync(full);
+          if (Date.now() - st.mtimeMs > maxAgeMs) { fs.rmSync(full, { recursive: true, force: true }); removed += 1; }
+        } catch {}
+      }
+    } catch {}
+    if (removed) pluginLog(`[updates] 清理 ${removed} 个过期 staging 目录`);
+    return removed;
+  }
+
+  async function check({ fetch = true, firstInstall = false } = {}) {
     if (checking) return status();
+    cleanupStaleStaging();
     try { setGitHubToken(githubToken()); } catch {}
     checking = true;
     try {
@@ -1116,7 +1285,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       const results = [];
       for (const item of items) {
         try {
-          results.push(await inspectComponent(item, { fetch }));
+          results.push(await inspectComponent(item, { fetch, channel: channel(), firstInstall }));
         } catch (error) {
           // 单个组件炸了不能拖垮整次检查，但必须留下可读结论（不能变成"最新"）
           results.push({
@@ -1130,7 +1299,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       }
       state = { ...state, results, lastCheckAt: now(), lastError: '' };
       persist();
-      pluginLog(`[updates] 检查完成：${pendingOf(results).length} 个组件有更新`);
+      const pendingCount = pendingOf(results).length;
+      const unknownCount = results.filter((row) => row && !row.available && row.status === 'unknown' && !row.blocked).length;
+      pluginLog(`[updates] 检查完成：${pendingCount} 个组件有更新${unknownCount ? `；${unknownCount} 个无法判定` : ''}`);
       return status();
     } catch (error) {
       // 整次检查失败：写清原因，界面必须显示"检查失败"，不能显示"最新"
@@ -1220,7 +1391,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
    * 覆盖正在使用的文件会让进程直接终止（0xFFFF7003），更新也不会落地
    * （2026-10-28 用户崩溃报告）。
    */
-  async function updateFromZip(item, report) {
+  async function updateFromZip(item, report, opts = {}) {
     const dir = normalizeDir(item.dir);
     const repo = String(item.versionRepo ?? '').trim();
     if (!dir || !repo) {
@@ -1233,7 +1404,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     // 有版本号就用 **tag 归档**：分支（main.zip）会随提交漂移，和"某版本的清单"天然对不上。
     // 没有版本号（语音包等按提交追踪的组件）才退回 main.zip。
     const wantVer = String(report?.latestVersion ?? '').trim();
-    const isSemver = /^\d+\.\d+\.\d+$/.test(wantVer);
+    const isSemver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(wantVer);
     // 下载走 codeload 直连（少一次 302、少一个域名依赖），再依次试镜像；
     // github.com 在部分网络下不可达，但 codeload 正常（2026-10-30 实测）。
     const archivePaths = isSemver
@@ -1294,7 +1465,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             continue;
           }
           const totalBytes = Number(r.headers.get('content-length')) || 0;
-          downloadProgress = { active: true, url: candidate, bytes: 0, total: totalBytes, percent: totalBytes ? 0 : null, speedBps: 0, startedAt };
+          downloadProgress = { active: true, phase: 'download', url: candidate, bytes: 0, total: totalBytes, percent: totalBytes ? 0 : null, speedBps: 0, startedAt };
           fh = fs.openSync(zipFile, 'w');
           let bytes = 0;
           while (true) {
@@ -1313,7 +1484,14 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             idleTimer = setTimeout(() => controller.abort(), idleMs); // 有数据就续命
           }
           fs.closeSync(fh); fh = null;
-          downloadProgress = { ...downloadProgress, active: false, bytes, percent: downloadProgress?.percent ?? null };
+          downloadProgress = { ...downloadProgress, active: false, phase: 'extract', bytes, percent: totalBytes ? 100 : downloadProgress?.percent ?? null };
+          // HTTP 200 不代表包完整：截断的 zip 没有 EOCD。这里先预检，
+          // 失败就换下一个镜像，不要等 Expand-Archive 才报“包坏了”。
+          if (!hasZipEocd(zipFile)) {
+            tried.push({ url: candidate, outcome: 'bad-zip' });
+            try { fs.rmSync(zipFile, { force: true }); } catch {}
+            continue;
+          }
           downloaded = { bytes, elapsedMs: Date.now() - startedAt, url: candidate };
           break;
         } catch (error) {
@@ -1329,8 +1507,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       }
 
       if (!downloaded) {
-        downloadProgress = { ...(downloadProgress ?? {}), active: false };
+        downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };
         const last = tried[tried.length - 1] ?? {};
+        const badZip = tried.some((x) => x.outcome === 'bad-zip');
         const httpStatus = /^http-(\d+)$/.exec(String(last.outcome || ''))?.[1];
         const info = classifyDownloadFailure({
           aborted: tried.some((x) => x.outcome === 'timeout'),
@@ -1339,18 +1518,21 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           error: last.outcome,
         });
         return fail({
-          ok: false, status: 'failed', stage: 'download', code: info.code,
-          reason: info.code === 'download.timeout'
+          ok: false, status: 'failed', stage: badZip ? 'verify' : 'download', code: badZip ? 'verify.unzip-failed' : info.code,
+          reason: badZip
+            ? '下载完成但 ZIP 不完整（没有 EOCD/可能被截断），已尝试其他镜像仍失败'
+            : info.code === 'download.timeout'
             ? `下载超时：${Math.round(idleMs / 1000)} 秒没有新数据（或超过总上限）`
             : info.code === 'download.write-failed'
               ? `下载内容写入失败：磁盘空间/目录权限（${String(last.outcome).slice(0, 80)}）`
               : `下载失败：${String(last.outcome ?? '所有地址都不可用').slice(0, 160)}`,
-          hint: info.hint,
-          retryable: info.code !== 'download.write-failed',
+          hint: badZip ? '网络/代理可能截断了大文件：稍后重试，或到 Release 页手动下载 zip 覆盖' : info.hint,
+          retryable: true,
           diagnostics: { tried },
         });
       }
       pluginLog(`[updates] 下载完成：${(downloaded.bytes / 1024 / 1024).toFixed(2)} MB，${(downloaded.elapsedMs / 1000).toFixed(1)} 秒（${downloaded.url}）`);
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'extract' };
       try {
         await new Promise((resolve, reject) => {
           execFile('powershell', ['-NoProfile', '-Command',
@@ -1358,6 +1540,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           { windowsHide: true, timeout: 120_000 }, (error) => (error ? reject(error) : resolve()));
         });
       } catch (error) {
+        downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };
         return fail({
           ok: false, status: 'failed', stage: 'verify', code: 'verify.unzip-failed',
           reason: `安装包解压失败：${String(error?.message ?? error).slice(0, 160)}`,
@@ -1366,6 +1549,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         });
       }
 
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'verify' };
       const entries = fs.readdirSync(stagingRoot, { withFileTypes: true }).filter((d) => d.isDirectory() && /^surfcore-/.test(d.name));
       const src = entries.length ? path.join(stagingRoot, entries[0].name) : '';
       if (!src || !fs.existsSync(path.join(src, 'package.json'))) {
@@ -1410,22 +1594,44 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       } catch {}
       const hasMeta = fs.existsSync(path.join(dir, '.installed-meta.json'));
       if (!priorFiles && !hasMeta) {
-        return fail({
-          ok: false, status: 'blocked', stage: 'preflight', code: 'evidence-insufficient',
-          reason: '这个安装既没有安装清单也没有安装记录，无法确认目录归属',
-          hint: '为安全起见不自动覆盖：请按官方 Release 手动下载；装一次新版后即可恢复自动更新',
-        });
+        if (opts.firstInstall !== true) {
+          return fail({
+            ok: false, status: 'blocked', stage: 'preflight', code: 'evidence-insufficient',
+            reason: '这个安装既没有安装清单也没有安装记录，无法确认目录归属',
+            hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请按官方 Release 手动下载，装一次新版后即可恢复自动更新',
+          });
+        }
+        if (!isTrustedZipInstall(dir)) {
+          return fail({
+            ok: false, status: 'blocked', stage: 'preflight', code: 'evidence-untrusted',
+            reason: '目录不像 SurfCore 解压安装（package.json 名称不符，或是 git 工作副本）',
+            hint: '不自动覆盖：请确认安装目录，或按官方 Release 手动下载',
+          });
+        }
+        pluginLog(`[updates] ${item.id} 首次 zip 更新：用户确认后先备份再覆盖（无历史安装证据）`);
       }
       const plan = planOverwrite(dir, pkg.manifest, priorFiles);
-      if (plan.modified.length) {
+      if (plan.modified.length && opts.overwriteModified !== true) {
+        // 确定性失败：不还原/不显式覆盖，重试必然同样结果 → 前端应禁用“立即更新”，
+        // 只留“备份并覆盖”这个显式出口（2026-11-02 测试机反馈 P0）。
         return fail({
           ok: false, status: 'blocked', stage: 'preflight', code: 'local-modifications',
-          reason: `这些文件被本地改过，覆盖会丢掉改动：${plan.modified.slice(0, 5).join('、')}${plan.modified.length > 5 ? ` 等 ${plan.modified.length} 个` : ''}`,
-          hint: '先备份/还原这些文件，或手动下载新版覆盖',
+          deterministic: true,
+          reason: `这些文件被本地改过，覆盖会丢掉改动（共 ${plan.modified.length} 个）：${plan.modified.slice(0, 8).join('、')}${plan.modified.length > 8 ? '…' : ''}`,
+          hint: '点「备份并覆盖」继续（会先把这些文件备份到 state/backups）；或先还原/手动下载新版',
+          diagnostics: {
+            modified: plan.modified.slice(0, 20),
+            total: plan.modified.length,
+            checked: plan.overwrite.length,
+          },
         });
+      }
+      if (plan.modified.length) {
+        pluginLog(`[updates] ${item.id} 用户选择备份并覆盖 ${plan.modified.length} 个本地改动文件`);
       }
 
       const txn = `${item.id}-${stamp}`;
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'backup' };
       const backup = backupTarget(dir, plan.overwrite, txn, {
         component: item.id, from: report?.installedVersion ?? '', to: report?.latestVersion ?? '',
         manifest: pkg.manifest.version ?? '',
@@ -1438,12 +1644,14 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         });
       }
 
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'stage' };
       const staged = stageDeferredApply({
         kind: 'zip', component: String(item.id), target: dir, staging: src, to: String(report?.latestVersion ?? ''),
         txn, backup: backup.dir, from: report?.installedVersion ?? '',
         manifest: { version: pkg.manifest.version ?? '', files: Object.keys(pkg.manifest.files).length },
         meta: { version: String(report?.latestVersion ?? ''), sha: String(report?.remoteSha ?? '') },
       });
+      downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: staged.ok ? 'pending' : 'failed' };
       if (!staged.ok) {
         return fail({
           ok: false, status: 'failed', stage: 'stage', code: staged.code ?? 'stage.failed',
@@ -1467,6 +1675,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 
 /** 写 pending 文件 + 起独立进程（等本宿主退出后执行覆盖）。 */
   function stageDeferredApply(job) {
+    // 新一次排队 = 新尝试：上一轮的 .failed 不能再压住它
+    try { fs.rmSync(path.join(stateDir, 'updates-pending.json.failed'), { force: true }); } catch {}
+
     const pendingFile = path.join(stateDir, 'updates-pending.json');
     const payload = {
       ...job,
@@ -1516,7 +1727,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     return { ok: true, pid: child.pid, pendingFile };
   }
 
-  async function apply(ids) {
+  async function apply(ids, opts = {}) {
     if (applying) return { ok: false, error: '正在更新中，请稍候', results: [] };
     const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));
     if (!wanted.size) return { ok: false, error: '没有选择要更新的组件', results: [] };
@@ -1524,13 +1735,14 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     downloadProgress = null;
     try {
       // 更新前重新检查一次：用户可能刚改过文件、远端也可能又变了
-      await check({ fetch: true });
+      await check({ fetch: true, firstInstall: opts.firstInstall === true });
       const all = list();
       const results = [];
+      const stagedTargets = new Map();
       for (const item of all) {
         if (!wanted.has(String(item.id))) continue;
         const report = (state.results ?? []).find((row) => row.id === item.id);
-        if (!report?.available) { results.push({ id: item.id, ok: false, error: report?.reason ?? '不可用' }); continue; }
+        if (!report?.available) { results.push({ id: item.id, ok: false, code: 'apply.not-available', error: report?.reason ?? '不可用', hint: '先点「检查更新」确认远端可达' }); continue; }
         if (!report.updateAvailable) { results.push({ id: item.id, ok: true, skipped: true, message: '已是最新' }); continue; }
         if (report.blocked) {
           results.push({
@@ -1542,18 +1754,29 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           continue;
         }
         const blocked = blockedReason(item);
-        if (blocked) { results.push({ id: item.id, ok: false, error: blocked }); continue; }
+        if (blocked) { results.push({ id: item.id, ok: false, code: 'apply.blocked', error: blocked, hint: '按提示处理后再试' }); continue; }
 
-        if (report.channel === 'version') {
-          const done = await updateFromZip(item, report);
+        if (report.channel === 'version' || report.channel === 'dev') {
+          // dev 构建也是 tag 归档：和稳定版走同一条 zip 流水线（校验/暂存/回滚都复用）。
+          const done = await updateFromZip(item, report, opts);
+          if (done?.ok && done.staged) stagedTargets.set(String(item.id), targetKeyOf(report));
           results.push({ id: item.id, ...done });
           continue;
         }
 
         if (report.channel === 'release') {
           // 构建产物型（桌宠）：下 zip → 校验 → 交给组件自己的安装器。
-          const downloaded = await downloadReleaseAsset(item, report, { stateDir, pluginLog });
-          if (!downloaded.ok) { results.push({ id: item.id, ok: false, error: downloaded.error }); continue; }
+          const downloaded = await downloadReleaseAsset(item, report, {
+            stateDir,
+            pluginLog,
+            onProgress: (p) => { downloadProgress = p; },
+          });
+          if (!downloaded.ok) {
+            downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'failed' };
+            results.push({ id: item.id, ok: false, code: downloaded.code ?? 'download.failed', error: downloaded.error, hint: downloaded.hint ?? '检查网络后重试；持续失败可手动下载安装包' });
+            continue;
+          }
+          downloadProgress = { ...(downloadProgress ?? {}), active: false, phase: 'install' };
           if (typeof item.installZip !== 'function') {
             results.push({ id: item.id, ok: false, error: '这个组件没有配置安装器（installZip）' });
             continue;
@@ -1562,7 +1785,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           try { installed = await item.installZip(downloaded.path, { report }); }
           catch (error) { installed = { ok: false, error: String(error?.message ?? error) }; }
           try { fs.rmSync(downloaded.path, { force: true }); } catch {}
-          if (!installed?.ok) { results.push({ id: item.id, ok: false, error: installed?.error ?? '安装失败' }); continue; }
+          if (!installed?.ok) { results.push({ id: item.id, ok: false, code: installed?.code ?? 'apply.install-failed', error: installed?.error ?? '安装失败', hint: installed?.hint ?? '查看该组件安装器日志；或手动下载安装包覆盖' }); continue; }
           results.push({
             id: item.id, ok: true, from: report.installedVersion, to: report.latestVersion,
             message: `${report.name} 已更新到 v${report.latestVersion}`,
@@ -1579,6 +1802,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
             kind: 'git', component: String(item.id), target: dir,
             branch: String(item.branch || report.branch || 'main'), to: String(report.latest ?? ''),
           });
+          if (staged.ok) stagedTargets.set(String(item.id), targetKeyOf(report));
           pluginLog(`[updates] ${item.id} 已排队 git 更新，等 DSH 退出后执行（pid=${staged.pid ?? '?'}）`);
           results.push({
             id: item.id, ok: true, staged: true, needRestart: true,
@@ -1590,23 +1814,53 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           continue;
         }
 
-        const merged = await fastForwardComponent({ ...item, branch: report.branch });
-        if (!merged.ok) { results.push({ id: item.id, ok: false, error: merged.error }); continue; }
+        // 兼容非常老的检查结果（没有 channel 字段）：那时只有 git 组件。
+        if (!report.channel) {
+          const merged = await fastForwardComponent({ ...item, branch: report.branch });
+          if (!merged.ok) {
+            results.push({
+              id: item.id, ok: false, code: 'apply.git-failed',
+              error: merged.error,
+              hint: /ENOENT/.test(String(merged.error))
+                ? '本机没有 git 命令：zip 安装不该走 git 更新（插件缺陷，请反馈）；可手动下载 zip 覆盖'
+                : '先处理本地改动/网络后重试',
+            });
+            continue;
+          }
+          results.push({
+            id: item.id, ok: true, from: report.local, to: merged.head,
+            message: `${report.name} 已更新（${report.behind} 个提交）`,
+            restart: String(item.id).startsWith('surfvoice') ? '重启对应语音服务' : (item.id === 'surfcore' ? '重启 DSH' : '重启对应组件'),
+          });
+          continue;
+        }
+
+        // 有 channel 但没有对应应用逻辑 = 插件缺陷；绝不能猜成 git merge。
         results.push({
-          id: item.id, ok: true, from: report.local, to: merged.head,
-          message: `${report.name} 已更新（${report.behind} 个提交）`,
-          restart: String(item.id).startsWith('surfvoice') ? '重启对应语音服务' : (item.id === 'surfcore' ? '重启 DSH' : '重启对应组件'),
+          id: item.id, ok: false, code: 'apply.unknown-channel',
+          error: `更新通道「${report.channel}」没有对应的应用逻辑`,
+          hint: '这是插件缺陷：请把这条诊断反馈开发者；可先手动下载该版本 zip 覆盖',
         });
+        continue;
       }
-      // 更新完再体检一次，让界面拿到最新状态
-      await check({ fetch: false });
+      // 只有“已经真正落地”的组件才需要重新拉远端校准；staged 组件还没覆盖文件，
+      // 这里绝不能做 no-fetch 检查（它会把 latestVersion 洗成 null，dismiss 再次写成 vnull）。
+      if (results.some((row) => row.ok && !row.staged)) {
+        await check({ fetch: true });
+      }
       // 已排队（staged）的组件：记成"已处理"，重启前不再弹同一个提醒。
       // 以前不记账 → 用户点了更新、还没重启，下次检查又弹一遍（2026-10-28 反馈）。
       try {
         for (const row of results) {
           if (!row.ok || !row.staged) continue;
-          const report = (state.results ?? []).find((x) => x.id === row.id);
-          const key = report?.remote ?? `v${report?.latestVersion ?? ''}`;
+          // 用下载前捕获的目标键；最后的 check({fetch:false}) 会把 latestVersion 洗成 null，
+          // 不能再从它算 key（否则又写成 vnull，重启前重复弹 update）。
+          const key = stagedTargets.get(String(row.id))
+            ?? (() => {
+              const report = (state.results ?? []).find((x) => x.id === row.id);
+              if (!report) return '';
+              return report.remote ?? (report.latestVersion ? `v${report.latestVersion}` : '');
+            })();
           if (key) state.dismissed[row.id] = key;
         }
         persist();
@@ -1614,7 +1868,9 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       const failedNow = results.filter((row) => !row.ok);
       // 下载/网络类失败：30 分钟内不再自动弹同一条（用户关掉后不该每次检查又出现）
       for (const f of failedNow) {
-        if (/^download\./.test(String(f.code || '')) || String(f.code || '').startsWith('stage.')) {
+        if (/^download\./.test(String(f.code || ''))
+          || String(f.code || '').startsWith('stage.')
+          || /^apply\.(unknown-channel|unknown-kind|git-failed)$/.test(String(f.code || ''))) {
           const row = (state.results ?? []).find((r) => r.id === f.id);
           if (row) {
             state.applyBackoff = state.applyBackoff && typeof state.applyBackoff === 'object' ? state.applyBackoff : {};
@@ -1632,6 +1888,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           deterministic: failedNow[0].deterministic === true,
           mismatchCount: failedNow[0].diagnostics?.mismatch,
           missingCount: failedNow[0].diagnostics?.missing,
+          modifiedCount: failedNow[0].diagnostics?.total,
+          modifiedSample: failedNow[0].diagnostics?.modified,
           sample: failedNow[0].diagnostics?.sample,
           at: new Date().toISOString(),
         }
@@ -1667,6 +1925,18 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     return status();
   }
 
+  /**
+   * 清掉当前检查结果（切换更新通道时用）：
+   * 避免切回 main 后，上一轮 dev 检查留下的 pending 继续弹窗——main 通道不该被 dev 更新打扰。
+   */
+  function resetCheck() {
+    state.results = [];
+    state.lastCheckAt = 0;
+    state.lastError = '';
+    persist();
+    return status();
+  }
+
   /** 清掉"不再提示"，让下一次检查重新提示（界面上的"恢复提示"）。 */
   function resetDismissed() {
     state.dismissed = {};
@@ -1686,7 +1956,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     if (timer) { clearInterval(timer); timer = null; }
   }
 
-  return { check, apply, rollback, dismiss, resetDismissed, status, startAutoCheck, dispose, file };
+  return { check, apply, rollback, dismiss, resetDismissed, resetCheck, status, startAutoCheck, dispose, file };
 }
 
 export { resumePendingApply };

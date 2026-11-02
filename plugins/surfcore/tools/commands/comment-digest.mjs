@@ -62,7 +62,7 @@ async function realText(x) {
   const key = `${x.oid}|${x.root}|${x.mid}`
   if (cache.has(key)) return cache.get(key)
   resolved += 1
-  const r = await resolveLatestReply({ business: x.business, oid: x.oid, root: x.root, mid: x.mid, parentRpid: x.parent, headers: H }).catch(() => null)
+  const r = await resolveLatestReply({ business: x.business, oid: x.oid, root: x.root, mid: x.mid, rpid: x.parent, headers: H }).catch(() => null)
   const out = { text: (r?.text ?? '').replace(/\n/g, ' '), rpid: r?.rpid || x.parent, ctime: r?.ctime }
   cache.set(key, out)
   return out
@@ -77,6 +77,7 @@ for (const x of all) {
   console.log(`    「${text}」`)
   if (x.uri) console.log(`    位置：${x.uri}`)
   if (x.kind === 'reply') console.log(`    坐标：type=${x.business} oid=${x.oid} root=${x.root} parent=${real?.rpid || x.parent}`)
+  else if (x.root || x.parent) console.log(`    坐标：type=${x.business} oid=${x.oid} root=${x.root} parent=${real?.rpid || x.parent}`)
 }
 
 const byWho = new Map()

@@ -64,22 +64,35 @@ export async function discoverDshBaseUrl() {
 /**
  * 这个地址上是否有一个活着的 DSH。
  *
- * 401 = 教科书式的「DSH 在，但要鉴权」；200 只有在 SERVER 头像 DSH 时才认——
- * 否则回环上任何一个别的 Web 服务（开发服务器、别的控制台）都会被当成 DSH，
- * 桥接就会把消息投给错误的目标，症状还是「QQ 有消息、DSH 没反应」。
+ * 401 = 教科书式的「DSH 在，但要鉴权」；200 只有 Server 头或 /api/status
+ * 的 JSON 形状像 DSH 时才认——否则回环上任何一个别的 Web 服务（开发服务器、
+ * 别的控制台）都会被当成 DSH，桥接就会把消息投给错误的目标。
  */
 export async function probeDshBaseUrl(baseUrl, timeoutMs = 2000) {
   const base = String(baseUrl ?? '').trim().replace(/\/+$/, '');
   if (!base) return false;
-  try {
-    const res = await fetch(`${base}/`, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
-    await res.body?.cancel?.();
-    if (res.status === 401) return true;
-    const server = String(res.headers.get('server') ?? '');
-    return res.status === 200 && /dsh/i.test(server);
-  } catch {
+  const probe = async (path, readJson = false) => {
+    try {
+      const res = await fetch(`${base}${path}`, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+      if (res.status === 401) { await res.body?.cancel?.(); return true; }
+      if (res.status !== 200) { await res.body?.cancel?.(); return false; }
+      if (readJson) {
+        const body = await res.json().catch(() => null);
+        const looks = body && typeof body === 'object'
+          && ('modelConnection' in body || 'latestEventCursor' in body || 'sessions' in body);
+        if (looks) return true;
+      } else {
+        const server = String(res.headers.get('server') ?? '');
+        await res.body?.cancel?.();
+        if (/dsh/i.test(server)) return true;
+      }
+    } catch {}
     return false;
-  }
+  };
+  // 桌面内嵌宿主可能没有 `server: dsh` 头，但 /api/status 一定存在；
+  // 先看 API 形状，再看旧版根路径头，避免把「HTTP 通但缺 remote.mux」误报成连不上。
+  if (await probe('/api/status', true)) return true;
+  return probe('/', false);
 }
 
 /** 只对回环地址做「端口漂移」兜底；远程 DSH 由用户显式配置，不能被本地探测覆盖。 */

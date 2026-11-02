@@ -56,7 +56,9 @@ try {
   } catch (error) { exitCode = error.status ?? 1; }
   ok(exitCode !== 0, 'staging 缺失时助手以非 0 退出');
   ok(fs.existsSync(`${badPending}.failed`), '失败留下 .failed 证据');
-  ok(fs.existsSync(badPending), '失败保留 pending（下次启动会重试）');
+  // 2026-11-01 起：失败 = 本次尝试结束，删 pending、只留 .failed（避免下次启动重试坏包/永远显示旧失败）
+  ok(!fs.existsSync(badPending), '失败后删除 pending（.failed 是唯一真相）');
+  ok(!fs.existsSync(`${badPending}.started`), '失败后清理 .started');
 } finally {
   fs.rmSync(base, { recursive: true, force: true });
 }

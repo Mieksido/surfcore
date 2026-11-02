@@ -23,6 +23,7 @@ import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../../src/fish-g
 import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js';
 import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { normalizeCardMode } from '../../../src/share-mode.js';
+import { normalizeClockText, normalizeWindow } from '../tools/lib/time-window.mjs';
 
 export const MASK = '********';
 
@@ -51,7 +52,8 @@ const BIDI_DEFAULTS = {
   // 四类动态（2026-10-22 可编辑）：默认值与 tools/lib/kinds.mjs 的 DEFAULT_KINDS 同源。
   dynamics: dynamicDefaults(),
   diary: { push: true, enabled: true },
-  notify: { type: 'none', url: '', template: 'text', cmd: '', args: [] },
+  notify: { type: 'none', url: '', template: 'text', cmd: '', args: [], timeoutMutes: [] },
+  interact: { enabled: true, maxCommentAgeDays: 14 },
   listen: {
     comment: true, commentIntervalSec: 300, scope: 'both', oncePerPerson: false,
     allDay: false, dm: false, dmScope: 'owner', live: false, liveRoom: '', liveScope: 'owner',
@@ -59,6 +61,7 @@ const BIDI_DEFAULTS = {
   share: { enabled: true, via: 'dynamic', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },
   fishGuard: DEFAULT_BILI_FISH_GUARD,
   toolsPath: '',
+  shots: { dir: '', retentionDays: 7, maxMB: 0 },
 };
 
 export const DEFAULT_UNIFIED = {
@@ -84,7 +87,7 @@ export const DEFAULT_UNIFIED = {
     biliMid: '',
     biliName: '',
     displayName: '',
-    gentle: true,
+    gentle: false,
   },
   memory: {
     qqToBili: {
@@ -229,6 +232,21 @@ export function writeJsonAtomic(file, value, options) {
   writeTextAtomic(file, `${JSON.stringify(value, null, 2)}\n`, options);
 }
 
+/**
+ * 从备份文件名解析“来源标签”。
+ *
+ * 写文件时是：`${label}-${ISO时间戳去冒号点}${ext}`
+ * 例：`memory-card-2026-10-31T10-01-25-880Z.json`
+ * 注意时间戳内部也有 `-`，所以不能再用 `[^-]+`；扩展名也必须先剥掉。
+ * 无法识别的文件返回 null，避免把用户放进 backups 的无关文件当备份删掉。
+ */
+export function backupGroupOf(name) {
+  const base = path.basename(String(name ?? ''));
+  const stem = base.slice(0, base.length - path.extname(base).length);
+  const match = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2}T[\d-]+Z)$/);
+  return match ? match[1] : null;
+}
+
 export function backupFile(file, label) {
   try {
     if (!fs.existsSync(file)) return null;
@@ -239,32 +257,48 @@ export function backupFile(file, label) {
     fs.copyFileSync(file, dest);
     pruneBackups();
     return dest;
-  } catch {
+  } catch (error) {
+    // 备份失败不能静默：调用方可能继续写主文件，用户需要知道没有恢复点。
+    console.error(`[surfcore] 备份失败 ${path.basename(file)}: ${error?.message ?? error}`);
     return null;
   }
 }
 
-export function pruneBackups(keep = 40) {
+export function pruneBackups(keep = 40, dir = BACKUP_DIR) {
+  const removed = [];
+  const errors = [];
   try {
     // 2026-10-22 审计：旧版是「全局只留 40 条」，而「全部备份」一次就写 8 份，
     // 点 5 次就会把 persona / config 的唯一历史副本挤掉。改为**按来源分别保留**。
-    const RE = /^(.*)-(\d{4}-\d{2}-\d{2}T[^-]+)$/;
     const groups = new Map();
-    for (const name of fs.readdirSync(BACKUP_DIR)) {
-      const full = path.join(BACKUP_DIR, name);
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
       let mtime = 0;
       try { mtime = fs.statSync(full).mtimeMs; } catch { continue; }
-      const label = name.match(RE)?.[1] ?? name;
+      const label = backupGroupOf(name);
+      if (!label) continue; // 非本模块生成的备份，不擅自删除
       if (!groups.has(label)) groups.set(label, []);
       groups.get(label).push({ full, mtime });
     }
+    const limit = Math.max(1, Math.floor(Number(keep) || 40));
     for (const list of groups.values()) {
       list.sort((a, b) => b.mtime - a.mtime);
-      for (const item of list.slice(keep)) {
-        try { fs.unlinkSync(item.full); } catch {}
+      for (const item of list.slice(limit)) {
+        try {
+          fs.unlinkSync(item.full);
+          removed.push(item.full);
+        } catch (error) {
+          errors.push({ file: item.full, error: error?.message ?? String(error) });
+        }
       }
     }
-  } catch {}
+  } catch (error) {
+    errors.push({ file: dir, error: error?.message ?? String(error) });
+  }
+  if (errors.length) {
+    console.warn(`[surfcore] 备份轮转有 ${errors.length} 个文件清理失败：${errors[0].error}`);
+  }
+  return { removed, errors };
 }
 
 export function listBackups(limit = 30) {
@@ -454,18 +488,34 @@ function normalizePreferenceWeights(value, labels) {
   return out;
 }
 
+/**
+ * B站作息窗口归一化：
+ * - 全角冒号/数字 → 半角；
+ * - 非法窗口丢弃并返回 warnings，不再静默变成 0 点；
+ * - 保留用户原来的 6:00 / 06:00 写法，不强行补零。
+ */
+export function normalizeBiliWindowList(windows) {
+  const out = [];
+  const warnings = [];
+  for (const raw of Array.isArray(windows) ? windows : []) {
+    const start = normalizeClockText(raw?.start);
+    const end = normalizeClockText(raw?.end);
+    const normalized = normalizeWindow({ start, end, wakes: raw?.wakes });
+    if (!normalized.ok) {
+      warnings.push(`作息窗口已忽略：${normalized.error}（${start || '空'} – ${end || '空'}）`);
+      continue;
+    }
+    out.push({ start, end, wakes: normalized.wakes });
+  }
+  if (!out.length) out.push({ start: '20:00', end: '24:00', wakes: 1 });
+  return { windows: out, warnings };
+}
+
 /** 保存前的 B 站侧收敛（沿用旧 bili-whale 设置页的边界）。 */
 export function normalizeBiliConfig(input) {
   const cfg = deepMerge(BIDI_DEFAULTS, clone(input ?? {}));
   cfg.night = isPlainObject(cfg.night) ? cfg.night : {};
-  if (!Array.isArray(cfg.night.windows) || cfg.night.windows.length === 0) {
-    cfg.night.windows = [{ start: '20:00', end: '24:00', wakes: 1 }];
-  }
-  cfg.night.windows = cfg.night.windows.map((w) => ({
-    start: String(w?.start ?? '20:00').slice(0, 5),
-    end: String(w?.end ?? '24:00').slice(0, 5),
-    wakes: finiteNumber(w?.wakes, 1, 1, 12, { integer: true }),
-  }));
+  cfg.night.windows = normalizeBiliWindowList(cfg.night.windows).windows;
   cfg.night.maxWakesPerDay = finiteNumber(
     cfg.night.maxWakesPerDay,
     cfg.night.windows.reduce((sum, w) => sum + (Number(w.wakes) || 1), 0),
@@ -504,13 +554,23 @@ export function normalizeBiliConfig(input) {
   );
   cfg.fishGuard = normalizeBiliFishGuard(cfg.fishGuard ?? DEFAULT_BILI_FISH_GUARD);
   cfg.notify = isPlainObject(cfg.notify) ? cfg.notify : {};
-  cfg.notify.type = ['none', 'desktop', 'dm', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
+  cfg.notify.type = ['none', 'desktop', 'qq', 'dm', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
   cfg.notify.template = cfg.notify.template === 'markdown' ? 'markdown' : 'text';
   cfg.notify.args = Array.isArray(cfg.notify.args) ? cfg.notify.args.map(String) : [];
+  cfg.notify.timeoutMutes = Array.isArray(cfg.notify.timeoutMutes)
+    ? [...new Set(cfg.notify.timeoutMutes.map(String).filter((x) => /^[A-Z0-9_]{3,80}$/.test(x)))].slice(0, 50)
+    : [];
+  cfg.interact = isPlainObject(cfg.interact) ? cfg.interact : {};
+  cfg.interact.enabled = cfg.interact.enabled !== false;
+  cfg.interact.maxCommentAgeDays = finiteNumber(cfg.interact.maxCommentAgeDays, 14, 0, 365, { integer: true });
   cfg.diary = isPlainObject(cfg.diary) ? cfg.diary : {};
   cfg.diary.enabled = true;
   cfg.diary.push = cfg.diary.push !== false;
   cfg.toolsPath = String(cfg.toolsPath ?? '');
+  cfg.shots = isPlainObject(cfg.shots) ? cfg.shots : {};
+  cfg.shots.dir = String(cfg.shots.dir ?? '').trim().slice(0, 1024);
+  cfg.shots.retentionDays = finiteNumber(cfg.shots.retentionDays, 7, 0, 365, { integer: true });
+  cfg.shots.maxMB = finiteNumber(cfg.shots.maxMB, 0, 0, 1_000_000);
   return cfg;
 }
 
@@ -575,10 +635,14 @@ export function saveQqConfig(incoming) {
 export function saveBiliConfig(incoming) {
   const current = readBiliConfig().config;
   const restored = restoreMaskedSecrets(incoming, current);
-  const next = normalizeBiliConfig(deepMerge(current, restored));
+  const merged = deepMerge(current, restored);
+  const windowCheck = normalizeBiliWindowList(merged.night?.windows);
+  merged.night = isPlainObject(merged.night) ? merged.night : {};
+  merged.night.windows = windowCheck.windows;
+  const next = normalizeBiliConfig(merged);
   const backup = backupFile(BILI_CONFIG, 'bili-config');
   writeJsonAtomic(BILI_CONFIG, next);
-  return { config: redactForUi(next), backup };
+  return { config: redactForUi(next), backup, warnings: windowCheck.warnings };
 }
 
 export function saveUnified(incoming) {

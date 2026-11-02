@@ -97,10 +97,10 @@ try {
   const manual = mod.memoryCardSnapshot().records.find((record) => record.tags.includes('manual'));
   assert.ok(manual);
 
-  const forgot = await mod.applyMemoryCardAction('forget', { id: ownerRecord.id });
-  assert.equal(forgot.ok, false, '置顶记忆不能被忘记');
+  const pinnedManual = await mod.applyMemoryCardAction('pin', { id: manual.id, pinned: true });
+  assert.equal(pinnedManual.ok, true);
   const forgotManual = await mod.applyMemoryCardAction('forget', { id: manual.id });
-  assert.equal(forgotManual.ok, true);
+  assert.equal(forgotManual.ok, true, '置顶记录现在允许忘记');
   // 衰减卡忘了，全量卡仍然保留完整原文（这是「以后能加载全量记忆」的核心）
   const fullAfterForget = mod.fullMemoryCardSnapshot({ q: '周末带角色去看海', limit: 10 });
   assert.equal(fullAfterForget.records.length >= 1, true, '全量卡应保留已从衰减卡忘记的记忆');
@@ -147,6 +147,13 @@ try {
   const again = await mod.runMemoryCardMaintenance();
   assert.equal(again.addedQq, 0);
   assert.equal(again.addedBili, 0);
+
+  // 5.5) 初次相遇也可以被忘记；删除后不能再指向不存在的 firstMet。
+  const forgotFirst = await mod.applyMemoryCardAction('forget', { id: ownerRecord.id });
+  assert.equal(forgotFirst.ok, true, '初次相遇现在允许忘记');
+  const afterFirstForget = mod.memoryCardSnapshot();
+  assert.equal(afterFirstForget.records.some((record) => record.id === ownerRecord.id), false);
+  assert.equal(afterFirstForget.records.some((record) => record.firstMet), false, '没有主人记录时不应残留 firstMet');
 
   // 6) 关掉记忆卡：必须清空 QQ 注入块（桥接只认文件，不能“设置关了但提示词还在”）
   fs.writeFileSync(path.join(dshHome, 'surfcore', 'config.json'), `${JSON.stringify({

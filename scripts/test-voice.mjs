@@ -306,11 +306,13 @@ console.log('## 回归：AI 通道的语音库响应不许带出绝对路径（P
   const src = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
   const at = src.indexOf("url.pathname === '/api/socialV2/voices'");
   ok(at > 0, '找到 voices 路由');
-  const section = src.slice(at, at + 3200);
+  const section = src.slice(at, at + 5000);
   ok(/dir: agentCall \? undefined : voice\.dir/.test(section), 'dir 字段对 AI 通道抑制');
   // hint 里对 voice.dir 的插值必须被 agentCall 条件保护
-  const hintLine = section.split('\n').find((l) => l.includes('hint:')) ?? '';
-  const guarded = /agentCall \?/.test(section.slice(section.indexOf('hint:'), section.indexOf('hint:') + 400));
+  const dirAt = section.indexOf('dir: agentCall ? undefined : voice.dir');
+  const hintAt = dirAt >= 0 ? section.indexOf('hint:', dirAt) : -1;
+  const hintLine = hintAt >= 0 ? section.slice(hintAt, hintAt + 400).split('\n')[0] : '';
+  const guarded = hintAt >= 0 && /agentCall \?/.test(section.slice(hintAt, hintAt + 400));
   ok(guarded, 'hint 里的路径插值同样受 agentCall 保护', hintLine.trim().slice(0, 60));
   // 整个 AI 可见响应体里不得出现盘符路径（粗略但有效的守门）
   const aiVisible = section.slice(0, section.indexOf('} catch'));

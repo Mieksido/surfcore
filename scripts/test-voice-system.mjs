@@ -174,7 +174,7 @@ console.log('## qq-bridge 语音系统：控制台与 preset');
   ok(/api\/voice\/list/.test(html) && /api\/voice\/send/.test(html), '面板调用操作者端点');
   const preset = read(path.join('dsh', 'agent-presets', 'qq-chat-v2', 'agent.cordis.yml'));
   ok(preset.includes('qq_send_voice') && preset.includes('qq_list_voices'), 'qq-chat-v2 人设描述语音能力');
-  ok(/语音\*\*默认是关闭的\*\*/.test(preset), '人设说明默认关闭');
+  ok(/是否可用以工具是否存在和返回为准/.test(preset), '人设说明按工具实际状态判断，不写死默认关闭');
   // DSH 0.1.7 起守卫的权威实现只有一份，在 surfcore bundle 里
   // （dsh/agent-presets/<preset>/qq-tool-restrict.mjs 只是 re-export 壳）。
   ok(read(path.join('plugins', 'surfcore', 'qq-tool-restrict.mjs')).includes("'mcp__snowluma__'"),

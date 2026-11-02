@@ -155,6 +155,9 @@ await test('emojiCdnCandidates 只接受十六进制 id（防任意 URL 拼接�
     const valid = h.emojiCdnCandidates('f96bf2d2d93c3530d5eb148f55206fb1');
     assert.equal(valid.length, 1);
     assert.equal(valid[0], 'https://gxh.vip.qq.com/club/item/parcel/item/f9/f96bf2d2d93c3530d5eb148f55206fb1/raw300.gif');
+    const withUin = h.emojiCdnCandidates({ emojiId: 'f96bf2d2d93c3530d5eb148f55206fb1', uin: '10001' });
+    assert.ok(withUin[0]?.startsWith('https://p.qpic.cn/qq_expression/10001/'), '有 uin 时必须先试 p.qpic');
+    assert.ok(withUin.some((u) => u.includes('gxh.vip.qq.com')), 'gxh 仍保留为最后一跳');
     for (const bad of ['', 'abc', '../../etc/passwd', 'f96bf2d2d93c3530d5eb148f55206fb1/../../x', '中文', null]) {
       assert.equal(h.emojiCdnCandidates(bad).length, 0, `非法 emoji_id 不得拼 URL：${bad}`);
     }

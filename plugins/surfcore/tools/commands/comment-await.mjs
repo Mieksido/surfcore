@@ -102,7 +102,7 @@ for (;;) {
         let text = (x.source || x.title || '').replace(/\n/g, ' ')
         let parent = x.parent
         if (!text) {
-          const real = await resolveLatestReply({ business: x.business, oid: x.oid, root: x.root, mid: x.mid, parentRpid: x.parent, headers: H }).catch(() => null)
+          const real = await resolveLatestReply({ business: x.business, oid: x.oid, root: x.root, mid: x.mid, rpid: x.parent, headers: H }).catch(() => null)
           if (real) { text = real.text.replace(/\n/g, ' '); parent = real.rpid }
         }
         console.log(`[${i + 1}] ${hhmm(x.t)} · ${x.who}（mid ${x.mid}）`)

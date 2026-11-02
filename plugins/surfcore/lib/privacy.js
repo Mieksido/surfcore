@@ -33,7 +33,8 @@ const PII = [
   { kind: 'phone', re: /(?<!\d)1[3-9]\d{9}(?!\d)/g, label: '手机号', severe: false },
   { kind: 'email', re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, label: '邮箱', severe: false },
   { kind: 'ip', re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, label: 'IP 地址', severe: false },
-  { kind: 'address', re: /(?:住址|家庭地址|收货地址|住在|地址是|地址：|地址:)[^\n。；;]{4,60}/g, label: '住址', severe: true },
+  // 住址必须处于“赋值/陈述”语境；顿号、逗号是枚举（住址、联系方式），不能当地址值。
+  { kind: 'address', re: /(?:住址|家庭地址|收货地址|住在|地址是|地址：|地址:)(?![、，,])[^\n。；;]{4,60}/g, label: '住址', severe: true },
   { kind: 'realname', re: /(?:真名|实名|本名|身份证名字)\s*[：:是为]?\s*[\u4e00-\u9fa5]{2,4}/g, label: '真实姓名', severe: true },
   { kind: 'location', re: /(?:我在|坐标|定位在)\s*[\u4e00-\u9fa5]{2,12}(?:省|市|区|县|镇|街道|小区|学校)/g, label: '精确位置', severe: true },
 ];

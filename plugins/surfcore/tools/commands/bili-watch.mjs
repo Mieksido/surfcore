@@ -1,8 +1,9 @@
 // 让 agent 真"看"视频：取直链 → 下载 → ffmpeg 抽帧拼成一张九宫格 → 输出图片路径（再交给 read_image 看）
 //
-// 用法: node bili-watch.mjs <BV号> [列x行，默认 3x3] [outDir]
-//   例: node bili-watch.mjs BV1iLYm6VET3            → 3x3 九宫格
+// 用法: node bili-watch.mjs <BV号> [列x行，默认 3x3] [outDir] [--keep-mp4] [--uniform]
+//   例: node bili-watch.mjs BV1iLYm6VET3            → 3x3 九宫格，原片默认清理
 //       node bili-watch.mjs BV1iLYm6VET3 4x4        → 16 格，看得更细
+//       node bili-watch.mjs BV... --keep-mp4         → 保留原片，方便换参数重抽
 //
 // 依赖：ffmpeg（查找顺序见 lib/ffmpeg.mjs：$FFMPEG → PATH → bin/ → ~/.dsh/surfcore/bili/bin → 本机剪映）
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
@@ -11,13 +12,18 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { requireFfmpeg } from '../lib/ffmpeg.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
+import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 
 let FFMPEG
 try { FFMPEG = requireFfmpeg() } catch (e) { console.error(String(e.message)); process.exit(2) }
-const bvid = process.argv[2]
-const grid = (process.argv[3] ?? '3x3').toLowerCase()
-const outDir = process.argv[4] ?? path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.dsh', 'shots', 'video')
-if (!bvid) { console.error('用法: node bili-watch.mjs <BV号> [列x行] [outDir]'); process.exit(2) }
+const argv = process.argv.slice(2)
+const positional = argv.filter((arg) => !arg.startsWith('--'))
+const keepMp4 = argv.includes('--keep-mp4') || process.env.SURFCORE_KEEP_MP4 === '1'
+const bvid = positional[0]
+const grid = (positional[1] ?? '3x3').toLowerCase()
+const outDir = positional[2] ?? shotsPath('video')
+const isDefaultOutDir = path.resolve(outDir) === path.resolve(shotsPath('video'))
+if (!bvid) { console.error('用法: node bili-watch.mjs <BV号> [列x行] [outDir] [--keep-mp4] [--uniform]'); process.exit(2) }
 const [cols, rows] = grid.split('x').map(Number)
 if (!cols || !rows) { console.error('格子格式应是 3x3 这样'); process.exit(2) }
 const N = cols * rows
@@ -99,32 +105,52 @@ console.log(`时间点  : ${times.map((t, i) => `${i + 1}=${fmt(t)}`).join('  ')
 // 抽帧：每个时间点各抽一张原始分辨率，再拼图——这样 SHEET 与 SUBS 干净地共用同一批帧
 const tmp = path.join(outDir, `.frames-${stamp}`)
 fs.mkdirSync(tmp, { recursive: true })
+let frameError = null
 try {
-  times.forEach((t, i) => {
-    execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-ss', t.toFixed(2), '-i', mp4,
-      '-frames:v', '1', path.join(tmp, `f${String(i).padStart(2, '0')}.jpg`)], { stdio: 'inherit' })
-  })
-  execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
-    `scale=480:-1,tile=${cols}x${rows}`, '-frames:v', '1', sheet], { stdio: 'inherit' })
-  if (!fs.existsSync(sheet)) throw new Error('九宫格没生成')
-  console.log(`\nSHEET: ${sheet}`)
-} catch (e) {
-  console.error('ffmpeg 抽帧失败：' + e.message); process.exit(6)
-}
+  try {
+    times.forEach((t, i) => {
+      execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-ss', t.toFixed(2), '-i', mp4,
+        '-frames:v', '1', path.join(tmp, `f${String(i).padStart(2, '0')}.jpg`)], { stdio: 'inherit' })
+    })
+    execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
+      `scale=480:-1,tile=${cols}x${rows}`, '-frames:v', '1', sheet], { stdio: 'inherit' })
+    if (!fs.existsSync(sheet)) throw new Error('九宫格没生成')
+    console.log(`\nSHEET: ${sheet}`)
+  } catch (e) {
+    console.error('ffmpeg 抽帧失败：' + e.message)
+    frameError = e
+  }
 
-// 字幕条版：裁掉画面、只留底部字幕带再放大，竖着拼 N 条。
-// 依据（2026-10-14 实测）：这类"讲解型"视频字幕就是全部信息量，全画幅九宫格会把字幕压糊；
-// 同样预算下只留字幕带，9 条字幕能全部读清。用的是同一批帧。
-const subs = path.join(outDir, `${bvid}-${stamp}-subs.jpg`)
-try {
-  execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
-    `crop=iw:ih*0.17:0:ih*0.83,scale=1280:-1,tile=1x${N}`, '-frames:v', '1', subs], { stdio: 'inherit' })
-  if (fs.existsSync(subs)) console.log(`SUBS:  ${subs}\n（同一批帧的底部字幕带，竖排 ${N} 条）`)
-} catch {
-  console.log('（字幕条版生成失败，忽略——不影响 SHEET）')
+  // 字幕条版：裁掉画面、只留底部字幕带再放大，竖着拼 N 条。
+  // 依据（2026-10-14 实测）：这类"讲解型"视频字幕就是全部信息量，全画幅九宫格会把字幕压糊；
+  // 同样预算下只留字幕带，9 条字幕能全部读清。用的是同一批帧。
+  const subs = path.join(outDir, `${bvid}-${stamp}-subs.jpg`)
+  if (!frameError) {
+    try {
+      execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', path.join(tmp, 'f%02d.jpg'), '-vf',
+        `crop=iw:ih*0.17:0:ih*0.83,scale=1280:-1,tile=1x${N}`, '-frames:v', '1', subs], { stdio: 'inherit' })
+      if (fs.existsSync(subs)) console.log(`SUBS:  ${subs}\n（同一批帧的底部字幕带，竖排 ${N} 条）`)
+    } catch {
+      console.log('（字幕条版生成失败，忽略——不影响 SHEET）')
+    }
+  }
+} finally {
+  // 无论 ffmpeg 成功失败都清临时帧；以前失败会留下 .frames-*。
+  fs.rmSync(tmp, { recursive: true, force: true })
 }
-fs.rmSync(tmp, { recursive: true, force: true })
-console.log(`（原片留着: ${mp4}；换参数重抽不必重新下载。加 --uniform 可强制等间隔）`)
+if (frameError) process.exit(6)
+const subs = path.join(outDir, `${bvid}-${stamp}-subs.jpg`)
+if (keepMp4) {
+  console.log(`（原片保留: ${mp4}；加 --uniform 可强制等间隔）`)
+} else {
+  try { fs.rmSync(mp4, { force: true }) } catch {}
+  console.log('（原片已清理；需要换参数重抽时加 --keep-mp4）')
+}
+if (isDefaultOutDir) {
+  try { console.log(formatShotsStats(pruneShots())) } catch {}
+} else {
+  console.log('（自定义 outDir：跳过默认 shots 清理）')
+}
 console.log('（提示：这条视频若有官方字幕，先跑 `node bili.mjs subtitles <BV>` 更省也更准——' +
   '抽帧是给"字幕没官方轨、或要看画面/界面"的情况用的）')
 

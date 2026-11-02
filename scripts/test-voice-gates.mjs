@@ -47,8 +47,8 @@ const ok = (cond, label, extra = '') => {
   const src = fs.readFileSync(path.resolve('src/bridge.js'), 'utf8');
   ok(src.includes("code: 'VOICE_DISABLED'"), '总闸关闭返回 VOICE_DISABLED');
   ok(src.includes("code: 'VOICE_TOOL_DISABLED'"), '工具关闭返回 VOICE_TOOL_DISABLED');
-  ok(/hint: '设置 → SurfCore → 全部参数/.test(src), '总闸提示指向设置页');
-  ok(/hint: '设置 → SurfCore → 工具/.test(src), '工具提示指向工具开关');
+  ok(/hint: '设置 → SurfCore → 语音/.test(src), '总闸提示指向语音页');
+  ok(/hint: '设置 → SurfCore → 语音/.test(src), '工具提示指向语音页');
 }
 
 // 4) 服务端保存必须支持并发拒绝（配置双写覆盖）
@@ -64,6 +64,9 @@ const ok = (cond, label, extra = '') => {
   const src = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
   ok(src.includes('baseStamp: configStamps'), '保存时回传 baseStamp');
   ok(/CONFIG_STALE\|已被别处修改/.test(src), '客户端识别冲突并提示重新读取');
+  ok(src.includes('语音开关'), '语音页必须有总闸/工具开关卡片');
+  ok(src.includes('socialV2.tools.sendVoice'), '语音页必须能切「发语音」工具');
+  ok(src.includes('保存语音开关'), '语音页必须能保存这两个开关');
 }
 
 if (failures) { console.error(`\n${failures} 项失败`); process.exit(1); }

@@ -4,6 +4,7 @@
     "provider": "deepseek-official",
     "model": "deepseek-flash",
     "reasoningEffort": "max",
+    "followDefaultModel": true,
     "authToken": "",
     "authHeader": "authorization",
     "authPrefix": "Bearer",
@@ -173,6 +174,7 @@
   },
   "socialV2": {
     "enabled": true,
+    "ignoreSpamCommands": true,
     "autoReplyCheckMs": 30000,
     "agentPreset": "qq-chat-v2",
     "provideRecommendations": true,
@@ -278,6 +280,8 @@
       "privateMaxWakesPerDay": 10,
       "minWakeGapMs": 120000,
       "directBypassGap": true,
+      "directBypassDay": true,
+      "replyCheckFree": true,
       "maxOutboundPerTurn": 8,
       "maxDailyCostCNY": 8
     },
@@ -375,6 +379,7 @@
     "apiKey": "",
     "apiKeyEnv": "DEEPSEEK_API_KEY",
     "baseURL": "",
+    "apiSearchURL": "",
     "model": "deepseek-v4-flash",
     "maxUses": 5,
     "maxTokens": 4096,

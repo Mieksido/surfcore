@@ -25,6 +25,13 @@ import { PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patche
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+// MCP 的 command 必须是真 node，不能是 DSH Desktop 的 Harness.exe。
+// 复制到别处单独运行时可能没有 ../src，退回当前进程（CLI 下就是 node）。
+let NODE_EXE = process.execPath;
+try {
+  const { findNodeExe } = await import('../src/node-path.js');
+  NODE_EXE = findNodeExe({ dshHome: DSH_HOME, home: process.env.USERPROFILE || os.homedir() });
+} catch {}
 // 没传 profile 就自动判断（环境变量 → 正在运行的 DSH 进程 → 最近使用 → 兜底 web）。
 // 用动态 import + 兜底：这个脚本偶尔会被单独复制到别处跑（审计台就在这么测），
 // 没有 detect-profile.mjs 时不能直接崩。
@@ -86,6 +93,46 @@ function backupBeforeOverwrite(file, keep = 5) {
   return dest;
 }
 
+/**
+ * 原子替换一个文本文件；避免 DSH 同时读到半截 package.json/patch。
+ * 调用方负责决定失败后怎么回滚。
+ */
+function writeTextAtomic(file, text) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, text, 'utf8');
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+/** 读 profile 的 bundles/dependencies 摘要，用于安装后核对有没有被 DSH 裁剪。 */
+function readProfileState(file) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      bundles: Array.isArray(pkg?.dsh?.profile?.bundles) ? pkg.dsh.profile.bundles.map(String) : [],
+      dependencies: Object.keys(pkg?.dependencies ?? {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 最小风险回滚：只恢复 setup 自己动过的 profile 文件，不碰用户 node_modules。
+ * `backup` 为 null 表示原来是「不存在」，回滚时删掉 setup 新建的文件。
+ */
+function restoreProfileFile(file, backup) {
+  try {
+    if (backup) fs.copyFileSync(backup, file);
+    else fs.rmSync(file, { force: true });
+  } catch (error) {
+    log(`⚠️ 回滚失败（${file}）：${error?.message ?? error}`);
+  }
+}
+
 // ── agent preset：DSH 0.1.7 机制 ─────────────────────────────────────────────
 //
 // 0.1.5：preset 是 ~/.dsh/.agent-presets/<preset>/ 下的目录，DSH 启动时扫目录装载。
@@ -139,7 +186,7 @@ function yamlSingleQuote(s) {
 const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe'];
 
 function mcpEntries() {
-  const node = process.execPath;
+  const node = NODE_EXE;
   const servers = {
     'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
     'mcp-snowluma-host': { serverName: 'snowluma-host', script: path.join(REPO_ROOT, 'src', 'mcp-host-server.js') },
@@ -203,17 +250,14 @@ function prepareCordisPatch() {
 function patchCordis({ patchFile, original, text, removed }) {
   ensureDir(path.dirname(patchFile));
   // Parsing/serialization normalizes formatting; keep the original text (including comments).
+  let backup = null;
   if (original && original !== text) {
-    backupBeforeOverwrite(patchFile);
+    backup = backupBeforeOverwrite(patchFile);
+    if (!backup) fatal(`无法备份 ${patchFile}，为避免污染 profile 已停止；请先手动备份后重试`);
   }
-  const temporary = `${patchFile}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(temporary, text, 'utf8');
-    fs.renameSync(temporary, patchFile);
-  } finally {
-    fs.rmSync(temporary, { force: true });
-  }
+  writeTextAtomic(patchFile, text);
   log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 ${MANAGED_MCP_IDS.length} 条）`);
+  return { patchFile, backup };
 }
 
 /**
@@ -287,11 +331,16 @@ function patchProfilePackage(links) {
   const pkgFile = path.join(profileDir, 'package.json');
   ensureDir(profileDir);
   let pkg = { name: `dsh-profile-${PROFILE}`, private: true, dependencies: {}, dsh: { profile: { bundles: [] } } };
+  let backup = null;
   if (fs.existsSync(pkgFile)) {
     try {
       pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
     } catch (e) {
       fatal(`failed to parse ${pkgFile}: ${e.message}`);
+    }
+    backup = backupBeforeOverwrite(pkgFile);
+    if (!backup) {
+      fatal(`无法备份 ${pkgFile}，为避免污染 profile 已停止；请先手动备份后重试`);
     }
   }
   pkg.name = pkg.name || `dsh-profile-${PROFILE}`;
@@ -318,7 +367,7 @@ function patchProfilePackage(links) {
       log(`package.json removed legacy bundle: ${stale}`);
     }
   }
-  fs.writeFileSync(pkgFile, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+  writeTextAtomic(pkgFile, `${JSON.stringify(pkg, null, 2)}\n`);
   log(`profile package.json ensured: ${pkgFile}`);
   // 只删除指向旧 bundle 的 junction，不碰真实目录；旧 bundle 已并入 surfcore。
   for (const stale of STALE_BUNDLES) {
@@ -331,6 +380,7 @@ function patchProfilePackage(links) {
       } catch {}
     }
   }
+  return { pkgFile, backup };
 }
 
 function ensureLocalModeFile() {
@@ -353,7 +403,7 @@ function ensureLocalModeFile() {
 function autoInstallProfileBundles() {
   if (process.env.QQ_BRIDGE_SKIP_DSH_INSTALL === '1') {
     log('auto-install skipped: QQ_BRIDGE_SKIP_DSH_INSTALL=1');
-    return;
+    return { attempted: false, ok: true };
   }
   const windows = process.platform === 'win32';
   // Node cannot spawn npm's .cmd shim directly. Keep the shell command constant;
@@ -372,24 +422,62 @@ function autoInstallProfileBundles() {
   });
   if (r.error) {
     log(`auto-install failed to start/complete（${r.error.code || r.error.message}）。`);
-    log(`若 DSH 启动报“cannot resolve profile bundle”，请手动执行：dsh plugin --profile ${PROFILE} install`);
-    return;
+    return { attempted: true, ok: false, reason: `无法启动/完成 dsh plugin install：${r.error.code || r.error.message}` };
   }
   if (r.status === 0) {
     log(`dsh plugin --profile ${PROFILE} install: OK`);
-  } else {
-    log(`dsh plugin --profile ${PROFILE} install 返回退出码 ${r.status}（若 DSH 启动报 bundle 解析失败，请手动重跑该命令）`);
+    return { attempted: true, ok: true };
   }
+  log(`dsh plugin --profile ${PROFILE} install 返回退出码 ${r.status}。`);
+  return { attempted: true, ok: false, reason: `dsh plugin install 返回退出码 ${r.status}` };
+}
+
+/** 安装后核对：原有 bundles/dependencies 不能被 DSH 的 reconcile 裁掉。 */
+function verifyProfileAfterInstall(file, expected) {
+  const actual = readProfileState(file);
+  if (!actual) return `安装后读不到 ${file}（JSON 损坏）`;
+  const lostBundles = expected.bundles.filter((name) => !actual.bundles.includes(name));
+  const lostDependencies = expected.dependencies.filter((name) => !actual.dependencies.includes(name));
+  const expectedSurfcore = BUNDLE_NAMES.every((name) => actual.bundles.includes(name));
+  if (lostBundles.length || lostDependencies.length || !expectedSurfcore) {
+    return [
+      lostBundles.length ? `丢失 bundles：${lostBundles.join(', ')}` : '',
+      lostDependencies.length ? `丢失 dependencies：${lostDependencies.join(', ')}` : '',
+      expectedSurfcore ? '' : 'surfcore 没有留在 profile.bundles',
+    ].filter(Boolean).join('；');
+  }
+  return '';
+}
+
+/** 安装前先拍下 setup 写入后的状态；安装后任何东西被裁掉就整体回滚到原 profile。 */
+function rollbackProfile(pkg, patch) {
+  restoreProfileFile(pkg.pkgFile, pkg.backup);
+  restoreProfileFile(patch.patchFile, patch.backup);
 }
 
 // Validate the existing YAML before changing any presets or configuration.
 const cordisPatch = prepareCordisPatch();
 regeneratePresetPatches();
-patchCordis(cordisPatch);
+const patch = patchCordis(cordisPatch);
 const links = {};
 for (const name of BUNDLE_NAMES) links[name] = ensureBundle(name);
-patchProfilePackage(links);
+const profilePackage = patchProfilePackage(links);
 reportLegacyPresetDir();
 ensureLocalModeFile();
-autoInstallProfileBundles();
+
+const expectedProfile = readProfileState(profilePackage.pkgFile);
+const expectedPatch = fs.readFileSync(patch.patchFile, 'utf8');
+const install = autoInstallProfileBundles();
+if (install.attempted) {
+  const reason = install.ok
+    ? (verifyProfileAfterInstall(profilePackage.pkgFile, expectedProfile)
+      || (fs.readFileSync(patch.patchFile, 'utf8') !== expectedPatch
+        ? 'dsh plugin install 改动了 cordis.patch.yml'
+        : ''))
+    : install.reason || 'dsh plugin install 失败';
+  if (reason) {
+    rollbackProfile(profilePackage, patch);
+    fatal(`安装失败，已回滚 profile 的 package.json / cordis.patch.yml：${reason}`);
+  }
+}
 log('Done. Restart DSH (or reload the profile) so the new presets/MCP take effect.');

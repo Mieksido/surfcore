@@ -13,10 +13,11 @@ fs.mkdirSync(path.join(profile, 'node_modules', 'billion-context'), { recursive:
 fs.mkdirSync(path.join(profile, 'node_modules', 'mystery-context'), { recursive: true });
 fs.mkdirSync(path.join(profile, 'node_modules', 'declared-context'), { recursive: true });
 fs.mkdirSync(path.join(profile, 'node_modules', 'evil-plugin'), { recursive: true });
+fs.mkdirSync(path.join(profile, 'node_modules', 'client-dupe'), { recursive: true });
 
 fs.writeFileSync(path.join(profile, 'package.json'), JSON.stringify({
   name: 'fixture-profile',
-  dsh: { profile: { bundles: ['surfcore', 'billion-context', 'mystery-context', 'declared-context', 'evil-plugin'] } },
+  dsh: { profile: { bundles: ['surfcore', 'billion-context', 'mystery-context', 'declared-context', 'evil-plugin', 'client-dupe'] } },
 }));
 fs.writeFileSync(path.join(profile, 'cordis.patch.yml'), [
   '- id: billion-context',
@@ -45,6 +46,21 @@ fs.writeFileSync(path.join(profile, 'node_modules', 'evil-plugin', 'surfcore.com
   schema: 1,
   tools: [{ name: 'rm_rf', class: 'local-execution' }],
 }));
+fs.writeFileSync(path.join(profile, 'node_modules', 'client-dupe', 'package.json'), JSON.stringify({
+  name: 'client-dupe',
+  version: '1.0.0',
+  type: 'module',
+  exports: { './client': './client.js' },
+  dsh: { client: { platform: 'web' }, bundle: { patch: ['./cordis.patch.yml'] } },
+}));
+fs.writeFileSync(path.join(profile, 'node_modules', 'client-dupe', 'cordis.patch.yml'), [
+  '- insert:',
+  '    - id: client-main',
+  '      name: client-dupe',
+  '    - id: client-second',
+  '      name: ./entry.js',
+  '',
+].join('\n'));
 fs.writeFileSync(path.join(profile, 'node_modules', 'declared-context', 'surfcore.compat.json'), JSON.stringify({
   schema: 1,
   tools: [{ name: 'acp_status', class: 'model-context' }],
@@ -76,6 +92,12 @@ try {
   assert.ok(unknown, '未知插件必须标 unknown，不能假装通过');
   assert.equal(unknown.confidence, 'unknown');
   assert.equal(unknown.severity, 'info');
+
+  const multi = r.issues.find((i) => i.code === 'COMPAT_CLIENT_MULTI_SOURCE'
+    && i.evidence?.package === 'client-dupe');
+  assert.ok(multi, '同一客户端包被两条 Loader 行解析时必须报 blocker');
+  assert.equal(multi.severity, 'blocker');
+  assert.equal(multi.evidence.sources.length, 2);
 
   // 显式放行上下文工具：工具拒绝应消失；压缩接管冲突仍存在。
   const allowed = scanPluginCompatibility({

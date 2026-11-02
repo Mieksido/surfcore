@@ -106,6 +106,105 @@ function collectPackages(profileDir) {
   }).filter(Boolean);
 }
 
+/** package 声明的 bundle patch 文件；DSH 0.2 用 dsh.bundle.patch 数组。 */
+function bundlePatchFiles(pkg) {
+  const declared = pkg?.pkg?.dsh?.bundle?.patch;
+  const rels = Array.isArray(declared) ? declared : [];
+  const files = rels.map((rel) => path.resolve(pkg.dir, String(rel)));
+  if (!files.length && pkg?.hasBundlePatch) files.push(pkg.bundlePatch);
+  return [...new Set(files)].filter((file) => {
+    try { return fs.statSync(file).isFile(); } catch { return false; }
+  });
+}
+
+function walkLoaderRows(node, out = []) {
+  if (Array.isArray(node)) {
+    for (const item of node) walkLoaderRows(item, out);
+    return out;
+  }
+  if (!node || typeof node !== 'object') return out;
+  if (node.disabled === true) return out;
+  if (typeof node.name === 'string' && typeof node.id === 'string' && node.name.trim()) {
+    out.push({ id: node.id, name: node.name.trim() });
+  }
+  for (const value of Object.values(node)) walkLoaderRows(value, out);
+  return out;
+}
+
+function nearestPackage(start) {
+  let dir = path.resolve(start);
+  try { if (fs.statSync(dir).isFile()) dir = path.dirname(dir); } catch {}
+  for (;;) {
+    const pkg = readJson(path.join(dir, 'package.json'));
+    if (pkg && typeof pkg.name === 'string') return { name: pkg.name, dir, pkg };
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function resolveLoaderPackage(name, baseDir, packages) {
+  const raw = String(name ?? '').trim();
+  if (!raw) return null;
+  if (!raw.startsWith('.') && !raw.startsWith('file:') && !path.isAbsolute(raw)) {
+    const exact = packages.find((pkg) => pkg.name === raw || raw.startsWith(`${pkg.name}/`));
+    if (exact) return { name: exact.name, dir: exact.dir, pkg: exact.pkg };
+  }
+  let candidate;
+  if (raw.startsWith('file:')) {
+    try { candidate = new URL(raw).pathname; } catch { return null; }
+  } else if (path.isAbsolute(raw)) {
+    candidate = raw;
+  } else {
+    candidate = path.resolve(baseDir, raw);
+  }
+  return nearestPackage(candidate);
+}
+
+/** 同一个客户端包被多条 Loader 行解析时，DSH 重建 modules 会直接 fatal。 */
+function clientMultiSourceIssues(profile, activePackages) {
+  const rows = [];
+  for (const row of walkLoaderRows(profile.patch)) rows.push({ ...row, baseDir: profile.dir, source: profile.patchFile });
+  for (const pkg of activePackages) {
+    for (const file of bundlePatchFiles(pkg)) {
+      for (const row of walkLoaderRows(readYaml(file))) rows.push({ ...row, baseDir: pkg.dir, source: file });
+    }
+  }
+  const sources = new Map();
+  const clientPackages = new Set(activePackages
+    .filter((pkg) => pkg?.pkg?.dsh?.client?.platform === 'web')
+    .map((pkg) => pkg.name));
+  for (const row of rows) {
+    const resolved = resolveLoaderPackage(row.name, row.baseDir, activePackages);
+    if (!resolved || !clientPackages.has(resolved.name)) continue;
+    const list = sources.get(resolved.name) ?? [];
+    list.push({ loaderName: row.name, id: row.id, baseDir: row.baseDir, source: row.source });
+    sources.set(resolved.name, list);
+  }
+  const issues = [];
+  for (const [packageName, list] of sources) {
+    if (list.length < 2) continue;
+    issues.push({
+      code: 'COMPAT_CLIENT_MULTI_SOURCE',
+      severity: 'blocker',
+      confidence: 'confirmed',
+      title: `${packageName} 被 ${list.length} 条 Loader 行解析到同一个客户端包`,
+      evidence: {
+        package: packageName,
+        sources: list.map((item) => ({
+          id: item.id,
+          loaderName: item.loaderName,
+          baseDir: item.baseDir,
+          patch: path.relative(profile.dir, item.source) || item.source,
+        })),
+      },
+      impact: 'DSH 重建 client-modules 时会报 “resolves from multiple active Loader sources”；modules 是 required 插件，宿主会直接启动失败。',
+      recommendation: '只保留一条指向该客户端包的 Loader 行；第二行必须是独立 host-only 包（自带 package.json，且不声明 dsh.client），或合并该行的 Config。',
+    });
+  }
+  return issues;
+}
+
 function activeNames(profile, packages) {
   const names = new Set(profile.bundles.map((x) => String(x)));
   const walk = (node) => {
@@ -203,6 +302,7 @@ export function scanPluginCompatibility({
   const activePackages = packages.filter((pkg) => isActive(pkg, active));
   base.coverage.bundles = [...active];
   base.coverage.packages = packages.length;
+  for (const issue of clientMultiSourceIssues(profile, activePackages)) add(issue);
 
   // 上下文压缩被谁关掉：profile patch + 已激活插件的 bundle patch。
   const autoOff = [];

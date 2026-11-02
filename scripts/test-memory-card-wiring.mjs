@@ -21,10 +21,10 @@ assert.match(bridge, /recordMemoryInboxEvent\(\{ key, kind, event, plainContent,
 assert.match(bridge, /recordSelfMemoryEvent\(key, sent\.join\('\\n'\)\)/, 'v2 发送没有记录她自己的发言');
 assert.match(bridge, /recordSelfMemoryEvent\(key, text\)/, 'v1 发送没有记录她自己的发言');
 assert.match(bridge, /isSelf: true/, '桥接 inbox 自发言没有 isSelf 标记');
-assert.match(bridge, /const memoryBlock = memoryCardPromptBlock\(\)/, 'v1/chat 角色提示没有注入记忆卡');
-assert.match(bridge, /const memoryCardText = memoryCardPromptBlock\(\)/, 'v2 唤醒提示没有注入记忆卡');
+assert.match(bridge, /const memoryBlock = memoryCardPromptBlock\(/, 'v1/chat 角色提示没有注入记忆卡');
+assert.match(bridge, /const memoryCardText = memoryCardPromptBlock\(/, 'v2 唤醒提示没有注入记忆卡');
 assert.match(bridge, /\/api\/memory-card\/notify/, '桥接缺少记忆卡容量告警端点');
-assert.match(bridge, /memoryCard: memoryCardPromptBlock\(\)/, 'qq_get_prompt 没有返回记忆卡');
+assert.match(bridge, /memoryCard: memoryCardPromptBlock\(/, 'qq_get_prompt 没有返回记忆卡');
 
 // 2) B站 调度器：每次醒来的统一上下文里有记忆卡（仅 B站 公开 scope）。
 assert.match(scheduler, /memoryCardPromptBlock\('bili'\)/, 'B站调度器没有注入记忆卡');

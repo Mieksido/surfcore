@@ -160,6 +160,20 @@ export function stripPrefix(kind, text, kinds = kindsNow()) {
   return t
 }
 
+/**
+ * 空前缀时清掉“这一类自己的历史默认前缀”。
+ *
+ * 为什么需要：配置清空后 withPrefix 不会再加，但模型/旧上下文可能已经把
+ * 默认前缀写进 --text；stripPrefix 只认当前前缀（空），旧前缀会原样发布。
+ * 只清 DEFAULT_KINDS 里这一类的已知值，不做“所有【…】都删”的过度清洗。
+ */
+export function stripLegacyPrefix(kind, text) {
+  let t = String(text ?? '').trim()
+  const p = DEFAULT_KINDS[kind]?.prefix
+  if (p && t.startsWith(p)) t = t.slice(p.length).trim()
+  return t
+}
+
 /** 正文确保以该类的固定前缀开头 */
 export function withPrefix(kind, text, kinds = kindsNow()) {
   const p = kinds[kind]?.prefix ?? ''

@@ -58,6 +58,7 @@ export function composePersonaLayers({
   core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
+  const coreText = selectRoleText(core, mode);
   const toneText = selectRoleText(tone, mode);
   const sceneText = selectRoleText(scene, mode);
   const dailyText = selectRoleText(daily, mode);
@@ -69,19 +70,21 @@ export function composePersonaLayers({
   //   · 只拆了日常/场景、没写语气 → 也注入核心（语气层才是核心的替代品）；
   //   · 写了语气 → 按设计只带语气+场景+日常，省 token。
   const useToneOnly = personaMode === 'tone' && Boolean(toneText);
-  const coreSection = useToneOnly ? [] : [section('core', '人格核心', selectRoleText(core, mode))];
+  // tone 与 core 内容完全相同时（旧角色复制了一份、或误把 core 当 tone），full 模式不再重复拼两段。
+  const duplicateTone = personaMode !== 'tone' && Boolean(toneText) && toneText === coreText;
+  const coreSection = useToneOnly ? [] : [section('core', '人格核心', coreText)];
   const selected = [
     ...identitySection,
     ...coreSection,
-    section('tone', '人格语气', toneText),
+    section('tone', '人格语气', duplicateTone ? '' : toneText),
     section('scene', `场景人格${PERSONA_SCENE_LABELS[sceneId] ? `｜${PERSONA_SCENE_LABELS[sceneId]}` : ''}`, sceneText),
     section('daily', '人格日常', dailyText),
   ].filter((x) => x.text);
 
   const counts = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
   const omitted = [];
-  if (!selected.length && personaMode === 'tone' && String(core ?? '').trim()) {
-    const fallback = selectRoleText(core, mode);
+  if (!selected.length && personaMode === 'tone' && coreText) {
+    const fallback = coreText;
     counts.core = fallback.length;
     return { text: fallback, chars: fallback.length, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
   }

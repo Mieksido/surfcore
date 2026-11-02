@@ -1,8 +1,422 @@
+## [0.8.7] - 2026-11-03
+
+### 发布/测试
+
+- 修复 Windows `core.autocrlf=true` 下 preset 补丁被误判为“需重新生成”的发布门禁问题（不影响运行时）。
+
+### 人格语气层
+
+- `persona.tone.md` 不再在缺失时回退 `persona.md`，避免 full 模式核心重复。
+- tone 与 core 内容相同时不再生成两个段落。
+- 目的/主动搭话提示词也带上语气层。
+
+### 群刷屏短指令过滤
+
+- 非主人发的 `#sl` 这类纯 `#` 短指令不再唤醒/回复；主人、@、引用放行。
+- 新增 `socialV2.ignoreSpamCommands` 开关。
+
+### B站 @ 楼层回复
+
+- `@` 一级评论自动补 `root=source_id`，回复落在用户那条评论下面。
+- `comment-digest` 对 `@` 也输出 root/parent 坐标。
+- `resolveLatestReply` 按 source rpid 找，不再拿它当 parent 比。
+- 修复鱼群保护在“没坐标”时聚拢到别人鱼楼。
+
+### QQ 工具晚注册限制
+
+- `qq-tool-restrict` 监听 `tools/change`，晚注册的已知危险全局工具也补装 Schema 限制。
+- 成功的限制幂等；先登记再 restrict，防同步重入。
+
+### QQ 工作区跟随 DSH 默认模型
+
+- `ensureChatModel()` 跟随 `session.modelCatalog.default`，读不到才退回 config。
+- 新增 `dsh.followDefaultModel` 开关；控制台和 DSH 设置页都有勾选与来源说明。
+- 模型不认 `reasoningEffort` 时去掉该参数重试。
+- 旧控制台与设置页都显示跟随失败原因；跟随中禁用模型/强度保存。
+
+### 唤醒额度可见与回访免计次
+
+- `replyCheck` 回访不再占每日唤醒次数；仍受间隔/限频/花费约束。
+- `/api/status` / 会话状态 / 设置页 / 体检暴露今日唤醒额度。
+- 体检使用桥接状态判断 SnowLuma，新增 `bridge-down` / `bridge-error`。
+
+### 孤立代理项 / 桌宠 400
+
+- 新增 `src/safe-text.js`：截断不劈开 emoji，发送前 wellFormed 兜底。
+- 修复桌宠 /chat、测试对话、主动搭话的 400。
+
+### web_search 凭据与 Search API
+
+- 认 DSH 0.2.x `.credentials.yaml` 的 `records` 结构。
+- 增加账号级凭据 fallback；账号 token 只发 `api.deepseek.com`。
+- 新增 Search API 直连，auto 顺序 API → 模型轮次 → Bing。
+- 设置页新增 `webSearch.apiSearchURL`。
+
+### DSH Desktop node 路径
+
+- `findNodeExe()` 增加安装目录候选；scheduler 和 setup 的 MCP command 共用解析。
+- 修复 Desktop 下回退到 `Harness.exe` 导致桥接无法启动。
+
+### 人格卡住址误报
+
+- 住址规则加枚举标点负向前瞻；“住址、联系方式”不再被当成地址值。
+- 保留收货地址/家庭地址/地址是/住在等真实正例。
+
+### 出站 outbox 与早安探活
+
+- 连接类发送失败写入 `state/outbox.json`，账号上线后自动补发。
+- 10 分钟去重、60 条/24h/12 次上限；策略失败不入队。
+- 早安先探活 OneBot，再决定是否标记已发。
+
+### B站记忆回退与管理员输入框
+
+- B站记忆角色级优先，角色级缺文件时只读回退账号级旧数据。
+- 管理员卡片输入框/下拉加 border-box + max-width，避免超框。
+
+### 客户端包唯一 Loader 来源
+
+- `qq-mode` 拆成独立 host-only 嵌套包，不再被解析回 surfcore 客户端包。
+- Loader 行改为 `./qq-mode/index.js`；`lib/qq-mode.js` 保留兼容 re-export。
+- 体检新增 `COMPAT_CLIENT_MULTI_SOURCE`，提前标出同一客户端包多条 Loader 行。
+
+### 语音开关入口
+
+- 语音页顶部新增总闸 /「发语音」工具开关，保存走现有 stamps。
+- 自检与 VOICE_DISABLED / VOICE_TOOL_DISABLED 提示改指语音页。
+
+### DSH 0.2.1-rc.5 B站兼容
+
+- B站新会话补 `agentPreset`（优先 standard/default），避免 turn 直接 blocked。
+- 默认 provider/model 不可用时按 DSH 模型目录 fallback 一次。
+- 唤醒提示词的日记路径改用当前角色目录。
+- B站→QQ 记忆按当前角色 `biliDir` 读取，不再固定账号级。
+
+### 体检 SnowLuma 状态源
+
+- 体检改读 `bridge.snowluma` 运行态，不再拿 `config.snowluma` 冒充 connected。
+- 桥接未运行显示 `bridge-not-running`，不再固定误报 onebot-rejected。
+
+### B站生物钟会话归组
+
+- 新会话改用 `workspaceId` 挂到「B站生物钟」工作区，不再只传 cwd。
+- 专用工作目录改为 `state/bili-agents`，不再用用户主目录。
+- 旧会话保留不强行迁移；创建失败下一 tick 重试。
+
+### zip 安装首次更新迁移
+
+- 清单已按 git blob 生成（LF、排除 gitignore）；首次 zip 更新不再永久 blocked。
+- 设置页新增「首次更新（先备份）」；仅对可信 zip 目录、显式确认后放行。
+- 覆盖前仍先备份；默认无证据仍拒绝。
+
+### schemastery volatile 兼容
+
+- 新增 `unwrapSchemaValue()`：3.18.3+ 的 volatile 包装字段统一取纯值。
+- bridge settings / 设置页 mode·ownerQQ 不再变成 `[object Object]`。
+- qq-mode 测试改用拆包值；新增 `test-schema-volatile`。
+
+### B站监听错误可见性
+
+- listenTick 用 `listenerCfg` / `limits` 消除同名遮蔽。
+- ReferenceError/TypeError 打类型+stack（截断）；普通错误仍只一行。
+- 新增监听错误回归测试。
+
+### DSH 事件流快照回退
+
+- remote.mux 404 时降级 `/api/events` 轮询；正常宿主仍走推送，不降级不加延迟。
+- 快照首次只取 latest 基线，按 cursor 增量，1.5s 去重轮询；60s 重试 remote.mux。
+- 端口探测先看 `/api/status` JSON 形状，修复“HTTP 通但误报连不上”。
+
+### 模型设置与证据链
+
+- 宿主补 `/dsh/model`、`/dsh/effort` 代理，修复设置页 404、模型下拉为空。
+- 保存只标记“已保存/待确认”，不再宣称已生效。
+- 记录 selectModel 回执、model/selection 最近使用、失败原因和跨进程 stale。
+- UI 区分已保存 / DSH 已接受 / 最近使用 / 失败。
+
+### 多群记忆隔离与互通圈
+
+- 记忆默认按群隔离；同圈群互看；私聊记忆永不进群。
+- 每条记忆带来源群名/群 ID；旧记录按已有群 ID 补标，无来源标未知。
+- 当前群身份注入唤醒/提醒/快照/get_prompt/context。
+- 记忆互通圈可配置；封闭集合，不传递。
+- 去重加 conversationKey，避免跨群同文本合并。
+
+### 本地语音包安装下载
+
+- 代码 zip 回退改为 codeload，避免 github.com 主站 10s 连接超时。
+- 代码 zip 下载加 30s 超时、镜像优先、2 次重试和 `cause.code` 诊断。
+- postInstall 45 分钟硬超时改为默认 3 小时（可配 `postInstallTimeoutMs`）。
+- 进度拆成真实下载百分比和总进度，不再 51% 文案配 95% 进度条。
+- 安装失败提供「继续下载 / 重试安装」，保留 `.part` 与已完成分卷。
+
+### 语音包启动诊断
+
+- 云端语音包改为直接拉 Python，不再经过 `run.bat` 的 `start`，避免 Python 报错留在独立窗口。
+- 启动同时收 stdout/stderr；Windows GBK 输出自动回退解码，不再显示乱码。
+- 子进程提前退出立即报 `VOICE_START_EXITED`，不再固定等 60 秒。
+- 启动失败写 `logs/startup.log`，错误里带完整日志路径和 hint。
+- 云端包体积提示从 60MB 修正为约 280MB。
+
+### 模型与思考强度
+
+- 新设置页增加「模型与思考强度」卡：low / high / max 下拉，low 明确标注最省。
+- 模型下拉从 DSH `session.modelCatalog` 动态生成，显示图片能力与价格档位；不硬编码模型名。
+- 新增 `POST /api/dsh/model`：目录校验、思考档位校验、全局副作用提示；失败带 code/hint。
+- 移除高级设置里三个手填字段，避免与模型卡打架。
+- 目录不可用时只允许调思考强度，不给假模型选项。
+
+### 设置保存 UX
+
+- 主按钮改为「保存并生效」（保存 + 重启 QQ 桥接）；「仅保存（不重启）」降为次按钮。
+- 保存成功提示改为页面固定 toast，长页面也能看到。
+- 设置页改成固定底栏布局；弹窗保存按钮固定在弹窗底部。
+- 群管理弹窗底部有「保存」；管理员卡片增加局部「保存管理员并重启桥接」。
+- 次按钮改为实底/明确边框，主按钮加粗，禁用态更明显。
+
+### QQ 群聊 @
+
+- 修复“同条消息也 @ 别人时，@ 机器人不算唤醒”的一票否决。
+- @ 判断改看原始 at 段，不再依赖渲染后的群名片/昵称；兼容 CQ 字符串。
+- `self_id` 缺失时回退登录后的 `selfUserId`；引用自己判断同样回退。
+
+### B站监听/时间窗
+
+- 修复 `listenTick` 内层 `const L` 与外层 listen 配置重名导致的 TDZ，评论区监听不再每次都抛错。
+- `inWindow` 支持跨午夜；全角冒号/数字自动归一；非法窗口保存时提示并丢弃。
+- `night-schedule` 与监听共用同一套时间窗解析，避免跨午夜行为漂移。
+- agent 处理错误只私聊，不再发群。
+- 无行动/未设置唤醒条件重置时保留用户显式改过的批量窗口。
+- ZIP 下载增加 EOCD 预检；HTTP 200 截断包换镜像重试。
+- 更新检查区分 unknown 与“0 个更新”。
+
+### B站 视频缓存
+
+- 新增 `shots` 缓存轮转：默认保留 7 天，可选总大小上限，清理 `video/covers/subs`。
+- `watch-video` 默认抽完帧删原片；需要重抽用 `--keep-mp4`。
+- `debrief --substrip` 会先保留原片，字幕条完成后再删。
+- `covers/subs/video` 目录支持 `DSH_HOME` 和 `shots.dir` 配置，不再写死 `~/.dsh`。
+- `.frames-*` 失败也会清理；命令输出缓存文件数/占用。
+
+### 更新
+
+- 修复 staged 更新后 dismiss 键写成 `vnull`，重启前反复提示同一更新。
+- 排队中的组件不再算 pending；更新弹窗内完成下载后明确提示“重启 DSH”。
+- 更新进度增加下载/解压/校验/备份/排队阶段；下载完成后保留总量/百分比/网速。
+- release 通道下载也上报进度。
+
+### 设置保存
+
+- 修复 QQ 高级设置连续保存 `CONFIG_STALE`：保存成功返回并同步新 `stamps`，第二次保存不再被第一次写盘挡住。
+- 409 仍要求「重新读取」，不自动套用 stamps，避免覆盖真正的并发修改。
+- 例行“需要重启桥接”提示改走 `notes`，warning 不再写进错误区。
+
+### 安装/兼容
+
+- `setup-dsh` 写 profile 前备份 `package.json`，并改成原子写。
+- `dsh plugin install` 后核对 bundles/dependencies/patch；被 DSH reconcile 裁剪时自动回滚 profile，不再让 17 个插件被连坐。
+- 安装失败/超时不再只打日志；恢复 profile 后非零退出。
+
+### 人格卡
+
+- 修复 `persona.tone.md` 被忽略：`readPersonaLayerText('tone')` 以前回落核心，导致核心重复/语气失效。
+- 未知人格层不再静默回落核心，会 warning；新增真实文件读取测试。
+- 修复「智能拆分当前人格」引用未定义 `layer` 导致每次报 `layer is not defined`。
+- 拆分发送完整草稿（核心/语气/日常/场景），空输入与内部错误给明确 code/hint。
+- 内部错误不再伪装成“检查人格卡内容”。
+
+### 图片/表情
+
+- 商城/收藏表情增加 p.qpic 候选，gxh 降为最后一跳；保留 `uin/resId`。
+- 取图失败/非多模态时用 `summary` + 本地表情库标签转文字，不再只回“获取失败”。
+- 新增 `socialV2.vision.imageInput`（auto/true/false）；非多模态模型不再向 ACP 塞 image block。
+- `qq_get_message_images` / sticker / self-image 支持文字兜底。
+
+### 备份轮转
+
+- 修复 `pruneBackups` 正则不匹配真实文件名（横线时间戳 + 扩展名），导致 `keep=40` 不生效、backups 无限增长。
+- 新增 `backupGroupOf` 纯函数；`pruneBackups` 返回清理结果并在失败时告警；`backupFile` 失败不再静默。
+- 新增真实文件名轮转测试，无关文件不误删。
+
+### 记忆卡
+
+- `recent` 先收最近 N 天的 owner 记录，不再被 `initial` 挤空；预算紧张时先淡出早期 initial，保住最近。
+- `recent` 上限 8→12；`initial`/`owner` priority 下调，`firstMet`/anchors 仍保底。
+- 拆分 `firstMet` 与 `pinned`：初次相遇可取消置顶，不再每次刷新被写回；取消后仍保留初次相遇分区。
+- `forget` 允许删除置顶/初次相遇记录，删除后自动让下一条最早主人互动接管。
+- 记忆操作失败带 `MEMORY_NOT_FOUND + hint`；reload 失败不再假装成功。
+
+### QQ 等待
+
+- 修复 `qq_wait_for_messages` 积压消息不立即返回：已知未读直接返回，不再从 wait 时刻重新等静默。
+- 增加 wait 有界批量（默认 20 条/4000 字）；群聊超出折叠并给 `foldedCount`，私聊不静默删除。
+- `selectWaitBatch` 纯函数与 R17 桥接回归覆盖。
+
+### B站 动态
+
+- 修复清空四类动态固定开头后仍可能带旧前缀：统一 `DSH_HOME` / `SURFCORE_BILI_CONFIG` 配置路径，空前缀时清掉该类历史默认前缀，提示词不再要求空前缀。
+- 设置页显示实际 B站 配置文件路径。
+
+### 黑话学习
+
+- 修复 `waitLearnerTurn` 永远超时：waiter 先于 prompt 注册，prompt 失败可取消。
+- collector 兼容缺 `turn/start` 的 `assistant/message`/`turn/end`；超时不再用泛化“会话”正则误删会话。
+- 超时显式 `LEARNER_TURN_TIMEOUT`，只重建 scratch 学习会话。
+
+### 语音
+
+- 修复 preset 第 16 条写死“语音默认关闭”，导致开启后模型仍拒绝发语音。
+- 唤醒时动态注入总闸/工具/语音库状态；旧提示/旧记忆不再一律压过当前状态。
+- `qq_list_voices` 补 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` code + hint。
+- 语音设置说明改为“两个开关 + 需重启 DSH + text 不依赖语音库”。
+
+## [0.8.6-dev.10] - 2026-11-02
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.9] - 2026-11-02
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.8] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.7] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [Unreleased]
+
+### 管理员温柔模式
+
+- 新装 / 缺省默认关闭；只有显式 `gentle:true` 才开启。
+- 开启前弹窗列出全部行为风险（更顺从、减少纠错、与人格卡冲突、旧上下文残留、token 成本）。
+- 关闭后不再注入任何管理员专属提示词，也不再用 `【管理员】` 标记消息。
+- 关闭时可选保留上下文或丢弃上下文；丢弃会重置 QQ 会话/社交状态，并给 B站 换新 sessionId；自动重启桥接。
+- 管理员权限、审批、白名单不受影响。
+
+### 通知与 B站互动
+
+- 修复 Windows 桌面通知 PowerShell 转义导致的 100% 失败；捕获 stderr，不再静默；非 Windows 明确报错。
+- 新增 `notify.type=qq`：通过本机桥接只私聊管理员本人；新增控制台专用 `/api/notify/owner`。
+- 新增 B站「沉默逛」开关：只浏览/评分/写日记，禁止评论/回复/搭话/动态/分享/私信/弹幕/点赞。
+- 新增评论年龄上限（默认 14 天），避免回复/艾特多年前的评论。
+- 沉默/年龄/通知失败均带结构化 code + hint，不再静默。
+- 超时提醒可在概览「永久不再显示」；写入 `bili.config.json` 的 `notify.timeoutMutes`，重启后仍生效。
+
+## [0.8.6-dev.6] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.5] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.4] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.3] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.2] - 2026-11-01
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
 # 更新日志
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
+
+## [0.8.6-dev.1] - 2026-11-01
+
+### dev 测试构建
+
+- 首个 dev 构建（Pre-release）：更新通道 stable/dev、DSH 注册修复按钮、dev 发布链路；
+- 仅测试机使用；稳定用户不受影响。
+
+## [Unreleased]
+
+### 新增（控制台「修复 DSH 注册」按钮）
+
+- 设置 → QQ → 高级设置新增「DSH 注册（MCP / bundle）」：填 profile（可留空自动检测）→ 点按钮，
+  后端执行 `scripts/setup-dsh.mjs` 并回显输出；**不会自动重启 DSH**，点完需完全退出重开；
+- L2 `dsh-profile-mcp-missing` 弹窗直接带「修复 DSH 注册」按钮；
+- 失败路径结构化（METHOD/BODY/PROFILE/SCRIPT_MISSING/FAILED，均带 hint）；只接受 POST、只由点击触发。
+
+### 新增（更新通道 stable / dev + 测试版发布链路）
+
+- 更新器新增 `updates.channel`（默认 `stable`）：stable 只跟正式 Release，dev 只跟 `-dev.N` 的 Pre-release；
+- 设置页「检查更新」下面新增 **main（正式版）/ dev（测试版）** 单选；切回 main 会清空旧检查结果，
+  不会被上一轮 dev 的 pending 弹窗打扰；
+- 版本规则：stable `X.Y.Z`，dev 构建 `X.Y.Z-dev.N`（同号下低于正式版）；正式版切 dev 允许安装一次（`channel-switch`）；
+- 新增 `scripts/publish-dev.mjs`：在 dev 分支打 tag、发 Pre-release、过清单门禁，不合并/不修改 main；
+- 完整 semver 比较（含预发布与 dev.N 数字排序）。
+
+## [Unreleased]
+
+### 修复（浅色/深色主题对比度：弹窗深底深字、hover/focus 不可见）
+
+- 新增 `--qbw-*` 语义 token 层，全部映射 DSH 的 light/dark token；
+- 一键安装弹窗与 `qbw-modal` 改为**跟随主题**，成对声明 surface/text，不再硬编码深色；
+- 去掉不存在的 `--dsw-alias-label-tertiary`（DSH 只有 primary/secondary）；
+- 76 个硬编码色 token 化；状态文字用 `color-mix(状态色, 正文色)` 保证可读；
+- 补 `qbw-btn2/btn3` hover、按钮 focus-visible、统一 disabled、`select option` 主题色；
+- 新增 `scripts/test-theme-tokens.mjs`：token 白名单、禁止空变量、弹窗成对颜色、WCAG fallback 计算。
+
+## [Unreleased]
+
+### 修复（dev 通道点更新报 spawn git ENOENT）
+
+- `apply()` 支持 `channel: "dev"`：与稳定版共用 zip 流水线（下载 tag 归档 → 清单校验 → 暂存 → 回滚）；
+- 未知 channel 返回 `apply.unknown-channel`（带 hint），只有旧数据（没有 channel）才走 git 兜底；
+- git 失败补 `apply.git-failed`；`not-available` / `blocked` 也补 code/hint；
+- 成功更新后 helper 删除外层 `staging/<id>-<stamp>/`（不再每次残留 7~12.5MB 的 pkg.zip）；
+- `check()` 清理 3 天前的 staging。
+
+## [Unreleased]
+
+### 修复（更新生命周期与通道显示：A–H）
+
+- UI 正确显示 `dev` 通道（不再当 git、不再显示 `undefined 个提交`）；
+- helper 校验任务 `kind`：未知类型 → `apply.unknown-kind`（不再默认 copyZip）；
+- 失败删 pending / 成功清 `.failed` / 新排队清旧 `.failed` / 校验失败也删 pending；
+- staging 清理跳过待重启的 pending 引用；
+- `apply.unknown-channel / unknown-kind / git-failed` 进 30 分钟退避；
+- release 通道失败补 `code/hint`；更新中禁止切通道（`UPDATE_CHANNEL_BUSY`）；
+- helper 超时/失败清理 `.started`。
+
+## [Unreleased]
+
+### 修复（验收 A–D：密钥落盘、结构化 403、目的历史、超时 code）
+
+- 新增 `SECRET_TOKEN_RE`（github_pat/ghp/sk/AKIA/Bearer），日志/活动/公共群消息/出站统一打码；
+  入站检测到密钥写 L1 提醒，记忆 inbox 存打码文本；
+- `/api/notify/owner`、`/api/notice/timeout` 放行到端点内判断，返回带 code/hint 的结构化 403；
+  外层通用 403 也补 `CONSOLE_ONLY`；
+- 目的历史：只有 `sent` 更新 `lastText`，`silent/failed` 清空并记 `skipReason`；
+- `/api/notice/timeout` 空 code → 400 `TIMEOUT_CODE_REQUIRED`，不再共用一个静音键；
+- 公共群消息日志（`appendPublicFeed`）同样打码。
 
 ## [0.8.6] - 2026-11-01
 

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
 import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
+import { deepWellFormed } from './safe-text.js';
 
 /** DSH home：凭据文件与（历史）启动日志都在这里。 */
 export function resolveDshHome() {
@@ -293,6 +294,40 @@ function waitWithSignal(promise, signal) {
   });
 }
 
+/**
+ * 老/内嵌宿主只提供 GET /api/events?cursor= 快照时，把一条快照事件归一成
+ * pumpMux 能消费的 payload。形状不猜死：session/{event}、{sessionId,event}、
+ * 以及 question/approval 事件都兼容。
+ */
+export function snapshotEventPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const outer = raw.data && typeof raw.data === 'object' ? { ...raw, ...raw.data } : raw;
+  const event = outer.event && typeof outer.event === 'object' ? outer.event : outer;
+  const sessionId = String(
+    outer.sessionId ?? outer.session_id ?? outer.agentId
+    ?? event.sessionId ?? event.session_id ?? event.agentId ?? ''
+  ).trim();
+  if (!sessionId || typeof event.type !== 'string') return null;
+  if (event.type === 'question/requested' || event.type === 'approval/requested') {
+    return { ...event, sessionId };
+  }
+  if (outer.type === 'question/requested' || outer.type === 'approval/requested') {
+    return { ...outer, sessionId };
+  }
+  if (outer.type === 'session/event' && outer.event) {
+    return { type: 'session/event', sessionId, event };
+  }
+  return { type: 'session/event', sessionId, event };
+}
+
+/** 快照事件里的 cursor/seq；没有就返回 0。 */
+export function snapshotEventCursor(raw) {
+  if (!raw || typeof raw !== 'object') return 0;
+  const value = raw.cursor ?? raw.seq ?? raw.sequence ?? raw.eventSeq ?? raw.id;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
+
 export class NodeApiClient extends AbstractApiClient {
   constructor(baseUrl, timeoutMs, auth) {
     super(timeoutMs);
@@ -319,6 +354,10 @@ export class NodeApiClient extends AbstractApiClient {
     // 期望 follow 的会话集合：**跨重连保留**。DSH 重启或 WS 中断后必须重放，
     // 否则已有会话再也收不到 session 事件（turn/end 丢失 → QQ 上永远没有回复，且无报错）。
     this._desiredFollows = new Set();
+    // remote.mux 404 时切到 /api/events 快照轮询；正常用户永远走 remote.mux，不受影响。
+    this._remoteMuxUnsupported = false;
+    this._remoteMuxRetryAt = 0;
+    this.eventTransport = 'remote.mux';
   }
 
   /** Node 没有 location；把 base 固定为配置的 DSH 地址（回环地址天然通过 /api 信任栅栏）。 */
@@ -621,7 +660,8 @@ export class NodeApiClient extends AbstractApiClient {
       type: 'client-request',
       rpcId: this.mintRpcId(),
       method: endpoint,
-      payload: wrapArgs(method, payload)
+      // 整包兜底：任何字段里漏网的孤立代理项（被劈开的 emoji）发到模型都是 400，见 src/safe-text.js。
+      payload: wrapArgs(method, deepWellFormed(payload))
     };
     this.onEnvelope(message);
     const response = await this.postJson(`/api/${endpoint}`, message, signal, timeoutPolicy);
@@ -684,7 +724,11 @@ export class NodeApiClient extends AbstractApiClient {
   };
 
   openRemoteEventStream(signal, onOpen) {
-    const gen = this._remoteMuxGenerator(signal, onOpen);
+    const fallback = this._remoteMuxUnsupported && Date.now() < this._remoteMuxRetryAt;
+    this.eventTransport = fallback ? 'snapshot' : 'remote.mux';
+    const gen = fallback
+      ? this._snapshotEventGenerator(signal, onOpen)
+      : this._remoteMuxGenerator(signal, onOpen);
     return {
       [Symbol.asyncIterator]: () => gen,
       follow: (sessionId) => this._followSession(sessionId),
@@ -715,6 +759,8 @@ export class NodeApiClient extends AbstractApiClient {
     let eventStreamId = null;
     let eventClientId = null;
     let ended = false;
+    let socketOpened = false;
+    let socketFailure = '';
     const followed = new Set();
     const streamToSession = new Map();
     const sessionToStream = new Map();
@@ -727,6 +773,14 @@ export class NodeApiClient extends AbstractApiClient {
       if (ended) return;
       ended = true;
       if (this._muxSendOpen === sendOpen) this._muxSendOpen = null;
+      // 连上但握手直接 404：宿主没有 remote.mux。正常用户不会走到这里；
+      // 只有这种宿主才切换 /api/events 轮询，避免影响远程推送。
+      if (!socketOpened && !sig.aborted && /404|not found|unexpected server response/i.test(socketFailure)) {
+        this._remoteMuxUnsupported = true;
+        this._remoteMuxRetryAt = Date.now() + 60_000;
+        this.eventTransport = 'snapshot';
+        console.error(`[dsh-client] /api/remote.mux 不可用，降级到 /api/events 轮询：${socketFailure}`);
+      }
       // 连接断开（含鉴权失败/DSH 重启）时丢弃旧 Cookie，重连会重新 token exchange。
       if (!sig.aborted) this.invalidateAuth();
       enqueue({ kind: 'end' });
@@ -782,6 +836,10 @@ export class NodeApiClient extends AbstractApiClient {
     const handleOpen = () => {
       if (ended || sig.aborted) return;
       socketOpen = true;
+      socketOpened = true;
+      this._remoteMuxUnsupported = false;
+      this._remoteMuxRetryAt = 0;
+      this.eventTransport = 'remote.mux';
       this._muxSendOpen = sendOpen;
       // 重放**全部**期望 follow（跨重连保留），而不只是本次连接排队的那些。
       // 少了这一步，DSH 一重启，所有已存在的 QQ 会话就会静默失联。
@@ -906,8 +964,16 @@ export class NodeApiClient extends AbstractApiClient {
         }
       }
     };
-    const handleClose = () => endStream();
-    const handleError = () => endStream();
+    const handleClose = (event) => {
+      if (!socketOpened) {
+        socketFailure ||= `close ${event?.code ?? ''} ${event?.reason ?? ''}`.trim();
+      }
+      endStream();
+    };
+    const handleError = (event) => {
+      socketFailure = String(event?.message || event?.error?.message || event?.error || socketFailure || 'WebSocket error');
+      endStream();
+    };
     const handleAbort = () => {
       endStream();
       if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) socket.close();
@@ -938,6 +1004,74 @@ export class NodeApiClient extends AbstractApiClient {
       handleAbort();
     }
   }
+
+  /**
+   * 兼容模式：老/内嵌宿主只暴露 GET /api/events?cursor= 快照。
+   * 首次请求只拿 latest 做基线，绝不重放历史 turn；之后按 cursor 增量轮询。
+   * 只在 remote.mux 明确 404 后启用，正常宿主不会走这里。
+   */
+  async *_snapshotEventGenerator(signal, onOpen) {
+    const own = signal === undefined ? new AbortController() : undefined;
+    const sig = signal ?? own.signal;
+    sig.throwIfAborted();
+    await this.ensureAuth(sig);
+    let cursor = null;
+    let opened = false;
+    const seen = new Set();
+    try {
+      for (;;) {
+        sig.throwIfAborted();
+        const url = new URL('/api/events', this.baseUrl);
+        if (cursor !== null) url.searchParams.set('cursor', String(cursor));
+        const response = await this._doFetchWithAuth(url, { signal: sig }, false);
+        if (response.status === 404) throw new Error('DSH 宿主没有 /api/events');
+        if (!response.ok) throw new Error(`DSH /api/events HTTP ${response.status}`);
+        const data = await response.json().catch(() => ({}));
+        const events = Array.isArray(data?.events) ? data.events : [];
+        const latest = Number(data?.latest ?? data?.cursor ?? data?.nextCursor ?? 0) || 0;
+        if (cursor === null) {
+          // 第一次只建立基线：历史事件不能当新回合，否则会重发旧回复。
+          let maxCursor = latest;
+          for (const raw of events) maxCursor = Math.max(maxCursor, snapshotEventCursor(raw));
+          cursor = maxCursor;
+          opened = true;
+          this.eventTransport = 'snapshot';
+          onOpen?.();
+        } else {
+          for (const raw of events) {
+            const seq = snapshotEventCursor(raw);
+            if (seq && seq <= cursor) continue;
+            const payload = snapshotEventPayload(raw);
+            if (!payload) continue;
+            const sessionId = String(payload.sessionId ?? '');
+            if (this._desiredFollows.size && sessionId && !this._desiredFollows.has(sessionId)
+              && payload.type !== 'question/requested' && payload.type !== 'approval/requested') continue;
+            const dedupe = `${sessionId}|${payload.type}|${seq || ''}|${JSON.stringify(payload.event ?? payload).slice(0, 300)}`;
+            if (seen.has(dedupe)) continue;
+            seen.add(dedupe);
+            if (seen.size > 2000) seen.clear();
+            yield {
+              kind: 'frame',
+              envelope: {
+                rpcId: `snapshot-${seq || Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                payload,
+              },
+            };
+          }
+          cursor = Math.max(cursor, latest);
+          for (const raw of events) cursor = Math.max(cursor, snapshotEventCursor(raw));
+        }
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, 1500);
+          const abort = () => { clearTimeout(timer); resolve(); };
+          sig.addEventListener('abort', abort, { once: true });
+        });
+      }
+    } finally {
+      own?.abort();
+      if (opened) this.eventTransport = 'snapshot';
+    }
+  }
 }
 
 /** 把 RpcResponse 的结果槽解出来；业务错误直接抛出。 */
@@ -948,13 +1082,14 @@ export function unwrap(response, label) {
 }
 
 /** 在会话事件流里收集一次 turn 的 assistant 文本（按 turn 分组）。 */
-export function createTurnCollector() {
+export function createTurnCollector({ tolerantStart = false } = {}) {
   const turns = new Map(); // turn -> { text }
   return {
     /** 处理一条 session/event，返回该事件是否终结了一个 turn（此时可取最终文本）。 */
     push(event) {
       if (event.type === 'turn/start') {
-        turns.set(event.data.turn, { text: '' });
+        // tolerant 模式：如果 assistant/message 先到，不要重置已累积的文本。
+        if (!tolerantStart || !turns.has(event.data.turn)) turns.set(event.data.turn, { text: '' });
         return null;
       }
       if (event.type === 'assistant/chunk') {
@@ -963,7 +1098,11 @@ export function createTurnCollector() {
         return null;
       }
       if (event.type === 'assistant/message') {
-        const t = turns.get(event.data.turn);
+        let t = turns.get(event.data.turn);
+        if (!t && tolerantStart) {
+          t = { text: '' };
+          turns.set(event.data.turn, t);
+        }
         if (!t) return null;
         for (const block of event.data.message?.content ?? []) {
           if (block?.type === 'text' && typeof block.text === 'string') t.text += block.text;
@@ -971,8 +1110,9 @@ export function createTurnCollector() {
         return null;
       }
       if (event.type === 'turn/end') {
-        const t = turns.get(event.data.turn);
+        let t = turns.get(event.data.turn);
         turns.delete(event.data.turn);
+        if (!t && tolerantStart) t = { text: '' };
         if (!t) return null;
         return { turn: event.data.turn, reason: event.data.reason, text: t.text };
       }

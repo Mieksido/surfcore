@@ -589,10 +589,14 @@ await pumpMux();      // DSH 事件流主循环（永不返回）
 
 | 方法 | 路径 | 令牌 | 副作用 |
 |---|---|---|---|
-| GET | `/api/dsh/model` | C | 只读（读 `session.modelCatalog`，3 秒超时，失败降级内置清单） | `src/bridge.js:4780-4825` |
-| POST | `/api/dsh/effort` | C | 写 `config.json` + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js:4827-4842` |
+| GET | `/api/dsh/model` | C | 只读（读 `session.modelCatalog`，3 秒超时，失败降级内置清单；返回 `models[]` / `providers[]`，带 reasoning/图片/价格提示） | `src/bridge.js` DSH 模型段 |
+| POST | `/api/dsh/model` | C | 校验目录中的 provider/model/effort，写 `config.json` + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js` DSH 模型段 |
+| POST | `/api/dsh/effort` | C | 只改思考强度，写 `config.json` + `modelSelectionEpoch++`（兼容旧控制台） | `src/bridge.js` DSH 模型段 |
 
-`globalSideEffect: true` 是明确告知：`selectModel` 会同时改 DSH 全局默认模型（`src/bridge.js:4821-4823`）。
+目录不可用时 GET 的 `models`/`providers` 为空；前端只允许调 `/api/dsh/effort`，不瞎给模型选项。
+POST 的 `MODEL_CATALOG_UNAVAILABLE` / `MODEL_NOT_FOUND` / `MODEL_EFFORT_UNSUPPORTED` 都带 `hint`。
+
+`globalSideEffect: true` 是明确告知：`selectModel` 会同时改 DSH 全局默认模型（`~/.dsh/settings.yaml` 的 `agent-default-model`），不只影响 QQ 会话。
 
 ### 6.7 安全 / 令牌 / 问候 / 目的 / 测试
 

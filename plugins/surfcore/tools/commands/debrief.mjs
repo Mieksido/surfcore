@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
+import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 
 const argv = process.argv.slice(2)
 const bvid = argv.find((a) => !a.startsWith('--'))
@@ -82,7 +83,7 @@ const wbi = (params) => {
     .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(k === 'wts' ? wts : params[k]).replace(/[!'()*]/g, ''))}`).join('&')
   return `${q}&w_rid=${crypto.createHash('md5').update(q + mixin).digest('hex')}`
 }
-const shots = path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.dsh', 'shots')
+const shots = shotsPath()
 fs.mkdirSync(path.join(shots, 'covers'), { recursive: true })
 fs.mkdirSync(path.join(shots, 'subs'), { recursive: true })
 
@@ -226,7 +227,10 @@ if (!opt['no-frames']) {
     // ⚠️ 必须用 fileURLToPath：用 URL.pathname 会把路径里的空格变成 %20（实测踩过）
     const watch = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bili-watch.mjs')
     // 让 bili-watch 知道“这次由 debrief 统一记账”，避免同一次观看写两条历史。
-    const out = execFileSync(process.execPath, [watch, bvid, GRID], {
+    const out = execFileSync(process.execPath, [
+      watch, bvid, GRID,
+      ...(opt.substrip || opt['keep-mp4'] ? ['--keep-mp4'] : []),
+    ], {
       encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, SURFCORE_WATCH_PARENT: 'debrief', SURFCORE_WATCH_SOURCE: 'debrief' },
     })
@@ -245,8 +249,8 @@ if (!opt['no-frames']) {
   //       debrief <BV> --substrip 4       （更密，适合口播）
   if (opt.substrip) {
     console.log('\n══════════ ⑥b 字幕条（硬字幕拼图）══════════')
+    const mp4 = sheet ? sheet.replace(/-[0-9A-Za-z]+\.jpg$/, '.mp4') : null
     try {
-      const mp4 = sheet ? sheet.replace(/-[0-9A-Za-z]+\.jpg$/, '.mp4') : null
       if (!mp4 || !fs.existsSync(mp4)) { console.log('（没有可用的 mp4，跳过字幕条）') }
       else {
         const { requireFfmpeg } = await import('../lib/ffmpeg.mjs')
@@ -262,6 +266,11 @@ if (!opt['no-frames']) {
         console.log('（用 read_image 看它 —— 整片台词基本都在这一张图里）')
       }
     } catch (e) { console.log(`（字幕条失败：${String(e.message).slice(0, 200)}）`) }
+    finally {
+      if (mp4 && !opt['keep-mp4']) {
+        try { fs.rmSync(mp4, { force: true }) } catch {}
+      }
+    }
   }
 }
 
@@ -298,6 +307,8 @@ if (!opt['no-history']) {
   })
   if (rec.ok) console.log(`\n[观看历史] 已记一笔：${bvid}（${opt['no-frames'] ? '浅看' : '深看'}）`)
 }
+
+try { console.log(formatShotsStats(pruneShots())) } catch {}
 
 console.log('\n══════════ 下一步（交给模型）══════════')
 console.log('用 read_image 看封面与九宫格，再把上面五路合起来写成结论 —— 脚本只备素材，不作判断。')

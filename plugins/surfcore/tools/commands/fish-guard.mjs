@@ -14,6 +14,7 @@
 import { accountBili } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import { config } from '../lib/config.mjs'
+import { assertInteractEnabled } from '../lib/interact.mjs'
 import {
   fishGuardStateSummary, fishGuardStatusText, likeFishComments, loadFishGuardState,
   normalizeBiliFishGuard, planFishGuard, recordFishGuardCheck,
@@ -33,6 +34,7 @@ const bvid = args.get('bvid') ? String(args.get('bvid')) : ''
 const type = String(args.get('type') ?? '1')
 const jsonOut = args.get('json') === true
 const dry = args.get('dry') === true
+if (sub === 'like' && !dry && !assertInteractEnabled('给鱼点赞')) process.exit(3)
 
 const cfg = normalizeBiliFishGuard(config().fishGuard)
 const state = loadFishGuardState()

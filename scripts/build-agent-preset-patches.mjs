@@ -147,7 +147,9 @@ export function buildPatches({ check = false, log = () => {} } = {}) {
   for (const name of PRESETS) {
     const file = patchFileFor(name);
     const content = renderPatch(name);
-    const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+    // Windows 工作区 core.autocrlf=true 会把已提交的 LF 检出成 CRLF；
+    // 直接字符串比较会误报“需重新生成”（2026-11-03 发布门禁踩到）。
+    const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : null;
     const changed = current !== content;
     if (changed && !check) {
       fs.mkdirSync(path.dirname(file), { recursive: true });

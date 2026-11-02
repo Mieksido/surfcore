@@ -20,6 +20,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { assertInteractEnabled, checkCommentAge, printAgeBlock } from '../lib/interact.mjs'
 // 2026-10-20（管理员定）：普通评论的硬闸门 —— 想说话就说话，但别把自己说成刷屏号 ✗
 //   一天 30 条 · 同一 UP 10 分钟 ≤1 · 同一视频 60 分钟 ≤1（默认值在 lib/limits.mjs；
 //   2026-10-22 起可在设置页 / bili.config.json 的 limits 段改）
@@ -73,7 +74,11 @@ async function parentAuthor(aid, rootRpid, parentRpid, replyType = 1) {
     })).json()
     const list = j.data?.replies ?? []
     const hit = list.find((r) => String(r.rpid) === String(parentRpid))
-    if (hit) return { mid: String(hit.mid ?? hit.member?.mid ?? ''), name: hit.member?.uname ?? '' }
+    if (hit) return {
+      mid: String(hit.mid ?? hit.member?.mid ?? ''),
+      name: hit.member?.uname ?? '',
+      ctime: Number(hit.ctime) * 1000 || 0,
+    }
     if (!list.length) break
   }
   return null
@@ -115,6 +120,8 @@ if (!oid || (!bvid && !refererArg) || !message) {
 }
 if (dry && go) { console.error('pick either --dry or --go, not both'); process.exit(2) }
 if (!dry && !go) { console.error('refusing to run without an explicit --dry or --go'); process.exit(2) }
+// 沉默逛：--dry 允许预览，--go 一律拒绝；不能只靠提示词自觉。
+if (!dry && !assertInteractEnabled(AUTO ? '自动评论/回复' : '评论')) process.exit(3)
 
 // --share（分享型）：正文里必须 @ 主人 —— 没写 @ 就自动补上。
 // 昵称取配置的 owner.name（space/wbi/acc/info 可能被风控，不实时查）；
@@ -262,6 +269,16 @@ const forceGather = args.get('no-force-gather') === true
   ? false
   : (args.get('force-gather') === true || fishCfg.forceGather !== false)
 const hadThread = Boolean(root || parent)
+// 评论年龄闸：明确太旧的评论不回复，避免挖 2023 年坟、骚扰早已离开的人。
+if (hadThread) {
+  try {
+    const who = await parentAuthor(oid, root, parent, type)
+    const age = checkCommentAge(who?.ctime)
+    if (!age.ok) { printAgeBlock(age); process.exit(3) }
+  } catch (error) {
+    console.error(`⚠️ 评论年龄检查失败（按未知处理，不拦）：${String(error?.message ?? error).slice(0, 120)}`)
+  }
+}
 let fishPlan = null
 if (AUTO && !SHARE && fishCfg.enabled && !hadThread) {
   fishPlan = await planFishGuard({
@@ -287,6 +304,8 @@ if (AUTO && !SHARE && fishCfg.enabled && !hadThread) {
       const noGather = args.get('no-fish-gather') === true
       const target = fishCfg.gatherEnabled && !noGather ? fishPlan.gatherTarget : null
       if (target) {
+        const age = checkCommentAge(target.ctime)
+        if (!age.ok) { printAgeBlock(age); process.exit(3) }
         root = target.rpid
         parent = target.rpid
         const mention = `@${target.uname || target.mid || target.rpid}`

@@ -8,12 +8,17 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { unwrapSchemaValue } from '../src/schema-values.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PLUGIN_DIR = path.join(ROOT, 'plugins', 'surfcore');
 const NS = 'qq-mode';
 
 const mod = await import(pathToFileURL(path.join(PLUGIN_DIR, 'lib', 'qq-mode.js')).href);
+// schemastery 3.18.3+ 把 volatile 字段解析成带 get() 的包装对象；统一取纯值再断言。
+const resolveConfig = (value) => Object.fromEntries(
+  Object.entries(value).map(([key, item]) => [key, unwrapSchemaValue(item)]),
+);
 const patchText = fs.readFileSync(path.join(PLUGIN_DIR, 'cordis.patch.yml'), 'utf8');
 const source = fs.readFileSync(path.join(PLUGIN_DIR, 'lib', 'qq-mode.js'), 'utf8');
 
@@ -32,8 +37,16 @@ test('cordis.patch.yml 的 entry id 恰好等于命名空间名', () => {
   assert.ok(!ids.includes('qq-mode-console'), 'entry id 不应是插件包名');
 });
 
+test('qq-mode 是独立 host-only 包，不再解析回 surfcore 客户端包', () => {
+  const qqPkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'qq-mode', 'package.json'), 'utf8'));
+  assert.equal(qqPkg.name, 'surfcore-qq-mode');
+  assert.equal(qqPkg.dsh?.client, undefined, 'qq-mode 不能声明 dsh.client');
+  assert.ok(patchText.includes('name: ./qq-mode/index.js'), 'Loader 必须指向独立包入口');
+  assert.ok(!patchText.includes('name: ./lib/qq-mode.js'), '不能再让 qq-mode 解析回 surfcore');
+});
+
 test('Config 是可用的 schemastery schema，且带 volatile 字段', () => {
-  const resolved = mod.Config({});
+  const resolved = resolveConfig(mod.Config({}));
   assert.equal(resolved.mode, 'reserved2', 'Config 默认 mode 应为 reserved2');
 
   // ③ volatile 标记。注意 schemastery 的 toJSON() 是**引用表**形状：
@@ -56,7 +69,7 @@ test('Config 是可用的 schemastery schema，且带 volatile 字段', () => {
 
 test('schema 接受全部规范/历史 mode 拼写，拒绝非法值', () => {
   for (const mode of ['chat', 'closed-agent', 'reserved', 'reserved2', 'simulation']) {
-    assert.equal(mod.Config({ mode }).mode, mode, `${mode} 应被接受`);
+    assert.equal(resolveConfig(mod.Config({ mode })).mode, mode, `${mode} 应被接受`);
   }
   assert.throws(() => mod.Config({ mode: 'bogus' }), '非法 mode 必须被拒绝');
 });

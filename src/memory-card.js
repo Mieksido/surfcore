@@ -29,6 +29,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { sliceHead } from './safe-text.js';
 
 export const MEMORY_CARD_VERSION = 1;
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -78,6 +79,8 @@ export const DEFAULT_MEMORY_CARD_CONFIG = Object.freeze({
   fullMaxRecords: 0,
   /** 全量卡 md 导出只在档案小于这个字节数时生成（否则写占位，避免 10GB 档案再复制一份）。 */
   fullMarkdownMaxBytes: 5 * 1024 * 1024,
+  /** 群记忆互通：默认隔离；只有同一 circle 的群互相可见。私聊永不进群。 */
+  sharing: Object.freeze({ default: 'isolated', circles: Object.freeze([]) }),
 });
 
 /** 记忆来源 → 平台模块。 */
@@ -132,6 +135,30 @@ function bool(value, fallback) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+/** 群记忆互通圈：封闭集合，不嵌套、不传递；默认隔离。 */
+export function normalizeMemorySharing(input = {}) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const circles = [];
+  const seenGroups = new Set();
+  for (const item of asArray(raw.circles)) {
+    const circle = item && typeof item === 'object' ? item : {};
+    const groups = [];
+    for (const value of asArray(circle.groups)) {
+      const id = String(value ?? '').trim().replace(/^group:/i, '');
+      if (!/^\d+$/.test(id) || seenGroups.has(id)) continue;
+      seenGroups.add(id);
+      groups.push(id);
+    }
+    if (groups.length < 2) continue;
+    circles.push({
+      id: short(String(circle.id ?? `circle-${circles.length + 1}`), 40) || `circle-${circles.length + 1}`,
+      name: short(String(circle.name ?? `互通圈 ${circles.length + 1}`), 40) || `互通圈 ${circles.length + 1}`,
+      groups,
+    });
+  }
+  return { default: 'isolated', circles };
+}
+
 /** 配置收敛：坏值一律回默认，绝不把 0 / NaN 写进引擎。 */
 export function normalizeMemoryCardConfig(input = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
@@ -164,6 +191,7 @@ export function normalizeMemoryCardConfig(input = {}) {
     fullMaxBytes,
     fullMaxRecords,
     fullMarkdownMaxBytes: clampInt(raw.fullMarkdownMaxBytes, DEFAULT_MEMORY_CARD_CONFIG.fullMarkdownMaxBytes, 1024 * 1024, 50 * 1024 * 1024),
+    sharing: normalizeMemorySharing(raw.sharing),
   };
 }
 
@@ -206,7 +234,7 @@ function hash(value, len = 16) {
 
 function short(text, max = 80) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return s.length > max ? `${sliceHead(s, max)}…` : s;
 }
 
 function dateOnly(value) {
@@ -246,7 +274,7 @@ export function redactForMemory(text, { scope = 'qq', maxChars = 600 } = {}) {
   }
   s = s.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
   const limit = clampInt(maxChars, 600, 100, 4000);
-  return s.length > limit ? `${s.slice(0, limit)}…` : s;
+  return s.length > limit ? `${sliceHead(s, limit)}…` : s;
 }
 
 /** 情绪浓度 0-24。越高越可能是「重要记忆」。 */
@@ -379,6 +407,7 @@ function normalizeRecord(item) {
     recallCount: clampInt(raw.recallCount, 0, 0, 999),
     speaker: short(String(raw.speaker ?? ''), 40),
     groupId: String(raw.groupId ?? ''),
+    groupName: short(String(raw.groupName ?? ''), 80),
     private: raw.private === true,
     manual: raw.manual === true,
     sensitive: raw.sensitive === true,
@@ -455,6 +484,11 @@ export function refreshInitialState(card) {
     card.meta.firstMetEventId = earliest ? earliest.id : '';
   }
 
+  // firstMet 是“初次相遇”标记；pinned 是用户选择。两者不再强制绑定：
+  // 旧卡第一次升级到新语义时仍会自动置顶；用户之后明确取消置顶则保留 false，
+  // 不会每次 GET/refresh 又把它写回 true。
+  const wasFirstMet = new Set(card.records.filter((record) => record.firstMet).map((record) => record.id));
+
   for (const record of card.records) {
     const tags = new Set(asArray(record.tags));
     tags.delete('initial');
@@ -471,7 +505,8 @@ export function refreshInitialState(card) {
     const isAutoRecord = !hasManual && earliest && record.id === earliest.id;
     if (isManualRecord || isAutoRecord) {
       record.firstMet = true;
-      record.pinned = true;
+      // 只有“新成为初次相遇”时才自动置顶；已有 firstMet 的 pinned 是用户的决定。
+      if (!wasFirstMet.has(record.id)) record.pinned = true;
       record.anchor = true;
       record.kind = 'firstMeet';
       record.importance = 100;
@@ -483,6 +518,7 @@ export function refreshInitialState(card) {
       record.tags = [...tags];
       continue;
     }
+    record.anchor = record.pinned === true;
     const offsetDays = firstAt
       ? Math.max(0, Math.floor((timeOf(record.createdAt, firstAt) - firstAt) / DAY_MS))
       : 0;
@@ -1197,6 +1233,7 @@ function makeRecord(input, config, now) {
     recallCount: 0,
     speaker: short(input.speaker ?? '', 40),
     groupId: String(input.groupId ?? ''),
+    groupName: short(input.groupName ?? '', 80),
     private: input.private === true,
     manual: input.manual === true,
     sensitive: input.sensitive === true || SENSITIVE_TOPIC_RE.test(`${cleanTitle} ${cleanText}`),
@@ -1220,9 +1257,11 @@ function findDuplicate(card, record) {
   }
   const windowMs = 2 * DAY_MS;
   const created = timeOf(record.createdAt, Date.now());
+  const conversationKey = String(record.conversationKey ?? '');
   return card.records.find((item) => item.source === record.source
     && item.speaker === record.speaker
     && item.text === record.text
+    && String(item.conversationKey ?? '') === conversationKey
     && Math.abs(timeOf(item.createdAt, created) - created) <= windowMs) ?? null;
 }
 
@@ -1402,6 +1441,7 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
         lastSeenAt: at,
         speaker,
         groupId: item.groupId ?? '',
+        groupName: item.groupName ?? '',
         private: isPrivate,
         conversationKey,
         tags: ['qq', 'self'],
@@ -1672,6 +1712,30 @@ export function compactMemoryCard(card, config = {}, { targetRatio = 0.85, now =
   return steps;
 }
 
+function recordGroupId(record) {
+  const direct = String(record?.groupId ?? '').trim().replace(/^group:/i, '');
+  if (/^\d+$/.test(direct)) return direct;
+  const m = /^group:(\d+)$/.exec(String(record?.conversationKey ?? ''));
+  return m ? m[1] : '';
+}
+
+function recordIsPrivate(record) {
+  return record?.private === true
+    || record?.source === 'qq-private'
+    || String(record?.conversationKey ?? '').startsWith('private:');
+}
+
+function memorySourceLabel(record) {
+  if (recordIsPrivate(record)) return '私聊';
+  if (record?.platform === 'pet' || record?.scope === 'pet') return '桌宠';
+  if (record?.platform === 'bili' || record?.scope === 'bili') return 'B站';
+  if (record?.source === 'manual') return '手动记录';
+  const gid = recordGroupId(record);
+  const name = String(record?.groupName ?? '').trim();
+  if (!gid) return '群聊·来源未知';
+  return `群聊${name ? `·${name}` : ''} / group:${gid}`;
+}
+
 function recordLine(record, { platform = 'qq', full = false } = {}) {
   const scope = platform === 'bili' && record.scope === 'qq' ? 'bili' : record.scope;
   const rawText = redactForMemory(record.text || record.title, { scope, maxChars: 260 });
@@ -1683,11 +1747,14 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
   } else {
     body = short(rawText, record.clarity === 'vivid' ? 200 : 130);
   }
-  if (record.isSelf && record.speaker) body = `${record.speaker}：${body}`;
+  const source = memorySourceLabel(record);
+  if (record.isSelf && record.speaker) body = `${record.speaker}（${source}）：${body}`;
   // 非主人的记忆也要带说话人：否则别人的「叫我X」会和主人的话混在一起，
   // 模型会把别人的称呼套到眼前的人身上（2026-10-31 用户反馈）。
   else if (!record.isOwner && record.speaker) {
-    body = `${record.speaker}（${record.private ? '私聊' : '群聊'}）：${body}`;
+    body = `${record.speaker}（${source}）：${body}`;
+  } else if (record.isOwner) {
+    body = `主人（${source}）：${body}`;
   }
   if (record.botReply) {
     const reply = redactForMemory(record.botReply, { scope, maxChars: 160 });
@@ -1697,7 +1764,23 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
   return full ? `${head}${body}（重要 ${record.importance}）` : `${head}${body}`;
 }
 
-function visibleFor(card, platform, cfg) {
+function allowedGroupIdsFor(conversationKey, sharing) {
+  const own = /^group:(\d+)$/.exec(String(conversationKey ?? ''))?.[1] ?? '';
+  if (!own) return new Set();
+  const allowed = new Set([own]);
+  for (const circle of asArray(sharing?.circles)) {
+    const groups = asArray(circle?.groups).map(String);
+    if (!groups.includes(own)) continue;
+    for (const gid of groups) allowed.add(gid);
+  }
+  return allowed;
+}
+
+function visibleFor(card, platform, cfg, conversationKey = '') {
+  const current = String(conversationKey ?? '').trim();
+  const currentGroup = /^group:(\d+)$/.exec(current)?.[1] ?? '';
+  const currentPrivate = current.startsWith('private:');
+  const allowedGroups = allowedGroupIdsFor(current, cfg.sharing);
   return card.records.filter((record) => {
     // 完整卡（platform='all'）保留敏感条目供管理员查看；注入提示词的 QQ / B站 两版都排除。
     if (record.sensitive) return platform === 'all';
@@ -1705,13 +1788,28 @@ function visibleFor(card, platform, cfg) {
       if (record.scope === 'bili' || record.scope === 'shared') return true;
       return cfg.includeQqInBili && record.scope === 'qq';
     }
-    return true;
+    if (platform !== 'qq' || !current) return true;
+    if (currentGroup) {
+      // 私聊记忆永不出现在群里；跨群只看同圈。
+      if (recordIsPrivate(record) || record.platform === 'pet' || record.scope === 'pet') return false;
+      if (record.source === 'manual') return true;
+      const gid = recordGroupId(record);
+      if (!gid) return false;
+      return allowedGroups.has(gid);
+    }
+    if (currentPrivate) {
+      // 私聊只看自己的私聊；群记忆和别的私聊都不进。
+      if (!recordIsPrivate(record)) return false;
+      const key = String(record.conversationKey ?? '');
+      return !key || key === current;
+    }
+    return false;
   });
 }
 
-function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = {}) {
+function sectionize(card, { platform = 'all', now = Date.now(), config = {}, conversationKey = '' } = {}) {
   const cfg = normalizeMemoryCardConfig(config);
-  const visible = visibleFor(card, platform, cfg);
+  const visible = visibleFor(card, platform, cfg, conversationKey);
   const firstMet = [];
   const anchors = [];
   const initial = [];
@@ -1727,14 +1825,17 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = 
     used.add(record.id);
     list.push(record);
   };
-  for (const record of visible.filter((item) => item.pinned && item.firstMet)) push(firstMet, record);
+  for (const record of visible.filter((item) => item.firstMet)) push(firstMet, record);
   for (const record of visible.filter((item) => item.pinned && !item.firstMet)) push(anchors, record);
-  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && item.isInitial)) push(initial, record);
-  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && !item.isInitial)) push(owner, record);
-  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && !item.tags.includes('owner') && !item.isInitial)) {
+  // 「最近」优先于「最初/和主人」：只要是最近 N 天、非置顶、非初次相遇，
+  // 不管它是不是 owner/isInitial，都先归 recent。否则 owner+isInitial 会把
+  // recent 永远挤空，预算紧张时再先砍 recent，就变成“永远回忆第一天”。
+  for (const record of visible.filter((item) => !item.pinned && !item.firstMet && item.platform !== 'pet')) {
     const age = (now - timeOf(record.createdAt, now)) / DAY_MS;
     if (age <= cfg.recentDays) push(recent, record);
   }
+  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && item.isInitial)) push(initial, record);
+  for (const record of visible.filter((item) => !item.pinned && item.platform !== 'pet' && item.tags.includes('owner') && !item.isInitial)) push(owner, record);
   // 剩下的按平台分模块；已经模糊 / 只剩印象的统一进「正在模糊的事」。
   for (const record of visible) {
     if (used.has(record.id)) continue;
@@ -1777,17 +1878,20 @@ export function renderMemoryCard(card, options = {}) {
   const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const cfg = normalizeMemoryCardConfig(options.config ?? {});
   const maxChars = full ? 0 : clampInt(options.maxChars, 0, 0, 20000);
-  const sections = sectionize(card, { platform, full, now, config: cfg });
+  const sections = sectionize(card, {
+    platform, full, now, config: cfg,
+    conversationKey: String(options.conversationKey ?? ''),
+  });
   const limits = full
     ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, recent: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
     : (platform === 'bili'
       ? { firstMet: 0, anchors: 4, initial: 0, owner: 0, recent: 6, bili: 8, qq: 0, pet: 0, fuzzy: 3 }
-      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 8, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
+      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 12, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
   const calls = [
     { key: 'firstMet', title: '## 初次相遇（和主人）', priority: 120, lines: sections.firstMet.slice(0, limits.firstMet).map((record) => recordLine(record, { platform, full })) },
     { key: 'anchors', title: '## 永远不会忘的', priority: 100, lines: sections.anchors.slice(0, limits.anchors).map((record) => recordLine(record, { platform, full })) },
-    { key: 'initial', title: '## 最初的日子（和主人）', priority: 45, lines: sections.initial.slice(0, limits.initial).map((record) => recordLine(record, { platform, full })) },
-    { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 40, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
+    { key: 'initial', title: '## 最初的日子（和主人）', priority: 26, lines: sections.initial.slice(0, limits.initial).map((record) => recordLine(record, { platform, full })) },
+    { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 28, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
     { key: 'recent', title: '## 最近记得的', priority: 30, lines: sections.recent.slice(0, limits.recent).map((record) => recordLine(record, { platform, full })) },
     { key: 'pet', title: '## 桌宠（私下相处）', priority: 36, lines: (sections.petModule ?? []).slice(0, limits.pet).map((record) => recordLine(record, { platform, full })) },
     { key: 'bili', title: '## B站（冲浪）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },
@@ -1908,20 +2012,41 @@ export function memoryCardStatus(card, config = {}, now = Date.now()) {
 }
 
 /** 维护后写盘：json + 人看的 md + QQ/B站 两份注入块。原子写，失败不覆盖旧文件。 */
+/** 维护后写盘：json + 人看的 md + QQ/B站 两份注入块。原子写，失败不覆盖旧文件。 */
 export function saveMemoryCardOutputs(paths, card, config = {}, now = Date.now()) {
   const cfg = normalizeMemoryCardConfig(config);
   fs.mkdirSync(paths.dir, { recursive: true });
   const full = renderMemoryCard(card, { config: cfg, full: true, now });
   const promptQq = renderMemoryCard(card, { config: cfg, platform: 'qq', maxChars: cfg.injectMaxChars.qq, now });
   const promptBili = renderMemoryCard(card, { config: cfg, platform: 'bili', maxChars: cfg.injectMaxChars.bili, now });
+  // 按当前会话分别渲染 QQ 记忆块：默认隔离，只有同一 circle 的群互看；私聊永不进群。
+  const keys = new Set();
+  for (const record of asArray(card.records)) {
+    const key = String(record?.conversationKey ?? '');
+    if (/^(group|private):\d+$/.test(key)) keys.add(key);
+    const gid = recordGroupId(record);
+    if (gid) keys.add(`group:${gid}`);
+  }
+  for (const circle of asArray(cfg.sharing?.circles)) {
+    for (const gid of asArray(circle?.groups)) keys.add(`group:${gid}`);
+  }
+  const blocks = {};
+  for (const key of keys) {
+    blocks[key] = renderMemoryCard(card, {
+      config: cfg, platform: 'qq', maxChars: cfg.injectMaxChars.qq, now, conversationKey: key,
+    });
+  }
+  const promptQqGroups = path.join(path.dirname(paths.promptQq), 'memory-card-prompt-qq-groups.json');
   writeTextAtomic(paths.json, `${JSON.stringify(card, null, 2)}\n`);
   writeTextAtomic(paths.markdown, `${full}\n`);
   writeTextAtomic(paths.promptQq, promptQq ? `${promptQq}\n` : '');
   writeTextAtomic(paths.promptBili, promptBili ? `${promptBili}\n` : '');
+  writeTextAtomic(promptQqGroups, `${JSON.stringify({ version: 1, updatedAt: iso(now), blocks }, null, 2)}\n`);
   return {
     full,
     promptQq,
     promptBili,
+    promptQqGroups,
     status: memoryCardStatus(card, cfg, now),
   };
 }
@@ -2046,6 +2171,7 @@ export function appendMemoryInboxEvent(paths, event = {}, { maxBytes = 1024 * 10
       sender: short(event.sender ?? '', 40),
       senderId: String(event.senderId ?? ''),
       groupId: String(event.groupId ?? ''),
+      groupName: short(String(event.groupName ?? ''), 80),
       isOwner: event.isOwner === true,
       isSelf: event.isSelf === true,
       conversationKey: String(event.conversationKey ?? ''),

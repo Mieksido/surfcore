@@ -364,7 +364,7 @@ assert.ok(source.includes('onChange: (list) => setQqToBili("includeGroups", list
 // ── 通知函数接线（2026-10-30 用户反馈：语音页保存后红字 "toast is not a function"）──
 // 根因：Settings 里 toast 是"浮层文案字符串"，真正的函数叫 notify；
 // VoiceTab 那一处只传了 { toast }，字符串被当函数调用 → 保存成功却显示失败。
-assert.ok(source.includes('h(VoiceTab, { toast: notify })'), 'VoiceTab 必须收到 notify 函数（不是字符串 toast）');
+assert.ok(source.includes('h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy })'), 'VoiceTab 必须收到 notify 函数和配置/保存接线');
 assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toast（字符串）');
 {
   // 通用：所有 Tab 的 props 里出现 toast 的，都必须是 toast: notify
@@ -373,7 +373,7 @@ assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toa
   assert.equal(bad.length, 0, `有 Tab 把字符串 toast 当函数传：${bad.map((m) => m[1]).join(', ')}`);
 }
 assert.ok(source.includes('const [toastText, setToastText]'), '浮层文案状态应叫 toastText（避免与 notify 混淆）');
-assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify });'), '语音页接线固定为 toast: notify');
+assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy });'), '语音页接线固定为 notify + 配置/保存');
 
 // ── 语音页网盘离线包入口（2026-10-30 用户要求：网络不稳时可走网盘）──
 assert.ok(source.includes('https://pan.quark.cn/s/ec6cf2b123de?pwd=sxUZ'), '语音页必须包含网盘链接');
@@ -447,4 +447,25 @@ assert.ok(source.includes('updatePromptSignature'), '按版本集合生成提醒
 assert.ok(source.includes('neverStarted'), '未启动（everConnected=false）也要过滤旧断线告警');
 assert.ok(source.includes('sl.everConnected === false'), '按 everConnected 判断“从未启动”');
 
+// ── DSH 注册修复入口（2026-11-01）──
+assert.ok(source.includes("/dsh/repair"), "设置页要有修复 DSH 注册的入口");
+assert.ok(source.includes("修复 DSH 注册"), "按钮文案要能看懂");
+assert.ok(source.includes("canRepairDsh"), "L2 弹窗遇到 dsh-profile-mcp-missing 要给修复按钮");
+// ── 更新通道单选（2026-11-01）──
+assert.ok(source.includes("update-channel"), "检查更新下面要有 main/dev 单选");
+assert.ok(source.includes("main（正式版") && source.includes("dev（测试版"), "两个通道文案");
+assert.ok(source.includes("switchUpdateChannel"), "切通道要调 set-channel");
+// ── 保存按钮/提示（2026-11-02）──
+assert.ok(source.includes("保存并生效"), "主保存按钮必须明确“保存并生效”");
+assert.ok(source.includes("仅保存（不重启）"), "必须保留明确的“仅保存”次按钮");
+assert.ok(source.includes('className: "qbw-toast"'), "保存成功提示必须是固定 toast");
+assert.ok(source.includes("qbw-settings-foot"), "弹窗保存按钮必须在固定底栏");
+assert.ok(source.includes("onSaveReady"), "群管理保存要交给弹窗底栏");
+assert.ok(source.includes("保存管理员并重启桥接"), "管理员卡片要有局部保存按钮");
+// ── 模型与思考强度（2026-11-02）──
+assert.ok(source.includes("function ModelSettingsCard"), "设置页要有模型/思考强度卡");
+assert.ok(source.includes("dshModelSelect"), "模型必须是目录驱动的下拉框");
+assert.ok(source.includes("dshEffortSelect"), "思考强度必须是下拉框");
+assert.ok(!source.includes("low / medium / high / max"), "不能再提示后端不支持的 medium");
+assert.ok(source.includes("会同时修改 DSH 全局默认模型"), "模型切换必须提示全局副作用");
 console.log('client contract tests OK');

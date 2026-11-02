@@ -54,6 +54,19 @@ console.log('## 3. 端口与 id 没漂移');
   ok(byId.get('voice-local')?.startScript === 'run.bat' && byId.get('voice-cloud')?.stopScript === 'stop.bat',
     '启停脚本名未变（安装/启动/停止都按它拼路径）');
   ok(DEFAULT_MANIFESTS.every((m) => m.voices?.length >= 1), '每个包至少声明一个音色（设置页要展示）');
+  const cloud = byId.get('voice-cloud');
+  ok(cloud?.directStart?.python === '.venv/Scripts/python.exe', '云端包直接拉 python，不经过 run.bat 的 start');
+  ok(Array.isArray(cloud?.directStart?.args) && cloud.directStart.args.includes('voxd'), '云端 directStart 启动 voxd');
+  ok(cloud?.sizeBytes >= 200_000_000, '云端包体积提示不能再用 60MB（实际安装约 280MB）');
+  const source = fs.readFileSync(SOURCE, 'utf8');
+  ok(source.includes('decodeProcessLog') && source.includes("new TextDecoder('gbk')"), '启动日志兼容 Windows GBK，不能再显示乱码');
+  ok(source.includes("stdio: ['ignore', 'pipe', 'pipe']"), '启动时必须同时收 stdout+stderr');
+  ok(source.includes('VOICE_START_EXITED') && source.includes('startup.log'), '进程早退要立刻报错并写完整启动日志');
+  ok(source.includes('codeload.github.com'), '代码 zip 回退必须走 codeload，不再走 github.com 主站');
+  ok(source.includes('AbortSignal.timeout(30_000)'), '代码 zip 下载必须有超时');
+  ok(source.includes('postInstallTimeoutMs') && source.includes('3 * 60 * 60_000'), '模型下载不能再用 45 分钟硬超时');
+  ok(source.includes('transferPct'), '下载百分比必须与总进度分开返回，避免 51% 文案配 95% 进度条');
+  ok(source.includes('mirror') && source.includes('下载安装包失败'), '下载失败要带 cause/镜像信息，不能只报 fetch failed');
 }
 
 console.log(failures === 0 ? '\n✅ 语音包默认值回归通过' : `\n❌ ${failures} 项失败`);

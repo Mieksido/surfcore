@@ -22,12 +22,12 @@ function makeTarget(name, version = '0.6.22', { withMeta = false } = {}) {
   return dir;
 }
 
-function makeZip({ withManifest = true, extraMissing = [], corrupt = [] } = {}) {
+function makeZip({ withManifest = true, extraMissing = [], corrupt = [], version = '0.7.0' } = {}) {
   const src = path.join(base, 'zip-src', 'surfcore-main');
   fs.rmSync(path.join(base, 'zip-src'), { recursive: true, force: true });
   fs.mkdirSync(path.join(src, 'plugins', 'surfcore'), { recursive: true });
-  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ name: 'surfcore', version: '0.7.0' }));
-  fs.writeFileSync(path.join(src, 'plugins', 'surfcore', 'package.json'), JSON.stringify({ name: 'surfcore-plugin', version: '0.7.0' }));
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ name: 'surfcore', version }));
+  fs.writeFileSync(path.join(src, 'plugins', 'surfcore', 'package.json'), JSON.stringify({ name: 'surfcore-plugin', version }));
   if (withManifest) {
     const files = {};
     const walk = (dir, rel = '') => {
@@ -41,7 +41,7 @@ function makeZip({ withManifest = true, extraMissing = [], corrupt = [] } = {}) 
     fs.mkdirSync(path.join(src, 'release'), { recursive: true });
     for (const rel of extraMissing) files[rel] = '0'.repeat(64);
     for (const rel of corrupt) if (files[rel]) files[rel] = 'f'.repeat(64);
-    fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), JSON.stringify({ schemaVersion: 1, version: '0.7.0', files }));
+    fs.writeFileSync(path.join(src, 'release', 'install-manifest.json'), JSON.stringify({ schemaVersion: 1, version, files }));
   }
   const zip = path.join(base, 'pkg.zip');
   execFileSync('powershell', ['-NoProfile', '-Command',
@@ -386,6 +386,23 @@ try {
     } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
   }
 
+  // 4.5b) 首次 zip 更新：用户显式确认后才允许，且必须先备份
+  {
+    const dir = makeTarget('first-install');
+    const svc = mkService(dir);
+    const restore = stubFetch();
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const r = await svc.apply(['surfcore'], { firstInstall: true });
+      const row = r.results[0];
+      ok(row.ok === true, '首次 zip 更新：显式确认后允许', JSON.stringify(row));
+      ok(row.status === 'pending_restart', '首次 zip 更新：进入待重启', String(row.status));
+      const backups = path.join(dir, '.state', 'backups');
+      ok(fs.existsSync(backups) && fs.readdirSync(backups).length > 0, '首次 zip 更新：先备份');
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
   // 4.5) 没有任何安装证据 → 阻止自动覆盖（不冒险）
   {
     const dir = makeTarget('no-evidence');
@@ -446,7 +463,7 @@ try {
   {
     const { execFileSync } = await import('node:child_process');
     const helper = path.resolve('scripts/apply-update.mjs');
-    const runHelper = (name, stagedVersion, toVersion) => {
+    const runHelper = (name, stagedVersion, toVersion, opts = {}) => {
       const target = makeTarget(name, '0.7.0', { withMeta: true });
       const staging = path.join(base, `${name}-staging`);
       fs.mkdirSync(path.join(staging, 'release'), { recursive: true });
@@ -460,6 +477,7 @@ try {
         waitPid: 999999, txn: name, from: '0.7.0', logFile: path.join(stateDir, 'apply.log'),
         meta: { version: toVersion, sha: REMOTE_SHA },
       }));
+      if (opts.staleFailed) fs.writeFileSync(`${pendingFile}.failed`, JSON.stringify({ component: 'surfcore', error: '旧失败', code: 'apply.failed', at: '2020-01-01T00:00:00.000Z' }));
       let code = 0;
       try {
         execFileSync(process.execPath, [helper, '--pending', pendingFile], { stdio: 'ignore' });
@@ -472,14 +490,57 @@ try {
     ok(fs.existsSync(`${bad.pendingFile}.failed`), '助手：写 .failed 证据');
     const jf = JSON.parse(fs.readFileSync(`${bad.pendingFile}.failed`, 'utf8'));
     ok(jf.code === 'verify.version-mismatch', '助手：code=verify.version-mismatch', String(jf.code));
+    ok(!fs.existsSync(bad.pendingFile), '助手：失败后删掉 pending（.failed 才是唯一真相）');
 
-    const okRun = runHelper('verify-ok', '9.9.9', '9.9.9');
+    const okRun = runHelper('verify-ok', '9.9.9', '9.9.9', { staleFailed: true });
     ok(okRun.code === 0, '助手：版本一致时成功退出', String(okRun.code));
     const applied = fs.readdirSync(path.join(okRun.stateDir, 'updates-applied')).filter((f) => f.endsWith('.json'));
     ok(applied.length === 1, '助手：写应用记录');
     const rec = JSON.parse(fs.readFileSync(path.join(okRun.stateDir, 'updates-applied', applied[0]), 'utf8'));
     ok(rec.verified === true && rec.version === '9.9.9', '助手：记录带 verified 与版本', JSON.stringify(rec));
     ok(fs.existsSync(path.join(okRun.target, '.installed-manifest.json')), '助手：写入安装清单副本');
+    ok(!fs.existsSync(`${okRun.pendingFile}.failed`), '助手：成功后清掉旧 .failed（不会永远显示旧失败）');
+  }
+
+  // 5.55) 未知 kind：结构化失败，不默认当 zip
+  {
+    const { execFileSync } = await import('node:child_process');
+    const helper = path.resolve('scripts/apply-update.mjs');
+    const target = makeTarget('unknown-kind', '0.7.0', { withMeta: true });
+    const stateDir = path.join(base, 'unknown-kind-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const pendingFile = path.join(stateDir, 'updates-pending.json');
+    fs.writeFileSync(pendingFile, JSON.stringify({ kind: 'weird', component: 'surfcore', target, to: '0.7.0', waitPid: 999999 }));
+    let code = 0;
+    try { execFileSync(process.execPath, [helper, '--pending', pendingFile], { stdio: 'ignore' }); } catch (e) { code = e.status ?? 1; }
+    ok(code !== 0, '助手：未知 kind 非 0 退出', String(code));
+    const jf = JSON.parse(fs.readFileSync(`${pendingFile}.failed`, 'utf8'));
+    ok(jf.code === 'apply.unknown-kind', '助手：code=apply.unknown-kind', String(jf.code));
+    ok(!fs.existsSync(pendingFile), '助手：未知 kind 也清掉 pending');
+  }
+
+  // 5.57) 清理 staging 时必须跳过 pending 正在用的目录
+  {
+    const dir = makeTarget('staging-pending', '0.8.6', { withMeta: true });
+    const stateDir = path.join(dir, '.state');
+    const keep = path.join(stateDir, 'staging', 'surfcore-keep');
+    const drop = path.join(stateDir, 'staging', 'surfcore-drop');
+    fs.mkdirSync(path.join(keep, 'surfcore-0.8.6-dev.4'), { recursive: true });
+    fs.mkdirSync(drop, { recursive: true });
+    fs.writeFileSync(path.join(keep, 'pkg.zip'), 'x');
+    fs.writeFileSync(path.join(drop, 'pkg.zip'), 'x');
+    const past = Date.now() - 4 * 24 * 3600_000;
+    fs.utimesSync(keep, new Date(past), new Date(past));
+    fs.utimesSync(drop, new Date(past), new Date(past));
+    fs.writeFileSync(path.join(stateDir, 'updates-pending.json'), JSON.stringify({ kind: 'zip', staging: path.join(keep, 'surfcore-0.8.6-dev.4'), target: dir }));
+    const svc = createUpdatesService({
+      stateDir,
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+    });
+    await svc.check({ fetch: false });
+    ok(fs.existsSync(keep), '待重启的 staging 不会被清理');
+    ok(!fs.existsSync(drop), '无引用的过期 staging 仍会被清理');
   }
 
   // 5.6) 磁盘版本变了 → 旧的检查结果要丢弃（否则弹窗显示 v0.7.3→旧提交）
@@ -523,6 +584,224 @@ try {
     ok(/robocopy/.test(String(la.reason)), '.failed 原因可见', String(la.reason));
     ok(typeof la.hint === 'string' && la.hint.length > 0, '.failed 带建议');
   }
+
+  // 7) 预发布比较：0.8.6 > 0.8.6-dev.2 > 0.8.6-dev.1；0.8.7-dev.1 > 0.8.6
+  {
+    const { compareVersions } = await import('../plugins/surfcore/lib/updates.js');
+    ok(compareVersions('0.8.6', '0.8.6-dev.1') === 1, '稳定版高于同号 dev');
+    ok(compareVersions('0.8.6-dev.2', '0.8.6-dev.1') === 1, 'dev.2 高于 dev.1');
+    ok(compareVersions('0.8.7-dev.1', '0.8.6') === 1, '下一版的 dev 高于当前稳定版');
+    ok(compareVersions('0.8.6-dev.1', '0.8.6') === -1, 'dev 低于同号稳定版');
+  }
+
+  // 8) 测试通道（dev）：只认 pre-release；从稳定版切换时允许安装一次 dev（channel-switch）
+  {
+    const dir = makeTarget('dev-channel', '0.8.6', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([
+          { tag_name: 'v0.8.5', prerelease: false },
+          { tag_name: 'v0.8.6', prerelease: false },
+          { tag_name: 'v0.8.6-dev.2', prerelease: true },
+          { tag_name: 'v0.8.6-dev.10', prerelease: true },
+        ]), { status: 200 });
+      }
+      return undefined;
+    });
+    try {
+      const r = await svc.check({ fetch: true });
+      const row = r.results[0];
+      ok(row.channel === 'dev', '通道标记为 dev', JSON.stringify(row));
+      ok(row.latestVersion === '0.8.6-dev.10', 'dev 构建按数字比较（dev.10 > dev.2）', String(row.latestVersion));
+      ok(row.updateAvailable === true && row.code === 'channel-switch', '稳定版切 dev 允许安装一次', JSON.stringify(row));
+      ok(r.channel === 'dev', 'status 暴露 channel');
+    } finally { restore(); }
+  }
+
+  // 9) dev 通道在已装 dev 构建时按版本比较
+  {
+    const dir = makeTarget('dev-newer', '0.8.6-dev.1', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([{ tag_name: 'v0.8.6-dev.3', prerelease: true }]), { status: 200 });
+      }
+      return undefined;
+    });
+    try {
+      const r = await svc.check({ fetch: true });
+      ok(r.results[0].latestVersion === '0.8.6-dev.3' && r.results[0].updateAvailable === true, '已装 dev.1 → 发现 dev.3', JSON.stringify(r.results[0]));
+    } finally { restore(); }
+  }
+
+
+  // 10) 通道切换清空旧结果：main 不被 dev 的 pending 继续打扰
+  {
+    const dir = makeTarget('channel-reset', '0.8.6', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([{ tag_name: 'v0.8.6-dev.1', prerelease: true }]), { status: 200 });
+      }
+      return undefined;
+    });
+    try {
+      await svc.check({ fetch: true });
+      ok(svc.status().pendingCount === 1, 'dev 检查后有 pending');
+      svc.resetCheck();
+      const st = svc.status();
+      ok(st.pendingCount === 0 && st.showPrompt === false, '切换通道清空 pending/showPrompt（main 不被 dev 打扰）', JSON.stringify(st));
+    } finally { restore(); }
+  }
+
+  // 11) main 通道完全不查 dev（不请求 releases?per_page）
+  {
+    const dir = makeTarget('stable-no-dev', '0.8.6', { withMeta: true });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'stable',
+    });
+    let devProbes = 0;
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) { devProbes += 1; return new Response('[]', { status: 200 }); }
+      return undefined;
+    });
+    try {
+      await svc.check({ fetch: true });
+      ok(devProbes === 0, 'main 通道不探测 dev 预发布（不会被 dev 弹窗打扰）', String(devProbes));
+    } finally { restore(); }
+  }
+
+
+  // 12) dev 通道必须走 zip，不能落到 git merge（2026-11-01 测试机反馈 spawn git ENOENT）
+  {
+    const dir = makeTarget('dev-apply', '0.8.6-dev.2', { withMeta: true });
+    const devZip = makeZip({ version: '0.8.6-dev.3' });
+    const svc = createUpdatesService({
+      stateDir: path.join(dir, '.state'),
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+      channel: () => 'dev',
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/releases?per_page')) {
+        return new Response(JSON.stringify([{ tag_name: 'v0.8.6-dev.3', prerelease: true }]), { status: 200 });
+      }
+      if (u.includes('/zip/refs/tags/') || u.includes('/archive/')) return new Response(devZip, { status: 200 });
+      if (u.includes('/contents/package.json')) {
+        const content = Buffer.from(JSON.stringify({ version: '0.8.6-dev.3' }), 'utf8').toString('base64');
+        return new Response(JSON.stringify({ content }), { status: 200 });
+      }
+      return undefined;
+    });
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const r = await svc.apply(['surfcore']);
+      const row = r.results[0];
+      ok(row.ok === true && row.staged === true, 'dev 通道走 zip 并成功排队', JSON.stringify(row));
+      ok(row.code !== 'apply.git-failed', '不再走 git merge', String(row.code));
+      const last = svc.status().lastApply;
+      ok(!last || last.code !== 'apply.failed', '不再回落 apply.failed', JSON.stringify(last));
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
+  // 13) 未知 channel 必须有结构化分支（apply 会先重新检查，直接构造 results 会被覆盖，
+  //     这里用静态契约 + 运行时代码检查，防止以后又落到 git merge）
+  {
+    const source = fs.readFileSync(path.resolve('plugins/surfcore/lib/updates.js'), 'utf8');
+    ok(source.includes("code: 'apply.unknown-channel'"), '未知 channel 有 apply.unknown-channel');
+    ok(source.includes("if (report.channel === 'version' || report.channel === 'dev')"), 'dev 和 version 共用 zip 流水线');
+    ok(source.includes('if (!report.channel) {'), '只有旧数据（没有 channel）才走 git 兜底');
+  }
+
+  // 14) 3 天前的 staging 会被清理（pkg.zip 残留）
+  {
+    const dir = makeTarget('staging-clean', '0.8.6', { withMeta: true });
+    const stateDir = path.join(dir, '.state');
+    const old = path.join(stateDir, 'staging', 'surfcore-old');
+    fs.mkdirSync(old, { recursive: true });
+    fs.writeFileSync(path.join(old, 'pkg.zip'), 'x');
+    const past = Date.now() - 4 * 24 * 3600_000;
+    fs.utimesSync(old, new Date(past), new Date(past));
+    const svc = createUpdatesService({
+      stateDir,
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test' }],
+      pluginLog: () => {},
+    });
+    await svc.check({ fetch: false });
+    ok(!fs.existsSync(old), '过期 staging 目录被清理');
+  }
+
+
+  // 15) 本地改动：默认确定性拦截；显式 overwriteModified 才备份并覆盖
+  {
+    const dir = makeTarget('local-mod', '0.7.0', { withMeta: true });
+    fs.writeFileSync(path.join(dir, '.installed-meta.json'), JSON.stringify({ version: '0.7.0' }));
+    const stateDir = path.join(dir, '.state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.installed-manifest.json'), JSON.stringify({
+      version: '0.7.0', files: { 'package.json': 'deadbeef' },
+    }));
+    const zip = makeZip({ version: '0.7.1' });
+    const svc = createUpdatesService({
+      stateDir,
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test-localmod' }],
+      pluginLog: () => {},
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/contents/package.json')) {
+        const content = Buffer.from(JSON.stringify({ version: '0.7.1' }), 'utf8').toString('base64');
+        return new Response(JSON.stringify({ content }), { status: 200 });
+      }
+      if (u.includes('/zip/refs/tags/') || u.includes('/archive/')) return new Response(zip, { status: 200 });
+      return undefined;
+    });
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const blocked = await svc.apply(['surfcore']);
+      const row = blocked.results[0];
+      ok(row.code === 'local-modifications', '本地改动默认拦截', String(row.code));
+      ok(row.deterministic === true, 'local-modifications 标记 deterministic');
+      ok(row.diagnostics?.total === 1, '诊断带改动总数', JSON.stringify(row.diagnostics));
+      ok(svc.status().lastApply?.deterministic === true, 'lastApply 记录确定性失败');
+      const over = await svc.apply(['surfcore'], { overwriteModified: true });
+      const okRow = over.results[0];
+      ok(okRow.ok === true && okRow.staged === true, 'overwriteModified 后成功排队', JSON.stringify(okRow));
+      const backups = fs.existsSync(path.join(stateDir, 'backups')) ? fs.readdirSync(path.join(stateDir, 'backups')) : [];
+      const hasBackup = backups.some((txn) => fs.existsSync(path.join(stateDir, 'backups', txn, 'files', 'package.json')));
+      ok(hasBackup, '覆盖前备份了被改文件');
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
+  // 15.5) UI/API：首次 zip 更新必须有显式确认入口
+  {
+    const client = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
+    const index = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
+    ok(client.includes('firstInstall: true'), 'UI 会传 firstInstall');
+    ok(client.includes('首次更新（先备份）'), 'UI 有首次更新按钮');
+    ok(index.includes('firstInstall: body.firstInstall === true'), 'API 接收 firstInstall');
+  }
+
 } finally {
   fs.rmSync(base, { recursive: true, force: true });
 }
