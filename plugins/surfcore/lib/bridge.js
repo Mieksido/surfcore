@@ -200,8 +200,13 @@ export async function stop() {
   if (process.platform === 'win32') {
     const script = path.join(QQBOT_ROOT, 'scripts', 'stop-qq-bot.ps1');
     if (!fs.existsSync(script)) return { ok: false, error: `找不到 ${script}` };
+    // 显式把端口传给脚本（单一端口权威）：脚本自己再读一遍 config.json 的话，
+    // PS 5.1 会用系统 ANSI 代码页（本机 GB2312）读无 BOM 的 UTF-8，中文值解码
+    // 错位 → ConvertFrom-Json 抛错 → 静默回退默认 3100 → 去错端口找 →
+    // 「停止脚本跑完了，但端口仍在监听」（2026-11-02 角色切换失败事故）。
+    // 脚本侧解析失败时 fail-closed 退出码 3，端口不明就不能装作停成功。
     const result = await new Promise((resolve) => {
-      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
+      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Port', String(consolePort())], {
         cwd: QQBOT_ROOT,
         windowsHide: true,
       });

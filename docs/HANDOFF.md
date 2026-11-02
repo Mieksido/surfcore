@@ -5,11 +5,19 @@
 
 ---
 
-## 快照：2026-11-02 17:30（issue #35 三分支：根治 / 体检 / 文档）
+## 快照：2026-11-02 18:35（issue #35 三分支 + stop 脚本编码热修）
 
 ### 当前事实
 
 - **分支**：`docs/issue-35-pr3-governance`（基于 `feat/issue-35-pr2-compat-check`，后者基于 `fix/issue-35-pr1-loader-merge`；都基于 main `59ec306`）
+- **追加热修（#102，18:20–18:35，本分支）**：stop-qq-bot.ps1 读 config.json 没声明编码
+  （系统 ANSI=GB2312 误读无 BOM UTF-8 → JSON 解析失败 → 静默回退 3100 → 去错端口找桥接 →
+  「切换失败：QQ 桥接没停下来」）。修法：ps1 `Get-Content -Encoding UTF8` + 解析失败 fail-closed exit 3
+  + 新增 `-Port` 参数；`lib/bridge.js stop()` 显式传端口（端口权威收敛到插件侧）。详见 PITFALLS #102。
+  - 工作现场已恢复：桥接跑在 3081（pid 20124 起），stop→start 全链路验证过；config.json 已规范化
+    （去重复键，备份 `~/.dsh/surfcore/backups/qq-config-2026-11-02T10-03-30-464Z.json`；
+    规范化本身**不是**本故障根因，但顺手做了）。
+  - 未提交文件：`plugins/surfcore/lib/bridge.js`、`scripts/stop-qq-bot.ps1`、`docs/PITFALLS.md`（#102）。
 - **HEAD**：PR3 文档提交（见 git log）；三个分支共 6 个提交，**未 bump 版本 / 未 tag / 未 push**
 - 工作区遗留：`package-lock.json`（进入本任务前就有的改动，未混入）、`issue35-attach.tmp.md`（issue 附件副本，可删）
 - **case**：`docs/cases/2026-11-02-issue35-client-multi-source.md`；PITFALLS #101

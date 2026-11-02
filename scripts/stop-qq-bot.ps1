@@ -12,7 +12,7 @@
 #
 # Safety: the launcher (一键启动.bat) auto-restarts node when it dies, so kill the parent
 # cmd window first, then node. Never kill by port alone: verify the process is node + bridge.js.
-param([switch]$All)
+param([switch]$All, [int]$Port = 0)
 
 $ErrorActionPreference = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -22,12 +22,28 @@ $ConfigPath = Join-Path $RepoRoot 'config.json'
 $LockPath = Join-Path $RepoRoot 'state\bridge.lock'
 
 function Get-ConsolePort {
+    # Explicit -Port (passed by lib/bridge.js stop()) wins: one port authority,
+    # the caller already read config.json with node (which parses UTF-8 fine).
+    if ($Port -gt 0) { return $Port }
     $port = 3100
     if (Test-Path -LiteralPath $ConfigPath) {
         try {
-            $cfg = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+            # NOTE (2026-11-02): -Encoding UTF8 is REQUIRED here. config.json is
+            # UTF-8 *without BOM* and contains Chinese values (keywords, hints).
+            # Without an explicit encoding, PS 5.1 reads it with the system ANSI
+            # code page (GB2312 on this machine) -> multi-byte chars decode into
+            # garbage -> ConvertFrom-Json throws -> the catch below silently kept
+            # the DEFAULT port 3100, so the script looked on the wrong port and
+            # reported "nothing listening" while the bridge ran happily on the
+            # configured one (that is the "QQ 桥接没停下来" role-switch failure).
+            # Fail closed on parse errors instead of silently using the default.
+            $cfg = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
             if ($cfg.consolePort) { $port = [int]$cfg.consolePort }
-        } catch {}
+        } catch {
+            Write-Output ("  [!] failed to read consolePort from {0}; refusing to guess port 3100. Fix the file or pass -Port." -f $ConfigPath)
+            Write-Output ("      parse error: {0}" -f $_.Exception.Message.Split("`n")[0])
+            exit 3
+        }
     }
     return $port
 }

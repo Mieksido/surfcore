@@ -3284,3 +3284,37 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 2. 新增客户端行前跑 `npm run test:plugin`（不变量测试）+ 设置页「插件体检」（COMPAT_CLIENT_MULTI_SOURCE）。
 3. 「体检没报冲突」≠ 没有冲突：先确认扫描器能看到那行（bundle patch 声明形式），再看规则覆盖。
 4. case 全文：[docs/cases/2026-11-02-issue35-client-multi-source.md](cases/2026-11-02-issue35-client-multi-source.md)。
+
+## #102（2026-11-02）stop-qq-bot.ps1 读 config 没声明编码：GB2312 误读 UTF-8 → 去错端口 → 「桥接没停下来」（角色切换失败）
+
+**现象**：设置页切角色报「切换失败：QQ 桥接没停下来（停止脚本跑完了，但端口仍在监听）」；
+同一时段 consolePort 从 3100 改成 3081 后，停止脚本日志显示 `bridge: nothing listening on 3100`，桥接实际好端端跑在 3081。
+
+**根因（两因叠加）**
+1. `scripts/stop-qq-bot.ps1` 的 `Get-ConsolePort` 用 `Get-Content -Raw | ConvertFrom-Json` 读 config.json，
+   **没带 `-Encoding UTF8`**。config.json 是无 BOM UTF-8 且含中文（keywords/hint），本机系统 ANSI 代码页是 **GB2312** →
+   PS 5.1 按 GBK 解码 → 中文字节错位 → `ConvertFrom-Json` 抛「传入的数组无效」→ `catch {}` **静默吞掉、回退默认 3100**。
+2. `lib/bridge.js stop()` 调脚本时没传端口：插件侧（node，UTF-8 没问题）和脚本侧（PS，ANSI）**两个端口权威**，读出两个不同答案。
+   这是 2026-10-22 编码事故（PITFALLS #1 时代 stop 脚本自体编码）的姊妹坑：当时修的是「脚本自己的编码」，
+   这次是「脚本**读别人的文件**时没声明编码」——ASCII-only 自体救不了这一类。
+
+**定位要点**（复现命令）
+```powershell
+powershell -NoProfile -Command "[System.Text.Encoding]::Default.EncodingName"   # → 简体中文(GB2312)
+powershell -NoProfile -Command "Get-Content config.json -Raw | ConvertFrom-Json"          # → FAIL
+powershell -NoProfile -Command "Get-Content config.json -Raw -Encoding UTF8 | ConvertFrom-Json"  # → OK
+```
+注意 `ConvertFrom-Json` 报错括号里的数字（2460/1712）随文件内容变，落在**中文附近**——那是 GBK 错位产生的非法序列位置。
+
+**处置**
+- ps1：`Get-Content` 显式 `-Encoding UTF8` + `ConvertFrom-Json -ErrorAction Stop`；解析失败 **fail-closed exit 3**
+  （端口不明 ≠ 已停止），不再静默回退 3100；新增 `-Port` 参数。
+- `lib/bridge.js stop()`：显式传 `-Port <consolePort()>` —— 端口权威收敛到插件侧一个（node 读 UTF-8 无此问题）。
+- 验证：stop → start → stop → start 全链路通过；`test:regressions`、`test-bridge-status` 全绿；桥接恢复运行。
+
+**教训 / 下次注意**
+1. PS 5.1 里**凡是读仓库里的 UTF-8 数据文件**（config/manifest/JSON/YAML），`Get-Content` 必须显式 `-Encoding UTF8`；
+   「文件 ASCII-only」只保护脚本自体，不保护它读的数据。
+2. 同一份配置只允许一个读取权威：跨语言（node ↔ powershell）协作时由 node 方解析、把结果**作为参数**传过去，
+   不要两边各读一遍。
+3. 静默 `catch {}` + 默认值回退 = 把「读配置失败」伪装成「正常」；对外进程控制类脚本必须 fail-closed。
