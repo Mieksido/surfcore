@@ -5,6 +5,57 @@
 
 ---
 
+## 快照：2026-11-02 17:30（issue #35 三分支：根治 / 体检 / 文档）
+
+### 当前事实
+
+- **分支**：`docs/issue-35-pr3-governance`（基于 `feat/issue-35-pr2-compat-check`，后者基于 `fix/issue-35-pr1-loader-merge`；都基于 main `59ec306`）
+- **HEAD**：PR3 文档提交（见 git log）；三个分支共 6 个提交，**未 bump 版本 / 未 tag / 未 push**
+- 工作区遗留：`package-lock.json`（进入本任务前就有的改动，未混入）、`issue35-attach.tmp.md`（issue 附件副本，可删）
+- **case**：`docs/cases/2026-11-02-issue35-client-multi-source.md`；PITFALLS #101
+
+### 本轮完成（issue #35：多 Loader 来源 → DSH 启动崩溃）
+
+- **PR1（`fix/issue-35-pr1-loader-merge`，P0）**：`52a2630` qq-mode 行并入主行；命名空间 `qq-mode`→`surfcore`（由 entry id 推导）；
+  四处消费点切换（读侧留旧名过渡兜底）；删 `lib/qq-mode.js`；一次性迁移 `lib/qq-mode-migrate.js`
+  （只读解析 profile patch 旧 volatile 行 → `settings.update('surfcore')` 写回 → **update 成功后才写 marker**；失败下次重试）；
+  `76b6877` 安装清单同步。测试：`test-qq-mode-plugin.mjs` 重写为结构不变量哨兵（解析到 surfcore 的行 === 1）+
+  `test-qq-mode-migrate.mjs` 10 例。
+- **PR2（`feat/issue-35-pr2-compat-check`，P1）**：`e834473` 先修扫描器盲区——patch 发现只认
+  package.json `dsh.bundle.patch`（字符串/数组；DSH 唯一形式，约定文件名 `dsh.bundle.patch.yml` 不存在）；
+  新增 `COMPAT_CLIENT_MULTI_SOURCE`（blocker/confirmed，同包 ≥2 行名报冲突行+来源文件+合并修法）；
+  `3975ea2` 清单同步。测试：`test-compat-multi-source.mjs` 十例。
+- **PR3（本分支）**：PITFALLS #101、HANDOFF、RELEASE-QUEUE 批次；ROADMAP 按需。
+
+### 测试现状（提交时点）
+
+- `npm run test:audit`：**108/109（PR1）/ 108/110（PR2）** —— 唯一失败为**预存在 flaky**：
+  `test-update-apply-result.mjs`（干净 main 上 6 跑 3 挂，随机 ENOENT）与
+  `test-voice-cloud-credentials.mjs`（偶发；单跑稳定通过）。均与本次改动无关。
+- `test:regressions` / `test:plugin` / `plugins/surfcore npm test` / `test-release-manifest`（--verify-ref HEAD）全绿。
+- 坑：`core.autocrlf=true` 下 preset patch 报「与源不一致」是 smudge 假阳性（工作区 CRLF vs 渲染 LF），
+  `node scripts/build-agent-preset-patches.mjs` 重新生成即恢复；勿手工编辑那两个文件。
+
+### ⚠️ 未验证 / 下一步（顺序）
+
+1. **实机验收（需用户在场授权重启 DSH，铁律 #4）**：
+   - 重启 DSH 正常启动；DSH 设置页出现 surfcore 的 mode/ownerQQ 表单、原独立 qq-mode 表单消失（**预期 UI 变化，要告知用户**）；
+   - 设置页/控制台切模式生效且 5 秒内不被回滚；桥接日志无 settings 写穿失败；
+   - 把 `dsh-vision-router@3.1.0` 加回 bundles 再重启 → **不再崩**（本 bug 验收标准）；无新增 `phase: startup` crash 日志；
+   - 观察 `~/.dsh/surfcore/qq-mode-migrated.json`：本机 profile 无旧行 → 应为 `noop`。
+2. 三分支本地审查通过后按分支提 PR（用户操作）；合并顺序 PR1 → PR2 → PR3。
+3. 若其它用户 profile patch 里有旧 `qq-mode` 持久化行：迁移 marker 为 `migrated` 时核对值；
+   `failed` 时看 `~/.dsh/surfcore/plugin.log` 的 `[qq-mode-migrate]` 行。
+4. 预存在 flaky 两个测试建议另开任务修（test-updates 的 8.3 短路径 vs `show-toplevel` 长路径比较、
+   test-update-apply-result 的临时目录时序）。
+
+### 给发布会话的要点
+
+- 版本号/tag/推送全部留给发布会话；清单已从 HEAD 逐字生成（`--verify-ref HEAD` 通过）。
+- 覆盖提交见 `docs/RELEASE-QUEUE.md` 顶部批次；UI 变化（设置页命名空间合并）写进交接块。
+
+---
+
 ## 快照：2026-10-31 09:55（对齐 v0.7.22 + 人格分层）
 
 ### 当前事实

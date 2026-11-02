@@ -11,6 +11,81 @@
 
 ## 待发布
 
+### 批次 2026-11-02 17:30 · issue #35：单 Loader 来源根治 + 体检预检（三分支，未合并）
+<!-- release-batch: start=2026-11-02T14:00+08:00 end=2026-11-02T17:30+08:00 commits=52a2630,76b6877,e82edd0,e834473,3975ea2,(PR3 docs commit) -->
+
+**覆盖分支/提交**（基于 main `59ec306`，逐分支提 PR，合并顺序 PR1 → PR2 → PR3）：
+
+| PR | 分支 | 提交 | 性质 |
+| --- | --- | --- | --- |
+| 1 | `fix/issue-35-pr1-loader-merge` | `52a2630`（根治）、`76b6877`（清单）、`e82edd0`（case） | P0 必合 |
+| 2 | `feat/issue-35-pr2-compat-check` | `e834473`（规则+扫描器修复）、`3975ea2`（清单） | P1 可独立回滚 |
+| 3 | `docs/issue-35-pr3-governance` | 本批文档提交 | P2 |
+
+**建议**：patch（版本号由发布会话定）；修的是宿主级崩溃，值得在 CHANGELOG 顶格写。
+
+**现象**：surfcore 与任何改写/重放 `modules` Loader 行的客户端插件（如 `dsh-vision-router@3.1.0`）同时启用 → DSH 启动即崩
+（`ClientPackageCompositionError` → `DesktopHostFatalError`）。0.6.x–0.8.1 全线可复现。
+
+**根因**：cordis.patch.yml 两条行（`surfcore` + `./lib/qq-mode.js`）解析到同一个声明 `dsh.client` 的包；
+冷启动只 warn、modules fiber 重建走构造期严格校验必然 fatal。详见 case 与 PITFALLS #101。
+
+**PR1 修法**：qq-mode 行并入主行；命名空间 `qq-mode` → `surfcore`（由 Loader entry id 推导，DSH 源码已核实）；
+四处消费点切换；删 `lib/qq-mode.js`；一次性迁移 `lib/qq-mode-migrate.js`（只读解析 profile patch 旧 volatile 行 →
+`settings.update('surfcore')` 写回；**marker 在 update 成功后才写**，失败下次重试；不覆盖新值；空 ownerQQ 不迁）。
+哨兵测试 `test-qq-mode-plugin.mjs`（解析到 surfcore 的行 === 1）+ `test-qq-mode-migrate.mjs`（10 例）。
+
+**PR2 修法**：体检扫描器盲区修复（patch 发现只认 package.json `dsh.bundle.patch` 声明——DSH 唯一形式；
+旧扫描连 surfcore 自己的 patch 都扫不到）+ 新规则 `COMPAT_CLIENT_MULTI_SOURCE`
+（blocker/confirmed；同包 ≥2 个行名 → 报冲突行、来源文件与合并修法；只对 `dsh.client.platform=web` 的包判；
+解析不了的行如实计入未检查）。测试 `test-compat-multi-source.mjs` 十例。
+
+**case**：[docs/cases/2026-11-02-issue35-client-multi-source.md](cases/2026-11-02-issue35-client-multi-source.md)
+
+**验证（提交时点）**：
+
+```text
+npm run test:audit -> 108/109（PR1）/ 108/110（PR2）；失败均为预存在 flaky
+  （test-update-apply-result：干净 main 6 跑 3 挂随机 ENOENT；test-voice-cloud-credentials 偶发；单跑均过）
+npm run test:regressions / npm run test:plugin -> 全绿
+cd plugins/surfcore && npm test -> 全绿
+node scripts/release-manifest.mjs --verify-ref HEAD -> 问题 0 个
+```
+
+**用户可见变化**：DSH 设置页里原独立「qq-mode」表单消失，mode/ownerQQ 并入 surfcore 的设置表单（功能不变，仅归位）。
+
+**重启矩阵**：重启 DSH 即生效（插件经 link 直连仓库）；旧值迁移在插件启动时自动跑一次，marker 在 `~/.dsh/surfcore/qq-mode-migrated.json`。
+
+**交接块（可复制给发布会话）**：
+
+```markdown
+## SurfCore issue #35 修复交接（2026-11-02）
+
+### 内容
+1. 根治：客户端包 surfcore 恢复「单 Loader 来源」（qq-mode 行并入主行，命名空间迁 surfcore），
+   修复与 vision-router 等 modules 行重放插件同启时的宿主启动崩溃（Mieksido/surfcore#35）。
+2. 一次性迁移：旧 qq-mode 设置（profile patch 里的 mode/ownerQQ）自动并入 surfcore 命名空间；
+   失败自动重试，不覆盖用户新值。
+3. 体检新规则 COMPAT_CLIENT_MULTI_SOURCE：安装前预检同类冲突（blocker）；扫描器同时修正为
+   只认 package.json dsh.bundle.patch 声明（DSH 唯一支持形式）。
+
+### 验证
+npm run test:audit 108/109+108/110（两个失败为预存在 flaky，单跑通过）；
+test:regressions / test:plugin / plugins/surfcore npm test 全绿；
+release-manifest --verify-ref HEAD 通过。
+
+### 发布注意
+- 版本号/CHANGELOG/tag/推送按 RELEASE.md 流程；先提交、再生成清单（脚本已按 HEAD 生成并通过 verify）。
+- 合并顺序：PR1 → PR2 → PR3；PR2/PR3 可独立回滚。
+- 实机验收（发布前建议完成）：重启 DSH 正常；设置页 surfcore 下有 mode/ownerQQ；
+  vision-router 同启不崩；无新增 startup crash 日志。
+
+### 覆盖提交
+52a2630 / 76b6877 / e82edd0（PR1）；e834473 / 3975ea2（PR2）；PR3 docs 提交（见分支 docs/issue-35-pr3-governance）
+```
+
+---
+
 ### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
 <!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->
 

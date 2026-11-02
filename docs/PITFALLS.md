@@ -3246,3 +3246,41 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **根因**：QQ 会话按设计没有本地工具；而且 setup 脚本只写 profile、不会重启 DSH。
 - **修法**（0.8.5）：L2 建议明确写“宿主机终端执行，模型跑不了；脚本不会重启 DSH；跑完完全退出重开”。
 - **教训**：给模型的建议先过“它有没有执行权限”这一关；没有就写给操作者。
+
+## #101（2026-11-02）一个客户端包只能有一个 Loader 来源：第二条行平时只 warn，重放 modules 行就 fatal（issue #35）
+
+**现象**：启用任何改写/重放 `modules` 行的客户端插件（如 `dsh-vision-router@3.1.0`，它给 modules 加 inject）后重启 DSH，
+宿主直接崩（`DesktopHostFatalError: 1 required plugin did not activate` → Electron 崩溃页）；
+崩溃日志签名 `package surfcore resolves from multiple active Loader sources: "surfcore" … "…/surfcore/lib/qq-mode.js" from …; remove one entry`。
+卸载触发插件即恢复；surfcore 单独启用从不崩。
+
+**根因**
+- 0.8.6 及以前 `plugins/surfcore/cordis.patch.yml` 有两条行：`- id: surfcore / name: surfcore` 与 `- id: qq-mode / name: ./lib/qq-mode.js`。
+  相对路径行锚定在 patch 文件旁（＝包目录内），nearestPackage 上溯后两行都解析到声明 `dsh.client.platform: "web"` 的同一个包。
+- DSH `@deepseek-ai/dsh-client-modules` 的硬约束：`reconcilePackage`（client/modules src/index.ts:1042-1054）对「同一包 ≥2 个不同行名来源」抛
+  `ClientPackageCompositionError`；`modules` 是 required 插件 → 宿主 fail-fast。
+- **为什么平时不炸（两条错误路径）**：冷启动时 registry 先建、surfcore 行后挂载，走微任务 flush 的宽松路径（只 `ctx.logger.warn`，index.ts:648）；
+  一旦 modules fiber 被 reload（重放行），registry 在**构造路径**上重新调和全部在场行（index.ts:655-661 的激活 flush），aggregate-throw 必然 fatal。
+
+**关键事实（别再猜）**
+1. DSH settings 命名空间由 **Loader entry id** 推导（settings src/index.ts:315、write 按 options.id 找行 :382），与模块路径/导出名无关
+   → 合并行＝命名空间变更（qq-mode → surfcore）。
+2. volatile 覆盖值持久化在 profile 的 `cordis.patch.yml`（boot config-editor src/index.ts:127）；旧行删除后 settings API 读不到
+   （describe 只返回 ACTIVE entry），旧值只能从那份文件一次性搬走（`plugins/surfcore/lib/qq-mode-migrate.js`，marker 时序：update 成功后才写）。
+3. 子路径说明符（`surfcore/qq-tool-restrict.mjs`）不是包根（exactPackageSpecifier，manifest.ts:201-207）→ preset 守卫行安全，别去"修"它们。
+4. bundle patch 的唯一声明形式是 package.json 的 `dsh.bundle.patch`（字符串/数组；app-boot profile.ts:58-64）。
+   **约定文件名 `dsh.bundle.patch.yml` 不存在**——体检扫描器曾因此连 surfcore 自己的 patch 都扫不到（PR2 已修）。
+
+**处置**（分支 fix/issue-35-pr1-loader-merge + feat/issue-35-pr2-compat-check）
+- A1 根治：qq-mode 行并入主行，Config 并进主模块（inject 增 settings），四处消费点切 `surfcore` 命名空间（读侧保留旧名过渡兜底）；
+  删 `lib/qq-mode.js` 与 `./qq-mode` export；一次性迁移把 profile patch 里的旧 volatile 值经 `settings.update('surfcore')` 写回。
+- 哨兵测试：`scripts/test-qq-mode-plugin.mjs` 按 DSH 语义重演来源解析，断言「解析到 surfcore 的 Loader 行 === 1」；再加第二条行必报警。
+- 体检兜底：`COMPAT_CLIENT_MULTI_SOURCE`（blocker/confirmed）扫 profile patch + 各包 bundle patch 的全部 Loader 行，
+  同包 ≥2 行名 → 报冲突行与来源文件、给合并修法；只对声明 dsh.client.platform=web 的包判（`scripts/test-compat-multi-source.mjs` 十例）。
+- 边界：体检跑在安装/配置变更时点，**拦不住启动期 fatal**；它把「装完才发现开不了机」变成「装前体检红字」。
+
+**教训 / 下次注意**
+1. 想给同一客户端包拆内部命名空间时，**不要加第二条 Loader 行**——把 Config 并进主模块（命名空间随主行 id），或拆成不声明 dsh.client 的独立包。
+2. 新增客户端行前跑 `npm run test:plugin`（不变量测试）+ 设置页「插件体检」（COMPAT_CLIENT_MULTI_SOURCE）。
+3. 「体检没报冲突」≠ 没有冲突：先确认扫描器能看到那行（bundle patch 声明形式），再看规则覆盖。
+4. case 全文：[docs/cases/2026-11-02-issue35-client-multi-source.md](cases/2026-11-02-issue35-client-multi-source.md)。
