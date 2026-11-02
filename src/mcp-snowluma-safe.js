@@ -19,6 +19,7 @@ import { z } from 'zod';
 // 在 MCP 里拦会连「安全拒绝理由」都拿不到，反而让模型无法把话说清楚。
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
+import { normalizePmemoryConfig, pmemoryRecall } from './pmemory-client.js';
 import { EMOTION_LABELS } from './sticker-semantics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -38,6 +39,11 @@ const cfg = loadConfig();
 
 function getConfig() {
   return loadConfig();
+}
+
+/** p-memory（可选长期记忆后端）的配置：每次都重读磁盘，用户改完不用重开 MCP。 */
+function pmemoryConfigFromDisk() {
+  return normalizePmemoryConfig(getConfig()?.pmemory ?? {});
 }
 
 function getAccess() {
@@ -327,6 +333,9 @@ const TOOL_CONFIG_FLAGS = {
   qq_memory_query: 'memory',
   qq_memory_remove: 'memory',
   qq_memory_clear: 'memory',
+  // 长期记忆检索跟轻量记忆共用同一个开关：关掉 `socialV2.tools.memory` 就不该还挂着一个
+  // 记忆工具在工具面上（模型会看得到描述然后调、调到再吃 403）。
+  qq_memory_recall: 'memory',
   qq_slang_query: 'slangQuery',
   qq_slang_submit: 'slangSubmit',
   qq_send_voice: 'sendVoice',
@@ -987,6 +996,44 @@ server.tool(
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `记忆清空失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_memory_recall',
+  '在长期记忆里按关键词检索（可选后端 p-memory，只读）。和 qq_memory_query 的区别：那个查的是当前会话的轻量记忆（话题/想法/印象），这个查的是跨会话沉淀下来的长期记忆库。没开这个后端时会直接告诉你没开。',
+  {
+    query: z.string().min(1).describe('检索词，例如人名、话题、地点、某件具体的事'),
+    limit: z.number().int().min(1).max(30).optional().describe('返回条数，默认 8')
+  },
+  async ({ query, limit }) => {
+    try {
+      // 直连本地 sidecar，不经桥接：桥接是另一个进程，它没有也不需要知道这个后端；
+      // 走 HTTP 端点反而要在「agent token 默认拒绝」那张白名单上开口子，得不偿失。
+      const cfg = pmemoryConfigFromDisk();
+      if (!cfg.enabled) {
+        return { content: [{ type: 'text', text: '长期记忆后端（p-memory）没有开启：config.json 里 pmemory.enabled 仍是 false。' }], isError: true };
+      }
+      const res = await pmemoryRecall(cfg, { query, limit });
+      if (!res.ok) {
+        return { content: [{ type: 'text', text: `长期记忆检索失败：${res.error ?? '未知错误'}` }], isError: true };
+      }
+      const hits = Array.isArray(res.data?.hits) ? res.data.hits : [];
+      if (!hits.length) return { content: [{ type: 'text', text: `长期记忆里没有匹配「${query}」的条目。` }] };
+      const text = hits.map((hit, index) => {
+        const parts = [`${index + 1}. ${String(hit.text ?? '').trim()}`];
+        if (hit.createdAt) {
+          const at = new Date(Number(hit.createdAt));
+          if (Number.isFinite(at.getTime())) parts.push(`   时间：${at.toISOString().slice(0, 10)}`);
+        }
+        if (Array.isArray(hit.tags) && hit.tags.length) parts.push(`   标签：${hit.tags.join(' / ')}`);
+        if (hit.importance) parts.push(`   重要度：${hit.importance}`);
+        return parts.join('\n');
+      }).join('\n');
+      return { content: [{ type: 'text', text }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `长期记忆检索失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );

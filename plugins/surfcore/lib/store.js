@@ -21,7 +21,7 @@ import { DEFAULT_LIMITS, normalizeLimits } from '../tools/lib/limits.mjs';
 import { dynamicDefaults, normalizeDynamics } from '../tools/lib/kinds.mjs';
 import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../../src/fish-guard.js';
 import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js';
-import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
+import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261102-pmemory';
 import { normalizeCardMode } from '../../../src/share-mode.js';
 
 export const MASK = '********';

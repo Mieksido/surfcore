@@ -41,6 +41,7 @@
     "test:role-card": "node scripts/test-role-card.mjs",
     "test:memory-card": "node scripts/test-memory-card.mjs",
     "test:memory-card-wiring": "node scripts/test-memory-card-wiring.mjs",
+    "test:memory-pmemory": "node scripts/test-memory-pmemory-backend.mjs",
     "test:admin": "node scripts/test-admin-identity.mjs && node scripts/test-admin-prompt-wiring.mjs",
     "preview:console": "node scripts/console-ui-fixture.mjs",
     "verify:adaptation": "node scripts/verify-dsh-020-adaptation.mjs",

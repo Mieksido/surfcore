@@ -29,6 +29,7 @@ import * as roleCard from '../src/role-card.js';
 import * as memoryCard from '../src/memory-card.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
+import * as pmemoryClient from '../src/pmemory-client.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
 import * as conversationClosure from '../src/conversation-closure.js';
@@ -181,7 +182,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     tokenGuardWakeBlock, tokenGuardSendBlock, bridgeDailyUsage, learnerBudgetBlock,
     buildWakePromptV2, buildWakeSnapshotV2, wakeFoldedNoticeV2, sendWakePromptV2, socialV2,
     currentRoleHint, currentRoleHintV2, adminPromptLine, ownerMessageTag,
-    memoryCardPromptBlock, recordMemoryInboxEvent, recordSelfMemoryEvent,
+    memoryCardPromptBlock, recordMemoryInboxEvent, recordSelfMemoryEvent, pmemoryPromptBlock,
     refreshMode, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     // 人的黑名单（deny.users）：入站按发送者拦截，见 test-blacklist.mjs
     senderBlocked, handlePokeNotice,
@@ -238,7 +239,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...memoryCard, ...pmemoryClient, ...biliCard, ...characterStore, ...historyCatchup,
     ...purposeEngine,
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。

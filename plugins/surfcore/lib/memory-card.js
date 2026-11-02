@@ -17,13 +17,14 @@ import {
   activeMemoryPaths, activePlatformStateDir,
 } from '../../../src/character-persona.js';
 import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
+import { syncPmemory } from './pmemory-backend.js';
 import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
   compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadMemoryCard,
   maintainMemoryCard, markOwnerNotified, memoryCardStatus, mergeMemories, normalizeMemoryCardConfig,
   readAllFullRecords, recallFullMemory, renderFullMemoryCard, renderMemoryCard,
   saveFullMemoryCard, saveMemoryCardOutputs, shouldNotifyOwner,
-} from '../../../src/memory-card.js?rev=20261025-pet-memory2';
+} from '../../../src/memory-card.js?rev=20261102-pmemory';
 
 const EMPTY_CONFIG = normalizeMemoryCardConfig({});
 const TICK_MS = 10 * 60 * 1000;
@@ -276,6 +277,8 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
       // 关掉记忆卡时要清空注入块：桥接只认文件，留着旧文件等于「设置关了但提示词还在」。
       try { writeTextAtomic(pathsNow().promptQq, ''); } catch {}
       try { writeTextAtomic(pathsNow().promptBili, ''); } catch {}
+      // 记忆卡关了，p-memory 的注入文件也不能留着。
+      void syncPmemory({ config: { enabled: false }, now });
       promptCache = new Map();
       return { ok: true, disabled: true, status: memoryCardStatusNow(config) };
     }
@@ -307,6 +310,9 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
       fullConfig: config,
     });
     promptCache = new Map();
+    // p-memory（可选长期记忆后端）：卡更新完之后镜像过去，再把概览写成注入文件。
+    // 不 await——sidecar 慢或没起，不能拖住记忆卡本身的维护节奏；失败只等于「没有长记忆」。
+    void syncPmemory({ card: result.card, now });
     return {
       ok: true,
       changed: result.changed,

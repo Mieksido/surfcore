@@ -58,6 +58,7 @@ import {
   adminFromQqConfig, adminMarker, adminPromptBlock,
 } from './admin-identity.js';
 import { createTokenLedger } from './token-ledger.js';
+import { normalizePmemoryConfig } from './pmemory-client.js';
 import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
@@ -781,6 +782,8 @@ function loadConfig() {
       allowRemote: false,
       ...(file.dsh ?? {})
     },
+    // 长记忆（p-memory sidecar）：默认关闭；只连回环，非法配置在归一化时就退成 disabled。
+    pmemory: normalizePmemoryConfig(file.pmemory ?? {}),
     snowluma: { wsUrl: 'ws://127.0.0.1:3001', accessToken: '', ...(file.snowluma ?? {}) },
     // 空 => 每个会话在 state/agents/<key> 下建独立工作目录
     sessionCwd: file.sessionCwd ?? '',
@@ -5530,6 +5533,7 @@ async function main() {
             },
             role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
             memoryCard: memoryCardPromptBlock(),
+            pmemory: pmemoryPromptBlock(),
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -11634,6 +11638,24 @@ async function main() {
     }
   }
 
+  // p-memory 长记忆注入块（可选后端）：插件把 sidecar 的 /overview 渲染结果原子写
+  // pmemory-prompt-qq.md。和记忆卡一样的契约——只读文件，不调插件 HTTP，桥接不需要知道
+  // sidecar 到底起没起；文件不存在就是没有长记忆。
+  const PMEMORY_PROMPT_PATH = path.join(MEMORY_CARD_PATHS.dir, 'pmemory-prompt-qq.md');
+  let pmemoryPromptCache = { key: '', text: '' };
+  function pmemoryPromptBlock() {
+    try {
+      const stat = fs.statSync(PMEMORY_PROMPT_PATH);
+      const key = `${stat.mtimeMs}:${stat.size}`;
+      if (pmemoryPromptCache.key === key) return pmemoryPromptCache.text;
+      const text = fs.readFileSync(PMEMORY_PROMPT_PATH, 'utf8').trim();
+      pmemoryPromptCache = { key, text };
+      return text;
+    } catch {
+      return '';
+    }
+  }
+
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
   function roleHintForMode(mode) {
@@ -11650,7 +11672,9 @@ async function main() {
     const adminBlock = adminPromptLine(false);
     // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
     const memoryBlock = memoryCardPromptBlock();
-    return [base, adminBlock, biliBrief, memoryBlock].filter(Boolean).join('\n\n');
+    // 长记忆（p-memory，可选）：只在 config.json 开了 pmemory.enabled 时才注入。
+    const pmemoryBlock = cfg.pmemory?.enabled === true ? pmemoryPromptBlock() : '';
+    return [base, adminBlock, biliBrief, memoryBlock, pmemoryBlock].filter(Boolean).join('\n\n');
   }
   function currentRoleHint() {
     return roleHintForMode('v1');

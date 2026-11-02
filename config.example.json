@@ -53,6 +53,16 @@
     "homeDir": "",
     "downloadUrl": "https://github.com/SnowLuma/SnowLuma/releases/latest"
   },
+  "pmemory": {
+    "enabled": false,
+    "url": "http://127.0.0.1:8791",
+    "token": "",
+    "timeoutMs": 8000,
+    "namespace": "",
+    "overviewMaxChars": 2200,
+    "mirrorOnMaintenance": true,
+    "recallLimit": 8
+  },
   "ownerQQ": null,
   "admin": null,
   "sessionCwd": "",

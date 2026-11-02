@@ -73,6 +73,9 @@ const tests = [
   'test-admin-identity.mjs', 'test-admin-prompt-wiring.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。
   'test-memory-card.mjs', 'test-memory-card-wiring.mjs',
+  // p-memory 长期记忆后端（可选件）：配置归一 / 回环限制 / 卡记录映射 / fail-soft /
+  // 维护后同步的三种结局（成功写注入文件、连不上保留旧文件、禁用清空）。全程离线，桩冒充 sidecar。
+  'test-memory-pmemory-backend.mjs',
   // 角色人格：多角色目录隔离 / 切换 epoch / 快照回档 / 旧数据迁移（含凭证不进角色包）。
   'test-character-store.mjs',
   // B站 工具链路径：有角色时行为账本进角色包，cookie/表情包仍在账号目录。

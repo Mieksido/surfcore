@@ -1,6 +1,6 @@
 # 工具面与 preset（AGENT-TOOLS-AND-PRESETS）
 
-> 这份文档回答：**agent 的手从哪来**（三个 MCP server + 39 个 `qq_*` 工具）、**哪些手被绑住**
+> 这份文档回答：**agent 的手从哪来**（三个 MCP server + 40 个 `qq_*` 工具）、**哪些手被绑住**
 > （五层闸门 + fail-closed 守卫）、**她戴哪张面具**（`qq-chat` / `qq-chat-v2` 两代 preset）、
 > **这些是怎么装进 DSH 的**。
 > **最后核对**：2026-10-26（全仓库逐行梳理）。配套阅读：总纲 [ARCHITECTURE.md](ARCHITECTURE.md) · 边界 [BOUNDARIES.md](BOUNDARIES.md) · 索引 [../README.md](../README.md)。
@@ -11,7 +11,7 @@
 
 **两个 MCP 手 + 一张面具。**
 
-- `snowluma`（39 个 `qq_*` 工具）是主力手：读消息、发消息、等待、表情、语音、记忆。
+- `snowluma`（40 个 `qq_*` 工具）是主力手：读消息、发消息、等待、表情、语音、记忆。
 - `snowluma-host`（1 个）是探活手：只问 SnowLuma 在不在，**没有启停能力**（EULA）。
 - `web-search-safe`（2 个）是外部信息手：只读搜索与抓取，带 SSRF 防护。
 - preset 决定"她是谁、在哪说话"：`qq-chat`（一代/普通）与 `qq-chat-v2`（二代仿真）。
@@ -22,7 +22,7 @@
 
 | server | 入口 | 工具 | 挂载 | 边界 |
 | --- | --- | --- | --- | --- |
-| `snowluma` | `src/mcp-snowluma-safe.js`（1,410 行） | 39 个 `qq_*` | `~/.dsh/profiles/<profile>/cordis.patch.yml`（`setup-dsh.mjs` 写入） | 发送必须命中白名单；会话绑定 `x-agent-token`；工具开关逐项可控 |
+| `snowluma` | `src/mcp-snowluma-safe.js`（1,454 行） | 40 个 `qq_*` | `~/.dsh/profiles/<profile>/cordis.patch.yml`（`setup-dsh.mjs` 写入） | 发送必须命中白名单；会话绑定 `x-agent-token`；工具开关逐项可控 |
 | `snowluma-host` | `src/mcp-host-server.js`（93 行） | `snowluma_status` | 同上 | **只读探活**；v0.1.5 起移除了 `start_snowluma`/`stop_snowluma` |
 | `web-search-safe` | `src/mcp-web-search-safe.js`（92 行） | `web_search`、`web_fetch` | 同上 | 只读；禁内网/环回/CGNAT；DNS 解析后逐地址校验；重定向每跳复核 |
 
@@ -33,7 +33,7 @@
 
 ---
 
-## 2. `qq_*` 工具全表（39 个）
+## 2. `qq_*` 工具全表（40 个）
 
 **配置开关**列对应 `config.json` 的 `socialV2.tools.<key>`（`true` 才注册；默认只有
 `setStickerRemark` 与 `sendVoice` 是 `false`）。**需要令牌**列：二代模式下所有 `qq_*` 调用都要带
@@ -95,6 +95,7 @@
 | 工具 | 作用 | 开关 |
 | --- | --- | --- |
 | `qq_memory_append` / `qq_memory_query` / `qq_memory_remove` / `qq_memory_clear` | 轻量记忆（进行中的话题 / 想说的话 / 对某人的印象） | `memory` |
+| `qq_memory_recall` | 长期记忆检索（可选后端 p-memory，只读；没开启时直接返回提示） | `memory` |
 | `qq_slang_query` / `qq_slang_submit` | 查已确认的群聊黑话 / 提交候选词 | `slangQuery` / `slangSubmit` |
 | `qq_collect_sticker` | 收藏别人发的表情，并写情绪/内容/关键词 | `collectSticker` |
 | `qq_sticker_note` | 给自己的收藏表情写语义（本地记忆，不改 QQ 备注） | `stickerNote` |

@@ -14,6 +14,10 @@ const index = read('plugins/surfcore/lib/index.js');
 const client = read('plugins/surfcore/lib/client.js');
 const paths = read('plugins/surfcore/lib/paths.js');
 const store = read('plugins/surfcore/lib/store.js');
+const memoryCardLib = read('plugins/surfcore/lib/memory-card.js');
+const pmemoryBackend = read('plugins/surfcore/lib/pmemory-backend.js');
+const safeTools = read('src/mcp-snowluma-safe.js');
+const exampleConfig = read('config.example.json');
 
 // 1) 桥接：消息进来写 inbox；QQ 提示词两条路径都注入记忆卡；有容量告警私聊端点。
 assert.match(bridge, /appendMemoryInboxEvent\(MEMORY_CARD_PATHS/, '桥接没有把消息写入记忆卡 inbox');
@@ -95,6 +99,36 @@ try {
   assert.equal(inboxLines[0].includes('sk-'), false);
 } finally {
   await harness.close();
+}
+
+
+// 7) pmemory 长记忆（可选后端）：默认关闭；开了才读注入文件，文件契约与记忆卡一致。
+assert.match(bridge, /function pmemoryPromptBlock\(/, '桥接缺少长记忆注入块读取函数');
+assert.match(bridge, /const pmemoryBlock = cfg\.pmemory\?\.enabled === true \? pmemoryPromptBlock\(\) : ''/, 'v1/chat 角色提示没有按开关注入长记忆块');
+assert.match(bridge, /pmemory: pmemoryPromptBlock\(\)/, 'qq_get_prompt 没有返回长记忆块');
+assert.match(memoryCardLib, /syncPmemory/, '插件维护后没有同步长记忆后端');
+assert.match(pmemoryBackend, /PMEMORY_PROMPT_FILE = 'pmemory-prompt-qq\.md'/, '长记忆注入文件名与桥接读取的不一致');
+assert.match(pmemoryBackend, /state: 'unreachable'/, '长记忆不可用时没有留痕状态');
+assert.match(safeTools, /qq_memory_recall/, 'MCP 没有暴露长记忆召回工具');
+assert.match(exampleConfig, /"pmemory"/, 'config.example.json 没有长记忆默认块');
+
+const pmHarness = await bridgeHarness({
+  config: {
+    ownerQQ: 123,
+    allow: { private: ['123'], groups: ['456'] },
+    pmemory: { enabled: true, url: 'http://127.0.0.1:8791', namespace: 'qq' },
+  },
+});
+try {
+  const pmDir = path.join(pmHarness.temp, 'dsh', 'surfcore', 'memory');
+  fs.mkdirSync(pmDir, { recursive: true });
+  fs.writeFileSync(path.join(pmDir, 'pmemory-prompt-qq.md'), '\u3010\u957f\u671f\u8bb0\u5fc6\u3011\u4e3b\u4eba\u5728\u5199\u836f\u5b66\u4f5c\u4e1a\n');
+  assert.match(pmHarness.pmemoryPromptBlock(), /\u836f\u5b66\u4f5c\u4e1a/, '桥接没有读到长记忆注入块');
+  assert.match(pmHarness.currentRoleHint(), /\u836f\u5b66\u4f5c\u4e1a/, 'v1/chat 角色提示没有拼上长记忆块');
+  fs.writeFileSync(path.join(pmDir, 'pmemory-prompt-qq.md'), '');
+  assert.equal(pmHarness.pmemoryPromptBlock(), '', '长记忆注入文件清空后不该还留着旧块');
+} finally {
+  await pmHarness.close();
 }
 
 console.log('memory-card wiring: OK');
