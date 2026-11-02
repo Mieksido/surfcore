@@ -3246,3 +3246,39 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **根因**：QQ 会话按设计没有本地工具；而且 setup 脚本只写 profile、不会重启 DSH。
 - **修法**（0.8.5）：L2 建议明确写“宿主机终端执行，模型跑不了；脚本不会重启 DSH；跑完完全退出重开”。
 - **教训**：给模型的建议先过“它有没有执行权限”这一关；没有就写给操作者。
+
+---
+
+## #101（2026-11-02）QQ 里的动图只剩第一帧，模型把 GIF 当静图描述
+
+**现象**：群友发动图表情包（GIF），`qq_get_message_images` 拿回来只有第 0 帧；
+模型据此把一张 34 帧的动图说成"一张静止的图"。不报错、不丢数据，所以长期没人发现。
+
+**根因**：
+- 桥接侧字节是完整的（`src/bridge.js:9586` `fetchMediaData` 有 `data(base64)`）。
+- MCP 层把 base64 原样塞进 `{type:'image'}`；宿主 `@deepseek-ai/dsh-attachment-local` 归一化时
+  排除 `image/gif` 直通、重编码从不写 `animated`/`page`，`sharp` 只解第 0 页。
+- 也就是说：**动图在跨进 DSH 之前就注定只剩一帧**，而且静默降级，没有任何提示。
+
+**修法**（本次改动，未发版）：
+- 新增 `src/gif-middleware.js`：字节特征判动画（GIF / WebP ANIM / PNG acTL）→ ffprobe 取帧数/时长
+  → 均匀采样 16 帧 → 一条 ffmpeg 滤镜链直接出**一张 4×4 胶片条 JPEG**（每格长边 240），
+  中间帧从不落盘；进程内 LRU（键 = sha256 + 采样参数），重启即清。
+- `src/mcp-snowluma-safe.js` 四个出图点统一走 `expandImageContent()`：展开成功就发胶片条 + 文字信封，
+  失败一律**退回首帧**并附一句人话（`disabled`/`static` 不打扰）。
+- 开关：`socialV2.gif.enabled`（false 立刻回到旧行为）。
+
+**未做**：`encode()` 只留结构、明确返回 `not-implemented`（发送侧还没有图片段通路）；
+`mface` 商城表情常常没有字节，仍只有首帧；QQ 图片 url 带 rkey 会过期，事后补取会失败。
+
+**验证**：`scripts/test-gif-middleware.mjs`（真实 ffmpeg 生成 fixture，覆盖解码/采样/渲染/缓存 +
+6 条 fail-open）；540×540/34 帧基准上 16 帧 4×4@240 = 109ms / 180KB / 960×960。
+
+**教训**：
+1. ffprobe 对垃圾字节**退出码 0**，还能从随机 GIF 头里读出 `28192x29807` 这种鬼尺寸 → 必须自己卡
+   `16 ≤ 边长 ≤ 16384`，不能信它的返回。
+2. async 的 try/finally 里 `return helper()` 不 `await`，finally 会先删临时输入，兜底路径拿不到文件 →
+   这类"兜底"必须写 `return await`。
+3. 缓存键只有内容 sha256 是不够的：采样参数变了还会命中旧结果 → 键里必须带上参数。
+4. 胶片条会进 DSH 附件库（内容寻址、同字节只存一份、**永不自动清理**），一条动图 ≈180KB；
+   按像素算 token 与文件字节无关，压字节只省磁盘。

@@ -5,6 +5,65 @@
 
 ---
 
+---
+
+## 快照：2026-11-02 09:40（GIF 中间层：QQ 动图不再只剩首帧）
+
+### 当前事实
+
+- **HEAD**：`59ec306 release: v0.8.6`（本次改动以 PR 分支 `pr/gif-middleware` 提出，未合并）
+- **package.json version**：`0.8.6`（未改版本，未打 tag）
+- **工作区**：`src/gif-middleware.js` 新增；`src/mcp-snowluma-safe.js` 接线；
+  `scripts/test-gif-middleware.mjs` 新增；`scripts/test-audit.mjs`、`scripts/test-qq-model-view.mjs`
+  测试清单；`config.example.json`；`docs/cases/*`、`docs/cases/README.md`、`docs/PITFALLS.md` #101、
+  `docs/HANDOFF.md`。
+- 之前的 SnowLuma 诊断分状态化修复（`cae54db` + `1a54575`）**不在 main 上**，保存在分支
+  `local/snowluma-diagnose-fix`；上游 0.8.6 仍是老逻辑（`plugins/surfcore/lib/index.js` 里
+  `state: 'onebot-rejected'`）。
+
+### 本轮做了什么
+
+- **问题**：QQ 群里的动图（GIF 表情包）经 `qq_get_message_images` 交给模型后只剩第一帧，
+  模型把 34 帧的动图当静图描述；不报错、静默降级。
+- **根因**：宿主 `@deepseek-ai/dsh-attachment-local` 归一化图片时排除 `image/gif` 直通、
+  重编码不写 `animated`/`page` → `sharp` 只解第 0 页。跨进 DSH 之前就已注定只有一帧。
+- **做法**：新增 `src/gif-middleware.js`（四段式：特征判定 → ffprobe 取帧数 → 均匀采样 16 帧 →
+  一条 ffmpeg 滤镜链出**一张 4×4 胶片条 JPEG**，每格长边 240）。`src/mcp-snowluma-safe.js` 的
+  四个出图点统一走 `expandImageContent()`：成功发胶片条 + 文字信封，失败一律退回首帧并附一句人话。
+  开关 `socialV2.gif.enabled`（false 立刻回到旧行为）。
+- **注意**：`src/mcp-snowluma-safe.js` 新增了对 `./gif-middleware.js` 的 import，而
+  `scripts/test-qq-model-view.mjs` 的 fixture 是**手抄文件清单**的 —— 已在清单里补
+  `gif-middleware.js` 与 `voice-core.js`（后者是 gif-middleware 里 `resolveFfmpeg` 的来源）。
+  以后再加 src 依赖，这份清单也要跟着加。
+
+### 验证
+
+- `node scripts/test-gif-middleware.mjs` → 通过（解码/采样/渲染/缓存 + 6 条 fail-open）。
+- `node scripts/test-qq-model-view.mjs` → 8/8 通过（补 fixture 清单后）。
+- `node scripts/test-mcp-safe.mjs` → 通过（35 个工具，`qq_get_message_images` 在列）。
+- `node scripts/test-audit.mjs` → 见下方遗留（两条既有失败与本次无关）。
+- `node scripts/test-vision-media.mjs` → 4 通过 1 失败（`HTTP 403`；该脚本只打桥接 HTTP、
+  不 import 本次改动文件，属环境/凭据既有问题）。
+
+### 下一步（按顺序）
+
+1. 在 `pr/gif-middleware` 上提交，推 fork 并向 `Mieksido/surfcore` 提 PR（**不改 version、不打 tag**）；
+2. 跑根目录 `npm run test:regressions`（碰了 MCP 交付面）；
+3. 重启 DSH（纯 ASCII helper：`%TEMP%\dsh-restart-now.ps1` + `powershell.exe -NoProfile
+   -ExecutionPolicy Bypass -WindowStyle Hidden -File`，POST `http://127.0.0.1:3780/api/restart`，
+   轮询 `/api/tray` 取新 url 再 `Start-Process`）；本地文件已实测出网格，**真实 QQ 动图端到端仍待验**；
+4. 合并后由维护者定版本发布；本地 `local/snowluma-diagnose-fix` 与 `feat/gif-middleware` 两条分支
+   待合成一条 `local/patches` 统一维护。
+
+### 已知坑（本轮踩到的）
+
+- ffprobe 对垃圾字节**退出码 0**，还能读出 `28192x29807` 这种鬼尺寸 → 自己卡 `16..16384`。
+- async `try/finally` 里 `return helper()` 不 `await`，finally 先删临时输入 → 兜底路径拿不到文件。
+- 缓存键只有字节 sha256 不够，采样参数变了会命中旧结果 → 键里必须带参数。
+- 胶片条进 DSH 附件库（内容寻址、永不自动清理），一条约 180KB。
+
+---
+
 ## 快照：2026-10-31 09:55（对齐 v0.7.22 + 人格分层）
 
 ### 当前事实

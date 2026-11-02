@@ -209,6 +209,21 @@
       "getSelfImage": true,
       "sendVoice": false
     },
+    "gif": {
+      "enabled": true,
+      "frames": 16,
+      "maxEdge": 240,
+      "cols": 4,
+      "quality": 4,
+      "maxInputBytes": 33554432,
+      "maxFrames": 600,
+      "timeoutMs": 5000,
+      "cacheEntries": 48,
+      "cacheBytes": 25165824,
+      "label": true,
+      "ffmpegPath": "",
+      "ffprobePath": ""
+    },
     "wake": {
       "defaultMode": "diving",
       "preSleepWaitEnabled": true,
