@@ -28,13 +28,12 @@ import * as adminIdentity from '../src/admin-identity.js';
 import * as roleCard from '../src/role-card.js';
 import * as memoryCard from '../src/memory-card.js';
 import * as characterStore from '../src/character-persona.js';
-import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
 import * as conversationClosure from '../src/conversation-closure.js';
-import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
-import { createBiliMemory } from '../src/bili-memory.js';
+import * as douyinMemory from '../src/douyin-memory.js';
+import * as douyinShare from '../src/douyin-share-scheduler.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
@@ -228,7 +227,10 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
-    discoverDshLaunchToken: () => '', unwrap, createTurnCollector, createBiliMemory, fetchVideoInfo,
+    discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
+    // 抖音记忆（2026-11-03 取代 B站）：home 指到 fixture，别去读真实 ~/.dsh 里的插件状态。
+    createDouyinMemory: (opts = {}) => douyinMemory.createDouyinMemory({ ...opts, home: path.join(temp, 'dsh') }),
+    ...douyinShare,
     // DSH 端口兜底：isLoopbackBaseUrl 是真身（纯函数），两条探测是桩——
     // 测试不该在宿主机上真跑 netstat / 真去连 3080。
     isLoopbackBaseUrl,
@@ -238,7 +240,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...memoryCard, ...characterStore, ...historyCatchup,
     ...purposeEngine,
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。

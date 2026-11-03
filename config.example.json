@@ -41,6 +41,29 @@
       "cardMode": "text"
     }
   },
+  "douyinBridge": {
+    "enabled": true,
+    "memory": {
+      "enabled": true,
+      "refreshIntervalMs": 600000
+    },
+    "share": {
+      "enabled": false,
+      "times": [
+        "07:00",
+        "11:00",
+        "13:00",
+        "15:00",
+        "17:00",
+        "19:00",
+        "21:00",
+        "23:00"
+      ],
+      "groups": [],
+      "gapMs": 4000,
+      "cardMode": "link"
+    }
+  },
   "snowluma": {
     "wsUrl": "ws://127.0.0.1:3001",
     "httpUrl": "http://127.0.0.1:3000",

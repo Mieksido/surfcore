@@ -95,10 +95,7 @@ assert.ok(mcp.includes('一次最多 8 条'), 'MCP 发送工具描述没有写�
 assert.ok(mcp.includes('不要拆成 10 条'), 'MCP 发送工具描述没有覆盖长文拆 10 条');
 const preset = fs.readFileSync(new URL('../dsh/agent-presets/qq-chat-v2/agent.cordis.yml', import.meta.url), 'utf8');
 assert.ok(preset.includes('5000 字长文不要逐条搬运'), 'reserved2 preset 没有覆盖长文/拆 10 条');
-const scheduler = fs.readFileSync(new URL('../plugins/surfcore/lib/scheduler.js', import.meta.url), 'utf8');
-assert.ok(scheduler.includes("tokenBudget.block('bili')"), 'B站 调度器没有接额度闸');
-assert.ok(scheduler.includes('promptBili('), 'B站 调度器 prompt 没有统一走额度检查');
-assert.ok(scheduler.includes('budgetBlockedNow'), 'B站 调度器没有在 tick 前检查额度');
+// B站 调度器（scheduler.js）已于 2026-11-03 随 B站下线删除，这三条断言随之失效。
 const client = fs.readFileSync(new URL('../plugins/surfcore/lib/client.js', import.meta.url), 'utf8');
 assert.ok(client.includes('function TokenTab'), '设置页缺少 Token 额度页');
 assert.ok(client.includes('Token 额度'), '设置页缺少 Token 额度标签');

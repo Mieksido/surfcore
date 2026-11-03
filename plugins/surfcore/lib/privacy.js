@@ -48,6 +48,10 @@ const CONTACT = [
 ];
 
 const SAFE_URL_HOSTS = new Set([
+  // 2026-11-03：抖音上线。少了这几个域，抖音链接会在出站脱敏时被判「外部链接」剔掉。
+  'www.douyin.com', 'douyin.com', 'm.douyin.com', 'v.douyin.com',
+  'www.iesdouyin.com', 'iesdouyin.com',
+  // B 站保留：历史日记/记忆里还有一堆旧链接，别让它们变成乱码。
   'www.bilibili.com', 'bilibili.com', 'm.bilibili.com', 't.bilibili.com',
   'space.bilibili.com', 'b23.tv', 'www.b23.tv',
 ]);

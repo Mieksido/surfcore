@@ -2000,11 +2000,27 @@ button:active:not(:disabled) {
     </div></section>
 <section id="section-voice" class="card span-all" hidden>
   <h2>语音</h2>
-  <div class="meta">语音引擎不随插件分发。不装也能正常聊天，只是不能发语音。装好之后，这里可以启停、试听、改触发规则。</div>
-<details class="settings-group" open><summary>语音功能（可选安装）</summary><div class="settings-content">
+  <div class="meta">她现在用的是 Breeze 语音引擎（说话）＋ 同一音色训练的 RVC 模型（唱歌）。引擎由桥接自动拉起，挂了会自动重试一次。</div>
+
+<div id="veBox" style="margin-bottom:14px;padding:12px;border:1px solid var(--line,#333);border-radius:8px">
+  <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap">
+    <b>当前语音引擎</b>
+    <span id="veName" class="meta">读取中…</span>
+    <span id="veState" class="meta">…</span>
+    <button id="veStartBtn" type="button">启动</button>
+    <button id="veStopBtn" type="button" class="btn-secondary">停止</button>
+    <button id="veTestBtn" type="button" class="btn-secondary">试听</button>
+  </div>
+  <div id="veHint" class="meta" style="margin-top:8px"></div>
+  <div class="meta" style="margin-top:6px;color:#909399">
+    说话：Breeze-TTS-2 音色「小语 v5_volc」· 唱歌：同一音色语料训练的 RVC（age12_real3）· 引擎端口 8765，底层 8080。
+  </div>
+</div>
+
+<details class="settings-group"><summary>其他语音引擎（语音包，旧方案，未安装）</summary><div class="settings-content">
   <div class="meta" style="margin-bottom:10px">
-    语音引擎<b>不随插件分发</b>（几百 MB 到几 GB）。不装也能正常聊天，只是不能发语音。<br>
-    两个语音包互相独立，可以只装一个、也可以都装；装完在下面「启用」即可。
+    这两套是<b>旧方案</b>（本地 GPT-SoVITS / 云端火山），只有在你想换掉 Breeze 时才需要装。<br>
+    ⚠️ 本地包也占用 <b>8765</b>，和现在的 Breeze 适配层冲突 —— 不换引擎就别在这里点「启动」。
   </div>
   <div id="voicePacks" class="meta">加载中…</div>
   <div id="voicePackTip" class="meta" style="margin-top:10px"></div>
@@ -5227,6 +5243,95 @@ setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); 
   });
 })();
 
+// ── 当前语音引擎（Breeze）：状态 / 启停 / 试听 ──────────────────────
+// 合成契约没变（8765 的 /v1/speak/file），这里只是把"引擎本身"暴露出来，
+// 免得出问题时要去翻进程和端口才知道她为什么发不出语音。
+const VE = { status: null, busy: false };
+
+function veRender(st) {
+  VE.status = st;
+  const name = document.getElementById('veName');
+  const state = document.getElementById('veState');
+  const hint = document.getElementById('veHint');
+  if (!name || !state) return;
+  name.textContent = `${st.label || 'Breeze'} · 端口 ${st.port}`;
+  const badge = st.ready
+    ? '<b style="color:#67c23a">● 就绪</b>'
+    : st.running
+      ? `<b style="color:#e6a23c">● 运行中但不就绪（上游 ${st.upstream}）</b>`
+      : '<b style="color:#909399">○ 没在跑</b>';
+  state.innerHTML = badge;
+  if (hint) {
+    const auto = st.autoStart ? '桥接启动时会自动拉起；合成失败也会自动重试一次' : '自动启动已关闭';
+    hint.innerHTML = `${st.hint || ''}<br><span style="color:#909399">${auto}${st.dir ? ' · 目录 ' + st.dir : ''}</span>`;
+  }
+  const btn = document.getElementById('veStartBtn');
+  if (btn) { btn.disabled = !!VE.busy || st.ready; btn.textContent = VE.busy ? '启动中…' : '启动'; }
+  const stop = document.getElementById('veStopBtn');
+  if (stop) stop.disabled = !!VE.busy || !st.running;
+}
+
+async function veLoad() {
+  if (!document.getElementById('veBox')) return;
+  try {
+    const r = await api('/api/voice/engine');
+    if (!r.ok) throw new Error(r.error || '读取失败');
+    veRender(r.engine);
+  } catch (e) {
+    const state = document.getElementById('veState');
+    if (state) state.innerHTML = `<b style="color:#e66">读取失败：${e.message}</b>`;
+  }
+  // 旧语音包的「启动」按钮会去抢 8765，和 Breeze 冲突 → 直接禁用，只留安装/卸载
+  const sw = document.getElementById('vpSwitchBtn');
+  if (sw) {
+    sw.disabled = true;
+    sw.title = '当前使用 Breeze 引擎，语音包启动会占用 8765 造成冲突';
+  }
+}
+
+async function veAction(kind) {
+  if (VE.busy) return;
+  VE.busy = true;
+  const btn = document.getElementById('veStartBtn');
+  if (btn) { btn.disabled = true; btn.textContent = kind === 'start' ? '启动中…' : '启动'; }
+  const state = document.getElementById('veState');
+  if (state && kind === 'start') state.innerHTML = '<b style="color:#e6a23c">启动中…（首次加载模型 10~30 秒）</b>';
+  try {
+    const r = await api(`/api/voice/engine/${kind}`, 'POST', {});
+    if (!r.ok) alert(r.error || '操作失败');
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    VE.busy = false;
+    await veLoad();
+  }
+}
+
+async function veTest() {
+  const btn = document.getElementById('veTestBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '合成中…'; }
+  try {
+    const res = await fetch('/api/voice/engine/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': localStorage.getItem('consoleToken') || '' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || `合成失败（HTTP ${res.status}）`);
+    }
+    const buf = await res.arrayBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    await audio.play();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '试听'; }
+  }
+}
+
 // ── 语音包：安装 / 启停 / 配置 / 触发规则 ───────────────────────────
 const VP = {
   packs: [],
@@ -5373,6 +5478,9 @@ async function vpSaveCloud() {
     id: 'voice-cloud',
     appId: document.getElementById('cloudAppId').value.trim(),
     accessKey: document.getElementById('cloudAccessKey').value.trim(),
+    // 音色 ID：后端 cloudConfig() 认 body.speaker，不传就永远写不进 voice.json。
+    // 留空保持原值（后端只在有值时才改）。
+    speaker: (document.getElementById('cloudSpeaker')?.value || '').trim(),
   };
   if (!body.appId || !body.accessKey) { msg.textContent = '请先填 AppID 和 Access Key'; return; }
   const r = await api('/api/voice/packs/cloud-config', 'POST', body);
@@ -5400,6 +5508,10 @@ async function vpSaveRules() {
 
 document.addEventListener('DOMContentLoaded', () => {
   if (document.getElementById('voicePacks')) {
+    veLoad();
+    document.getElementById('veStartBtn')?.addEventListener('click', () => veAction('start'));
+    document.getElementById('veStopBtn')?.addEventListener('click', () => veAction('stop'));
+    document.getElementById('veTestBtn')?.addEventListener('click', veTest);
     vpLoad();
     document.getElementById('cloudSaveBtn')?.addEventListener('click', vpSaveCloud);
     document.getElementById('cloudSampleBtn')?.addEventListener('click', () => {

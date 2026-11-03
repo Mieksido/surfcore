@@ -419,16 +419,7 @@ assert.equal(normalizeBiliFishGuard({ forceGather: false }).forceGather, false);
   assert.equal(fishGuardStateSummary(state, DEFAULT_BILI_FISH_GUARD).records.length, 10);
 }
 
-// 2026-10-23 用户定：聚拢回复占主动评论额度（comment），不是回复额度（reply）。
-// 这条是跨文件契约，防止以后改 GATE_KIND/记账时悄悄退回 reply。
-{
-  const src = fs.readFileSync(new URL('../plugins/surfcore/tools/commands/comment.mjs', import.meta.url), 'utf8');
-  assert.ok(src.includes('const FISH_GATHER'), 'comment.mjs 缺少 FISH_GATHER 判定');
-  assert.ok(src.includes("FISH_GATHER ? 'comment'"), '聚拢回复没有优先走 comment 账');
-  assert.ok(src.includes("parent && !FISH_GATHER ? ['--reply']"), '聚拢回复仍会被记成 reply');
-  assert.ok(src.includes("!FISH_GATHER && (String(type) === '11'"), '聚拢回复仍可能被记成自己动态回复');
-  assert.ok(src.includes('forceGather'), 'comment.mjs 没有接强制聚拢');
-  assert.ok(src.includes('gatherFallback'), 'comment.mjs 没有提示强制聚拢');
-}
+// 2026-11-03：B站 CLI（tools/commands/comment.mjs）已随 B站下线删除，
+// 「聚拢回复走 comment 账」那条跨文件契约随之失效；QQ 侧鱼群保护逻辑本身仍在上面的用例里。
 
 console.log('fish guard tests OK');

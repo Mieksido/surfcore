@@ -82,7 +82,7 @@ if (!apiRoute || !extRoute || !healthRoute) throw new Error('路由没有全部�
 const health = await invoke(healthRoute, 'GET', '/dsh-surfcore/health');
 console.log('health:', health.statusCode, health.body.slice(0, 200));
 
-for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard', '/dsh-surfcore/api/fish-guard/qq']) {
+for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/douyin/status', '/dsh-surfcore/api/fish-guard/qq']) {
   const res = await invoke(apiRoute, 'GET', path);
   const data = JSON.parse(res.body || '{}');
   console.log(path, res.statusCode, data.ok, Object.keys(data).slice(0, 8));
@@ -114,38 +114,6 @@ for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/
     }
     if (typeof data.scheduler?.running !== 'boolean') throw new Error('/overview 缺少 scheduler.running');
   }
-  if (path.endsWith('/bili/automation')) {
-    if (data.ok !== true) throw new Error('/bili/automation 没有返回 ok');
-    if (!data.limits || typeof data.limits.daily !== 'number') throw new Error('自动化快照缺少 limits.daily');
-    if (!data.usage || typeof data.usage.comment !== 'number') throw new Error('自动化快照缺少 usage.comment');
-    if (!data.dynamics || !Array.isArray(data.dynamics.kinds) || data.dynamics.kinds.length !== 4) {
-      throw new Error('自动化快照缺少四类动态');
-    }
-    if (!data.qqShare || !Array.isArray(data.qqShare.times)) throw new Error('自动化快照缺少 QQ 分享排期');
-  }
-  if (path.endsWith('/watch-history')) {
-    if (data.ok !== true) throw new Error('/watch-history 没有返回 ok');
-    if (!Array.isArray(data.items)) throw new Error('/watch-history 缺少 items');
-    if (!data.stats || typeof data.stats.today !== 'number') throw new Error('/watch-history 缺少 stats.today');
-    if (typeof data.file !== 'string' || !data.file.includes('watch-history.jsonl')) throw new Error('/watch-history 缺少数据文件路径');
-    if (!data.actions || typeof data.actions.comments !== 'number' || typeof data.actions.watchedOnly !== 'number') {
-      throw new Error('/watch-history 缺少操作汇总 actions');
-    }
-    if (data.items.some((item) => !Array.isArray(item.actions))) throw new Error('/watch-history 的 item 缺少 actions 数组');
-  }
-  if (path.includes('/preferences/scan')) {
-    if (data.ok !== true) throw new Error('/preferences/scan 没有返回 ok');
-    if (!Array.isArray(data.candidates)) throw new Error('/preferences/scan 缺少 candidates');
-    if (!Array.isArray(data.sources)) throw new Error('/preferences/scan 缺少 sources');
-    if (!Array.isArray(data.existing)) throw new Error('/preferences/scan 缺少 existing');
-    if (!data.account || typeof data.account !== 'object') throw new Error('/preferences/scan 缺少 account');
-    if (data.account.role !== 'none') throw new Error('只扫本地时 account.role 应为 none（不能假装读了账号）');
-  }
-  if (path.endsWith('/bili/fish-guard')) {
-    if (data.ok !== true) throw new Error('/bili/fish-guard 没有返回 ok');
-    if (!data.fishGuard || typeof data.fishGuard.dailyLikes !== 'number') throw new Error('鱼群状态缺少 dailyLikes');
-    if (typeof data.credentials !== 'boolean') throw new Error('鱼群状态缺少 credentials');
-  }
   if (path.endsWith('/fish-guard/qq')) {
     if (data.ok !== true) throw new Error('/fish-guard/qq 没有返回 ok');
     if (!Array.isArray(data.items)) throw new Error('/fish-guard/qq 缺少 items');
@@ -160,17 +128,14 @@ const slData = JSON.parse(sl.body || '{}');
 console.log('start-snowluma', sl.statusCode, slData.ok, slData.skipped, slData.message);
 if (sl.statusCode !== 200 || slData.ok !== true) throw new Error('start-snowluma 路由未通过');
 
-// 扫码登录：只读状态接口 + 非法 id（不启动 Edge / 不真扫码）。
-const accRes = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/bili/accounts');
-const acc = JSON.parse(accRes.body || '{}');
-console.log('bili/accounts', accRes.statusCode, acc.ok, acc.fish?.configured, acc.owner?.configured);
-if (accRes.statusCode !== 200 || acc.ok !== true) throw new Error('/bili/accounts 没有返回 ok');
-if (!acc.fish || typeof acc.fish.configured !== 'boolean') throw new Error('/bili/accounts 缺少 fish 状态');
-if (!acc.owner || typeof acc.owner.configured !== 'boolean') throw new Error('/bili/accounts 缺少 owner 状态');
-if (JSON.stringify(acc).match(/sessdata|bili_jct/i)) throw new Error('/bili/accounts 泄露了 cookie');
-const badPoll = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/bili/qr/poll?id=bad');
-console.log('qr/poll bad id', badPoll.statusCode);
-if (badPoll.statusCode !== 400) throw new Error('非法扫码 id 应返回 400');
+// 抖音状态：只读 dsh-douyin-agent 落盘的结果（插件没有对外 HTTP，这里只验路由/鉴权/响应形状）。
+const dyRes = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/douyin/status');
+const dy = JSON.parse(dyRes.body || '{}');
+console.log('douyin/status', dyRes.statusCode, dy.ok, dy.version, Boolean(dy.paths));
+if (dyRes.statusCode !== 200 || dy.ok !== true) throw new Error('/douyin/status 没有返回 ok');
+if (!dy.paths || typeof dy.paths !== 'object') throw new Error('/douyin/status 缺少 paths');
+if (!('share' in dy)) throw new Error('/douyin/status 缺少分享状态');
+if (JSON.stringify(dy).match(/sessdata|bili_jct/i)) throw new Error('/douyin/status 泄露了 cookie');
 
 // 隐私闸门：QQ号/手机号/私信话题必须被丢弃
 const { sanitizeText } = await import('../lib/privacy.js');

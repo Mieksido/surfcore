@@ -1766,13 +1766,48 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = 
  *   · full=true → 完整 markdown（容量按这个算）。
  *   · platform='qq'|'bili' + maxChars → 给提示词注入的裁剪版。
  */
+/**
+ * 按会话过滤记忆（2026-11-03，修「QQ 会话记忆会串」）。
+ *
+ * 背景：记忆卡是「一个角色的长期记忆」，所有 QQ 会话（不同人的私聊、不同的群）都写进同一张卡。
+ * 注入时如果不看来源，A 私聊里说过的事就会出现在和 B 的对话里 —— 这就是「串」。
+ *
+ * 规则：
+ *   · 本会话（conversationKey 相同）→ 保留；
+ *   · 没有 conversationKey 的老记录 / 共享锚点 → 保留（迁移前的数据不丢）；
+ *   · pinned / anchor（初次相遇这类身份锚点，全卡只有个位数）→ 任何会话都保留，
+ *     保证她换个会话也不会「失忆到不认识主人」；
+ *   · 其余（别人的私聊、别的群、主人的日常）→ 丢弃。
+ *
+ * 为什么不保留「主人的全部记录」：主人有 388 条日常，全保留等于把主人的私聊内容
+ * 带到陌生人面前。角色卡里已经有「主人是谁」，锚点也还在，人设不会崩；
+ * 细节记忆只在主人自己的会话里可见。
+ */
+export function filterCardForConversation(card, conversationKey) {
+  const key = String(conversationKey ?? '').trim();
+  if (!key) return card;
+  const all = Array.isArray(card?.records) ? card.records : [];
+  const kept = all.filter((record) => {
+    const rc = String(record?.conversationKey ?? '').trim();
+    if (!rc) return true;
+    if (rc === key) return true;
+    if (record.pinned === true || record.anchor === true) return true;
+    return false;
+  });
+  return kept.length === all.length ? card : { ...card, records: kept };
+}
+
 export function renderMemoryCard(card, options = {}) {
   const platform = options.platform === 'bili' ? 'bili' : (options.platform === 'qq' ? 'qq' : 'all');
   const full = options.full === true;
   const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const cfg = normalizeMemoryCardConfig(options.config ?? {});
   const maxChars = full ? 0 : clampInt(options.maxChars, 0, 0, 20000);
-  const sections = sectionize(card, { platform, full, now, config: cfg });
+  // 按会话隔离（2026-11-03）：不传 conversationKey 时行为不变（全量，给完整 md / 后台统计用）。
+  // 传了（QQ 桥接注入时会传）就只保留「本会话 + 与主人的记忆 + 无来源标记的老记录」，
+  // 别人私聊、别的群的内容不再注入到当前会话——这就是之前"记忆会串"的根因。
+  const scoped = full ? card : filterCardForConversation(card, options.conversationKey);
+  const sections = sectionize(scoped, { platform, full, now, config: cfg });
   const limits = full
     ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, recent: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
     : (platform === 'bili'

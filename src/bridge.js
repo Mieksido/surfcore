@@ -10,7 +10,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
@@ -29,6 +29,10 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoicePacks } from './voice-packs.js';
+import { createVoiceEngine, looksLikeEngineDown } from './voice-engine.js';
+import { createSingConsole } from './sing-console.js';
+import { createDouyinAgent } from './douyin-agent.js';
+import { resolveFfmpeg } from './voice-core.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { synthesizeToFile } from './voice-tts.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
@@ -62,17 +66,15 @@ import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-gua
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
 } from './token-budget.js';
-import { createBiliMemory } from './bili-memory.js';
+import { createDouyinMemory } from './douyin-memory.js';
+import { buildShareCardText, createDouyinShareScheduler } from './douyin-share-scheduler.js';
 import {
-  appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
+  appendMemoryInboxEvent, loadMemoryCard, looksNoteworthyMessage, renderMemoryCard,
+  resolveMemoryCardPaths,
 } from './memory-card.js';
 import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
 } from './character-persona.js';
-import { createBiliDynamicsSync } from './bili-dynamics.js';
-import { createBiliShareScheduler } from './bili-share-scheduler.js';
-import { createBiliCardSender, normalizeCardMode } from './bili-card.js';
-import { fetchVideoInfo } from './bili-api.js';
 import {
   loadSlang,
   saveSlang,
@@ -90,6 +92,7 @@ import {
 import {
   loadStickerStore,
   saveStickerStore,
+  normalizeStickerEntry,
   mergeStickerLibrary,
   findSticker,
   formatStickerList,
@@ -125,7 +128,7 @@ const BRIDGE_LOG = path.join(STATE_DIR, 'bridge.log');
 //   · qq-public-feed.jsonl：只追加“允许群里的公开消息”，供 QQ→B站 脱敏记忆用。
 //     私信永远不会写进来（handleIncoming 里只处理 kind === 'group'）。
 //   · alignment-brief.md：身份对齐提示块，由插件生成，桥接在投递前置顶注入。
-//     对齐高于记忆同步开关，所以它不依赖 cfg.biliBridge.memory.enabled。
+//     对齐高于记忆同步开关，所以它不依赖 cfg.douyinBridge.memory.enabled。
 const PUBLIC_FEED = path.join(STATE_DIR, 'qq-public-feed.jsonl');
 const ALIGNMENT_BRIEF = path.join(STATE_DIR, 'alignment-brief.md');
 // 记忆卡：插件宿主（DSH）是唯一写卡的人；桥接只追加 inbox + 读现成的 QQ 注入块。
@@ -1196,45 +1199,9 @@ function loadConfig() {
   // 定期主动私聊主人，分享所想（🧀）或提出索取。默认开，但受安静时段/每日上限/token 额度约束。
   cfg.purpose = normalizePurposeConfig(file.purpose, { ownerQQ: cfg.ownerQQ });
 
-  // B站记忆 / 动态同步 / 每日分享（config.json → biliBridge，全部可选，默认开启）。
-  {
-    const b = file.biliBridge && typeof file.biliBridge === 'object' && !Array.isArray(file.biliBridge) ? file.biliBridge : {};
-    const clampMs = (value, fallback, min, max) => {
-      const n = Number(value);
-      return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
-    };
-    const rawTimes = Array.isArray(b.share?.times) ? b.share.times : null;
-    const times = (rawTimes && rawTimes.length ? rawTimes : ['07:00', '11:00', '13:00', '15:00', '17:00', '19:00', '21:00', '23:00'])
-      .map((t) => {
-        const m = /^(\d{1,2}):(\d{2})$/.exec(String(t ?? '').trim());
-        if (!m) return '';
-        return `${String(Math.min(23, Number(m[1]))).padStart(2, '0')}:${String(Math.min(59, Number(m[2]))).padStart(2, '0')}`;
-      })
-      .filter(Boolean);
-    // 卡片样式：link（默认，普通分享卡）/ miniapp（B站小程序已下架，opt-in）/ off。
-    // 旧配置只有 card:boolean，normalizeCardMode 会把它收敛掉。
-    const shareCardMode = normalizeCardMode(b.share ?? {});
-    cfg.biliBridge = {
-      enabled: b.enabled !== false,
-      memory: {
-        enabled: b.memory?.enabled !== false,
-        refreshIntervalMs: clampMs(b.memory?.refreshIntervalMs, 10 * 60 * 1000, 60 * 1000, 60 * 60 * 1000)
-      },
-      dynamics: {
-        enabled: b.dynamics?.enabled !== false,
-        pollIntervalMs: clampMs(b.dynamics?.pollIntervalMs, 3 * 60 * 1000, 60 * 1000, 60 * 60 * 1000),
-        groups: normalizeIdList(b.dynamics?.groups)
-      },
-      share: {
-        enabled: b.share?.enabled !== false && times.length > 0,
-        times,
-        groups: normalizeIdList(b.share?.groups),
-        gapMs: clampMs(b.share?.gapMs, 4000, 0, 60_000),
-        cardMode: shareCardMode,
-        card: shareCardMode !== 'off'
-      }
-    };
-  }
+  // 注：`biliBridge` 归一化块已在 2026-11-03 删除（B站下线，改由 douyinBridge 承接）。
+  // 老 config.json 里残留的 biliBridge 键会被直接忽略——这也是有意为之：
+  // 界面上的 B站开关已全部移除，留着它只会让「改了没反应」。
 
   // DSH 每次重启可能换 Web 端口（GUI URL 是动态的）。DSH 启动的子进程会带
   // DSH_WEB_URL；优先用它，避免桥接还指着上一次的端口。手动从 Explorer 启动时
@@ -1762,11 +1729,12 @@ async function main() {
     }
   }
 
-  // B站那边的角色：把公开经历做成记忆，注入 QQ 提示词；动态与每日分享在启动时排定。
-  // 隐私：这个模块只读公开数据与公开见闻，不读任何私信文件。
-  const biliMemory = createBiliMemory({ stateDir: PLATFORM_STATE_DIR, log });
-  let biliDynamics = null;
-  let biliShare = null;
+  // 抖音那边的角色：数据来自 dsh-douyin-agent 插件落盘的观看记录/日报（只读），
+  // 做成记忆注入 QQ 提示词。2026-11-03 起取代原来的 B 站记忆（bili-memory.js）。
+  // 变量名仍是 biliMemory：调用点太多，换实例比改二十处引用安全。
+  const biliMemory = createDouyinMemory({ stateDir: PLATFORM_STATE_DIR, log });
+  // B 站的两个调度器随 B 站下线（2026-11-03），只留抖音分享。
+  let douyinShare = null;
 
   // ── 群聊黑话/网络用语学习（slang） ──────────────────────────────────────
   let slangEntries = [];
@@ -1990,9 +1958,123 @@ async function main() {
         },
         // 音色映射变了就 +1，让旧音频失效（否则"换了声音还在放老的"）
         cacheVersion: Number(v.tts?.cacheVersion) || 0,
+        // 引擎是外部进程（现在这套：Breeze-TTS-2 + 8765 适配层）。
+        // 不用语音包机制去管，是因为它是 SurfCore 之外维护的一套系统，
+        // 但生命周期得归 SurfCore —— 否则重启电脑后"能聊天、发不出语音"。
+        engine: {
+          kind: String(v.tts?.engine?.kind || 'breeze'),
+          label: String(v.tts?.engine?.label || 'Breeze-TTS-2'),
+          dir: String(v.tts?.engine?.dir || ''),
+          script: String(v.tts?.engine?.script || ''),
+          port: Number(v.tts?.engine?.port) || 8765,
+          autoStart: v.tts?.engine?.autoStart !== false,
+          startTimeoutMs: Number(v.tts?.engine?.startTimeoutMs) || 180000
+        },
         dir: path.join(STATE_DIR, 'voice-tts')
       }
     };
+  }
+
+  // 语音引擎实例（Breeze）：按 engine 配置缓存。
+  // 必须放在这一层：合成（synthesizeVoiceText）和控制台接口都要用同一个实例，
+  // 否则"正在启动"的互斥状态各存一份，并发请求会把引擎启动两遍。
+  let veCache = { key: '', ve: null };
+  function getVoiceEngine() {
+    const eng = voiceCfg().tts.engine;
+    const key = JSON.stringify(eng);
+    if (!veCache.ve || veCache.key !== key) {
+      veCache = { key, ve: createVoiceEngine({ socialV2: { voice: { tts: { engine: eng } } } }) };
+    }
+    return veCache.ve;
+  }
+
+  // 抖音能力层（专用 Edge + CDP）：按 socialV2.douyin 配置缓存。
+  // 和语音引擎一样必须是单例——浏览器拉起来要几秒，每次调用都新建一个会互相抢 profile。
+  let daCache = { key: '', da: null };
+  function douyinCfg() {
+    const d = cfg.socialV2?.douyin ?? {};
+    const s = cfg.socialV2?.voice?.sing ?? {};
+    return {
+      enabled: d.enabled !== false,
+      edge: String(d.edge || ''),
+      profile: String(d.profile || ''),
+      cdpPort: Number(d.cdpPort) || 9341,
+      headless: d.headless !== false,
+      idleCloseMs: Number.isFinite(Number(d.idleCloseMs)) ? Number(d.idleCloseMs) : 5 * 60 * 1000,
+      // 搜索复用点歌那份脚本：打分规则只维护一份
+      script: String(s.script || 'D:/大肥鱼功能/语音/说话/breeze/bridge/douyin-fetch.mjs'),
+      stickerLimit: Math.max(1, Math.min(10, Number(d.stickerLimit) || 6)),
+    };
+  }
+  function getDouyinAgent() {
+    const d = douyinCfg();
+    const key = JSON.stringify(d);
+    if (!daCache.da || daCache.key !== key) {
+      daCache = { key, da: createDouyinAgent({ cfg: d, stateDir: STATE_DIR, log: (m) => log(m) }) };
+    }
+    return daCache.da;
+  }
+
+  /**
+   * 把抖音评论表情写进表情库（state/stickers.json）。
+   * 这些表情的远端 URL 是签名地址、一天就过期，所以 localFile 才是真正的凭据；
+   * 发送时 sendStickerV2 会优先读本地文件。
+   */
+  function saveDouyinStickers(items) {
+    const added = [];
+    for (const it of items) {
+      const rawId = String(it?.sticker?.id || '').trim();
+      if (!rawId || !it?.localFile) continue;
+      const id = `dy_${rawId}`;
+      if (stickerEntries.some((x) => x.id === id)) continue;
+      const entry = normalizeStickerEntry({
+        id,
+        resId: id,
+        url: (it.sticker.urls ?? [])[0] || '',
+        localFile: it.localFile,
+        desc: String(it.text || '抖音评论表情').slice(0, 60),
+        content: String(it.text || '').slice(0, 60),
+        keywords: String(it.text || '').split(/[\s,，。！？~]+/).filter((w) => w.length >= 2).slice(0, 4),
+        source: 'douyin'
+      });
+      if (!entry) continue;
+      stickerEntries.push(entry);
+      added.push(entry);
+    }
+    if (added.length) {
+      stickerEntries = ensureStickerIndex(stickerEntries).entries;
+      saveStickerStoreSafe();
+    }
+    return added;
+  }
+
+  /**
+   * 唱歌控制台的配置：模型/增益/成品目录都在这里归一化，代码里不写死路径。
+   * 成品落在语音库的「唱歌/」下，这样控制台试听完可以直接用 /api/voice/send 发出去。
+   */
+  function singCfg() {
+    const s = cfg.socialV2?.voice?.sing ?? {};
+    return {
+      script: String(s.script || 'D:/大肥鱼功能/语音/说话/breeze/bridge/songfetch.mjs'),
+      applio: String(s.applio || 'D:/大肥鱼功能/语音/唱歌/applio'),
+      model: String(s.model || 'age12_real3'),
+      vocalGain: Number(s.vocalGain) > 0 ? Number(s.vocalGain) : 1.2,
+      accompGain: Number(s.accompGain) > 0 ? Number(s.accompGain) : 0.8,
+      voiceMode: String(s.voiceMode || 'female'),
+      allowMV: s.allowMV === true,
+      outDir: path.join(voiceCfg().dir, '唱歌'),
+    };
+  }
+
+  // 任务表活在实例里，每次请求重建等于把"正在跑的那首"丢掉 → 和语音引擎一样按配置缓存。
+  let scCache = { key: '', sc: null };
+  function getSingConsole() {
+    const conf = singCfg();
+    const key = JSON.stringify(conf);
+    if (!scCache.sc || scCache.key !== key) {
+      scCache = { key, sc: createSingConsole({ sing: conf, outDir: conf.outDir, stateDir: STATE_DIR, log }) };
+    }
+    return scCache.sc;
   }
 
   /**
@@ -2006,7 +2088,7 @@ async function main() {
     if (say.length > vc.tts.maxChars) {
       throw new Error(`要说的话最多 ${vc.tts.maxChars} 字（收到 ${say.length}）`);
     }
-    const r = await synthesizeToFile({
+    const call = () => synthesizeToFile({
       text: say,
       character: voice ? '' : character || vc.tts.character,
       voice: voice || '',
@@ -2016,6 +2098,21 @@ async function main() {
       cacheVersion: vc.tts.cacheVersion ?? null,
       outDir: vc.tts.dir
     });
+
+    let r;
+    try {
+      r = await call();
+    } catch (error) {
+      // 只有「服务没起」这类错误才自动拉起重试一次。
+      // 内容错误（太长/为空）重试毫无意义，而且会让 AI 多等十几秒。
+      if (!looksLikeEngineDown(error)) throw error;
+      const eng = getVoiceEngine();
+      const started = await eng.ensure();
+      if (!started.ok) {
+        throw new Error(`语音引擎不可用：${started.error || '启动失败'}。可以先改回打字，或让操作者看一下引擎日志`);
+      }
+      r = await call();
+    }
     return { path: r.path, via: 'tts', ttsCached: r.cached, ttsDurationMs: r.durationMs };
   }
 
@@ -2388,7 +2485,13 @@ async function main() {
     // 在桥接内完成带 DNS 固定、逐跳校验和大小限制的下载；不能把 URL 交给网关重新抓取。
     let image;
     try {
-      image = await safeFetchBuffer(url, MAX_MEDIA_BYTES);
+      // 抖音评论表情是签名 URL（约 1 天过期）：收藏时已经把字节落盘，优先读本地，
+      // 免得隔天再发时 CDN 直接 403。
+      if (entry.localFile && fs.existsSync(entry.localFile)) {
+        image = { buffer: fs.readFileSync(entry.localFile), url: entry.url };
+      } else {
+        image = await safeFetchBuffer(url, MAX_MEDIA_BYTES);
+      }
     } catch (error) {
       throw new Error(`表情 ${entry.id} 的图片下载失败（QQ CDN 网络异常或地址已失效）：${error?.message ?? error}`);
     }
@@ -2877,7 +2980,7 @@ async function main() {
   }
 
   // 身份对齐置顶：只对群聊注入（私聊不需要，也避免把群成员映射带进私聊）。
-  // 它不读 cfg.biliBridge.memory.enabled —— 对齐高于记忆同步开关，这是产品约定。
+  // 它不读 cfg.douyinBridge.memory.enabled —— 对齐高于记忆同步开关，这是产品约定。
   function withAlignmentContext(key, promptText) {
     if (!String(key ?? '').startsWith('group:')) return promptText;
     const block = alignmentBriefBlock();
@@ -3731,6 +3834,8 @@ async function main() {
 
   function startConsoleServer() {
     const port = cfg.consolePort ?? 3100;
+    // 点歌去重：同一会话同时只允许一首在唱（翻唱要几分钟，重复点会叠加 GPU/CPU 负载）
+    const singInflight = new Map();
     // 控制台鉴权：优先用 config.consoleToken，未配置则自动生成并持久化，不再默认无鉴权。
     // 使用 let 以便控制台内手动修改令牌后热更新。
     const configuredToken = String(cfg.consoleToken ?? '').trim();
@@ -4115,23 +4220,20 @@ async function main() {
           });
           return;
         }
-        // ── B站记忆 / 动态 / 分享（管理端只读状态 + 手动触发，供排查）─────────
-        if (req.method === 'GET' && url.pathname === '/api/bili/status') {
+        // ── 抖音（2026-11-03 取代 /api/bili/*）：只读状态 + 手动刷新 / 分享 ─────
+        // 老路由 /api/bili/status、/api/bili/memory/refresh 仍然可用，内部已是抖音。
+        if (req.method === 'GET' && (url.pathname === '/api/douyin/status' || url.pathname === '/api/bili/status')) {
           sendJson({
-            enabled: cfg.biliBridge?.enabled !== false,
+            enabled: cfg.douyinBridge?.enabled !== false,
+            platform: 'douyin',
             memory: biliMemory.status(),
-            dynamics: biliDynamics?.status() ?? { enabled: false },
-            share: biliShare?.status() ?? { enabled: false },
-            groups: {
-              allow: cfg.allow?.groups ?? [],
-              dynamics: cfg.biliBridge?.dynamics?.groups ?? [],
-              share: cfg.biliBridge?.share?.groups ?? [],
-            },
+            share: douyinShare?.status() ?? { enabled: false },
+            groups: { allow: cfg.allow?.groups ?? [] },
           });
           return;
         }
-        if (req.method === 'GET' && url.pathname === '/api/bili/prompt-preview') {
-          // 只读排查：看看群友提到「B站那个号」时，实际会注入什么。
+        if (req.method === 'GET' && (url.pathname === '/api/douyin/prompt-preview' || url.pathname === '/api/bili/prompt-preview')) {
+          // 只读排查：看看群友提到「抖音那个号」时，实际会注入什么。
           const text = String(url.searchParams.get('text') ?? '').slice(0, 500);
           const roleHint = currentRoleHint();
           sendJson({
@@ -4143,21 +4245,25 @@ async function main() {
           });
           return;
         }
-        if (req.method === 'POST' && url.pathname === '/api/bili/memory/refresh') {
+        if (req.method === 'POST' && (url.pathname === '/api/douyin/memory/refresh' || url.pathname === '/api/bili/memory/refresh')) {
           const stats = await biliMemory.refresh({ force: true });
           sendJson({ ok: stats?.ok !== false, stats });
           return;
         }
-        if (req.method === 'POST' && url.pathname === '/api/bili/share-now') {
-          if (!biliShare) { sendJson({ ok: false, error: '分享调度未启用（检查 biliBridge.share / 白名单群）' }, 400); return; }
-          const result = await biliShare.fireNow();
+        if (req.method === 'POST' && (url.pathname === '/api/douyin/share-now' || url.pathname === '/api/bili/share-now')) {
+          // 「立即分享一次」：跳过时间点判断，但仍受 6 天不重复的限制。
+          // 老路径 /api/bili/share-now 保留成别名，老书签点了不至于 404。
+          if (!douyinShare) {
+            sendJson({ ok: false, error: '抖音分享未启用（检查 douyinBridge.share / 白名单群）' }, 400);
+            return;
+          }
+          const result = await douyinShare.fireNow();
           sendJson({ ok: result?.ok !== false, result });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/bili/dynamics/poll') {
-          if (!biliDynamics) { sendJson({ ok: false, error: '动态同步未启用（检查 biliBridge.dynamics / 白名单群）' }, 400); return; }
-          const result = await biliDynamics.pollOnce();
-          sendJson({ ok: result?.ok !== false, result });
+          // 动态同步随 B 站下线，这里回 410 而不是 404：老脚本能看懂「已经没了」。
+          sendJson({ ok: false, error: 'B 站动态同步已下线（2026-11-03 换抖音）' }, 410);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/presets') {
@@ -5528,8 +5634,8 @@ async function main() {
               userId: selfUserId || null,
               line: selfIdentityTextV2().trim() || null
             },
-            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
-            memoryCard: memoryCardPromptBlock(),
+            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2(key) : currentRoleHint(key) },
+            memoryCard: memoryCardPromptBlock(key),
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -6476,6 +6582,266 @@ async function main() {
           return;
         }
 
+        // ── 当前语音引擎（Breeze-TTS-2）────────────────────────────────
+        // 和下面「语音包」是两套东西：语音包是可选安装的旧方案（GPT-SoVITS / 云端火山），
+        // 现在实际发声的是 Breeze 这套（播报 + RVC 唱歌共用同一个音色）。
+        // 这里只做状态查看与启停，合成仍走 socialV2.voice.tts（8765 契约不变）。
+        if (url.pathname === '/api/voice/engine' || url.pathname.startsWith('/api/voice/engine/')) {
+          try {
+            const eng = getVoiceEngine();
+            if (req.method === 'GET' && url.pathname === '/api/voice/engine') {
+              sendJson({ ok: true, engine: await eng.status(), tts: voiceCfg().tts.character, enabled: voiceCfg().tts.enabled });
+              return;
+            }
+            if (req.method === 'POST' && url.pathname === '/api/voice/engine/start') {
+              const r = await eng.start();
+              sendJson(r);
+              return;
+            }
+            if (req.method === 'POST' && url.pathname === '/api/voice/engine/stop') {
+              sendJson(await eng.stop());
+              return;
+            }
+            // 试听：用当前 character 合成一句固定台词，直接把 wav 字节吐回去
+            // （控制台用 blob URL 播放；和语音包试听同一个套路，省一个静态路由）
+            if (req.method === 'POST' && url.pathname === '/api/voice/engine/test') {
+              const body = await readBody().catch(() => ({}));
+              const text = String(body.text || '你好呀，这是我现在的说话声音，和唱歌是同一个音色。').slice(0, 120);
+              const r = await synthesizeVoiceText(text);
+              const buf = fs.readFileSync(r.path);
+              res.writeHead(200, {
+                'content-type': 'audio/wav',
+                'content-length': buf.length,
+                'x-duration-ms': String(r.ttsDurationMs ?? 0),
+                'x-cached': r.ttsCached ? '1' : '0',
+                ...SECURITY_HEADERS,
+              });
+              res.end(buf);
+              return;
+            }
+            sendJson({ ok: false, error: '方法不允许' }, 405);
+          } catch (e) {
+            sendJson({ ok: false, error: String(e?.message || e) }, 500);
+          }
+          return;
+        }
+
+        // ── 唱歌控制台：搜歌 → 选歌 → 翻唱 → 进度 → 试听 ──────────────────
+        // 和 /api/socialV2/sing（AI 点歌、唱完自动发会话）是同一链路的两个入口：
+        // 那个是"给她一个歌名，她自己唱完发出去"，这个是"人来挑版本、看着跑"。
+        // 前端在插件设置面板的语音页；插件只做带令牌转发（handleVoice），不碰业务。
+        // ── 抖音能力层：刷推荐 / 自己搜 / 看评论 / 收藏表情包 ────────────
+        if (url.pathname === '/api/douyin' || url.pathname.startsWith('/api/douyin/')) {
+          const da = getDouyinAgent();
+          const sub = url.pathname.slice('/api/douyin'.length) || '/';
+          if (req.method === 'GET' && (sub === '/' || sub === '/status')) {
+            sendJson({
+              ok: true,
+              ...(await da.status()),
+              stickerCount: stickerEntries.filter((s) => s.source === 'douyin').length,
+            });
+            return;
+          }
+          if (req.method === 'POST' && sub === '/feed') {
+            const b = await readBody();
+            const items = await da.feed({ count: Math.max(1, Math.min(20, Number(b.count) || 8)) });
+            sendJson({ ok: true, count: items.length, items });
+            return;
+          }
+          if (req.method === 'POST' && sub === '/search') {
+            const b = await readBody();
+            const r = await da.search(String(b.keyword || b.q || ''), {
+              limit: Math.max(1, Math.min(10, Number(b.limit) || 3)),
+              voiceMode: String(b.voiceMode || ''),
+              allowMV: b.allowMV === true,
+            });
+            sendJson({ ok: true, ...r });
+            return;
+          }
+          if (req.method === 'POST' && sub === '/comments') {
+            const b = await readBody();
+            const items = await da.comments(String(b.id || b.awemeId || ''), {
+              pages: Math.max(1, Math.min(5, Number(b.pages) || 2)),
+            });
+            sendJson({ ok: true, count: items.length, withSticker: items.filter((x) => x.hasSticker).length, items });
+            return;
+          }
+          if (req.method === 'POST' && sub === '/collect') {
+            const b = await readBody();
+            const r = await da.collectStickers(String(b.id || b.awemeId || ''), {
+              limit: Math.max(1, Math.min(10, Number(b.limit) || douyinCfg().stickerLimit)),
+            });
+            // 落盘到表情库：只回「新增了哪几个编号」，不把整库吐回给模型
+            const saved = saveDouyinStickers(r.items);
+            sendJson({
+              ok: true,
+              awemeId: r.awemeId,
+              found: r.found,
+              saved: saved.map((e) => ({ id: e.id, no: e.no, desc: e.desc })),
+              failed: r.failed.map((x) => ({ id: x.sticker?.id ?? '', error: x.error })),
+            });
+            return;
+          }
+          if (req.method === 'GET' && sub === '/stickers') {
+            sendJson({
+              ok: true,
+              items: stickerEntries.filter((s) => s.source === 'douyin').map((s) => ({
+                id: s.id, no: s.no, desc: s.desc, localFile: s.localFile,
+                useCount: s.useCount, lastUsedAt: s.lastUsedAt,
+              })),
+            });
+            return;
+          }
+          if (req.method === 'POST' && sub === '/close') {
+            await da.closeBrowser('api');
+            sendJson({ ok: true });
+            return;
+          }
+          sendJson({ ok: false, error: `未知的抖音接口 ${sub}` }, 404);
+          return;
+        }
+
+        if (url.pathname === '/api/voice/sing' || url.pathname.startsWith('/api/voice/sing/')) {
+          const sc = getSingConsole();
+          const sub = url.pathname.slice('/api/voice/sing'.length) || '/';
+          // 试听要吐音频字节，先单独处理（其它分支都返回 JSON）
+          if (sub === '/audio') {
+            try {
+              const file = sc.audioPath({
+                id: String(url.searchParams.get('id') || ''),
+                name: String(url.searchParams.get('name') || ''),
+              });
+              const buf = fs.readFileSync(file);
+              const ext = path.extname(file).toLowerCase();
+              res.writeHead(200, {
+                'content-type': ext === '.mp3' ? 'audio/mpeg' : ext === '.m4a' ? 'audio/mp4' : 'audio/wav',
+                'content-length': buf.length,
+                'cache-control': 'no-store',
+                ...SECURITY_HEADERS,
+              });
+              res.end(buf);
+            } catch (e) {
+              sendJson({ ok: false, error: String(e?.message || e) }, 404);
+            }
+            return;
+          }
+          try {
+            if (req.method === 'GET' && (sub === '/' || sub === '/state')) {
+              const m = sc.models();
+              sendJson({
+                ok: true,
+                settings: sc.settings(),
+                running: sc.runningJob(),
+                jobs: sc.list(),
+                models: m.models,
+                defaultModel: m.defaultModel,
+                applio: m.applio,
+                recent: sc.recent(12),
+              });
+              return;
+            }
+            if (req.method === 'GET' && sub === '/jobs') {
+              sendJson({ ok: true, jobs: sc.list(), running: sc.runningJob() });
+              return;
+            }
+            if (req.method === 'GET' && sub === '/search') {
+              const r = await sc.search(String(url.searchParams.get('q') || ''));
+              sendJson({ ok: true, ...r });
+              return;
+            }
+            if (req.method === 'GET' && sub === '/recent') {
+              sendJson({ ok: true, recent: sc.recent(20) });
+              return;
+            }
+            if (req.method === 'GET' && sub === '/models') {
+              sendJson({ ok: true, ...sc.models() });
+              return;
+            }
+            // 抖音登录：打开专用 Edge 让人扫码。扫码 + 过滑块是分钟级的，
+            // 接口不能跟着等，所以 detached 起一个独立进程，立刻返回。
+            if (req.method === 'POST' && sub === '/login') {
+              const s = sc.settings();
+              if (!/douyin/i.test(String(s.provider || '')) && !/douyin/i.test(String(s.script || ''))) {
+                sendJson({ ok: false, error: '当前不是抖音源（socialV2.voice.sing.provider）' }, 400);
+                return;
+              }
+              try {
+                const child = spawn(process.execPath, [s.script, '--login'], {
+                  cwd: path.dirname(s.script),
+                  detached: true,
+                  stdio: 'ignore',
+                  windowsHide: false, // 要弹窗口给人扫码，不能隐藏
+                });
+                child.unref();
+                sendJson({ ok: true, hint: '已打开专用抖音窗口：扫码并过完验证，登录成功后窗口会自己结束' });
+              } catch (e) {
+                sendJson({ ok: false, error: String(e?.message ?? e) }, 500);
+              }
+              return;
+            }
+            if (req.method === 'POST' && sub === '/start') {
+              const body = await readBody();
+              sendJson({ ok: true, job: sc.start(body) });
+              return;
+            }
+            if (req.method === 'POST' && sub === '/cancel') {
+              const body = await readBody();
+              sendJson(await sc.cancel(String(body.id || '')));
+              return;
+            }
+            // 把成品发到会话。为什么不直接让前端调 /api/voice/send：
+            //   翻唱成品是 44.1k 立体声 wav，一首 4 分钟 ≈ 44MB，
+            //   而语音发送有 20MB / 300 秒的硬上限（socialV2.voice.maxBytes/maxSeconds）——
+            //   直接发会被判"文件太大"，用户只会看到一句莫名其妙的失败。
+            //   这里先压成 160k mp3（4 分钟 ≈ 5MB），发完删掉临时文件。
+            if (req.method === 'POST' && sub === '/send') {
+              const body = await readBody();
+              const key = String(body.key || body.target || '').trim();
+              if (!/^(group|private):\d+$/.test(key)) throw new Error('目标要写成 group:群号 或 private:QQ号');
+              const file = sc.audioPath({ id: String(body.id || ''), name: String(body.name || '') });
+              const vc = voiceCfg();
+              let sendPath = file;
+              let tmp = '';
+              const size = fs.statSync(file).size;
+              // 小文件原样发（保住无损）；大的先压，顺便把时长卡在上限内
+              if (size > Math.min(vc.maxBytes, 12 * 1024 * 1024)) {
+                const ff = resolveFfmpeg({ ffmpegPath: vc.ffmpegPath });
+                tmp = path.join(os.tmpdir(), `sing-send-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.mp3`);
+                await new Promise((resolve, reject) => {
+                  const c = spawn(ff, [
+                    '-hide_banner', '-loglevel', 'error', '-y', '-i', file,
+                    '-t', String(Math.max(30, vc.maxSeconds)), '-ac', '2', '-ar', '44100', '-b:a', '160k', tmp
+                  ], { windowsHide: true });
+                  let err = '';
+                  c.stderr.on('data', (d) => { err += d; });
+                  c.on('error', reject);
+                  c.on('close', (code) => (code === 0 && fs.existsSync(tmp))
+                    ? resolve()
+                    : reject(new Error(`压 mp3 失败（退出码 ${code}）：${err.slice(-200)}`)));
+                });
+                sendPath = tmp;
+              }
+              try {
+                const sent = await sendVoiceV2(key, sendPath);
+                sendJson({
+                  ok: true,
+                  messageId: sent.messageId,
+                  detail: sent.detail,
+                  compressed: !!tmp,
+                  sentBytes: fs.statSync(sendPath).size,
+                });
+              } finally {
+                if (tmp) { try { fs.unlinkSync(tmp); } catch {} }
+              }
+              return;
+            }
+            sendJson({ ok: false, error: '未知的唱歌操作' }, 404);
+          } catch (e) {
+            sendJson({ ok: false, error: String(e?.message || e) }, 400);
+          }
+          return;
+        }
+
         // ── 语音包管理（安装/启停/配置/试听）────────────────────────────
         // 语音引擎不随插件分发，用户在这里按需安装；不装也完全不影响聊天。
         if (url.pathname === '/api/voice/packs' || url.pathname.startsWith('/api/voice/packs/')) {
@@ -6788,6 +7154,87 @@ async function main() {
             // 额度只在真正发出后才记账（voiceBudgetCommit），所以失败路径无需回滚。
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
           }
+          return;
+        }
+
+        // ── 点歌：AI 给歌名 → B站搜歌 → 下载 → 翻唱 → 唱完自动发到这个会话 ──────
+        // 翻唱一首要几分钟，所以这里**异步**：立刻回"在准备了"，
+        // 后台跑完直接当语音发出去，AI 不用守着等（同步会把对话卡死几分钟）。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/sing') {
+          const body = await readBody();
+          const token = String(body.token ?? req.headers['x-agent-token'] ?? '').trim();
+          const key = String(body.key ?? body.target ?? '').trim();
+          const voice = voiceCfg();
+          if (!voice.enabled) { sendJson({ ok: false, error: '语音功能已关闭' }, 403); return; }
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空（格式 group:群号 或 private:QQ号）' }, 400); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!token) { sendJson({ ok: false, error: 'reserved2 模式必须携带 agent token' }, 403); return; }
+          if (!agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2ToolEnabled('sing')) { sendJson({ ok: false, error: '工具未启用：qq_sing' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          if (!modeAllowed(key, keyMatch[1], Number(keyMatch[2]), cfg, currentMode)) {
+            sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return;
+          }
+          const song = String(body.song ?? body.text ?? '').trim();
+          if (!song) { sendJson({ ok: false, error: '缺少 song（歌名或关键词）' }, 400); return; }
+          if (singInflight.has(key)) {
+            sendJson({ ok: false, error: `上一首还没唱完（${singInflight.get(key)}），等它发出来再点下一首` }, 429);
+            return;
+          }
+          // 唱歌链路（2026-11-01 重做，2026-11-03 换默认模型）：
+          //   songfetch.mjs 负责「B站搜歌（只挑女声、不要 MV）→ 下载 → remix 翻唱（RVC age12_real3）→ 混音」
+          // 模型由 remix.mjs 的默认值决定（age12_real3，真人语料 + 频移补高频），
+          // 要和说话音色一起换就改那边，这里不要写死模型名。
+          const quality = String(body.quality ?? 'remix') === 'direct' ? 'direct' : 'remix';
+          const outName = `唱歌-${song.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)}-AI点歌.wav`;
+          const outPath = path.join(path.resolve(ROOT, voice.dir), '唱歌', outName);
+          singInflight.set(key, song);
+          sendJson({
+            ok: true,
+            queued: true,
+            song,
+            quality,
+            eta: '约 3~5 分钟',
+            hint: '正在B站搜歌、下载、用 age12 的 RVC 模型翻唱，唱完会自动作为语音发到这个会话；等待期间可以继续聊别的'
+          });
+
+          (async () => {
+            const t0 = Date.now();
+            try {
+              fs.mkdirSync(path.dirname(outPath), { recursive: true });
+              // 站点由 config 的 socialV2.voice.sing.script 决定（默认抖音）；
+              // 两边脚本的 CLI 与 stdout 契约一致，这里不需要按站点分支。
+              const script = String(cfg.socialV2?.voice?.sing?.script || 'D:/大肥鱼功能/语音/说话/breeze/bridge/douyin-fetch.mjs');
+              await new Promise((resolve, reject) => {
+                const child = spawn(process.execPath, [script, song, '--out', outPath], {
+                  cwd: path.dirname(script),
+                  windowsHide: true,
+                });
+                let err = '';
+                child.stderr.on('data', (d) => { err += d; });
+                child.on('error', reject);
+                child.on('close', (code) => {
+                  (code === 0 && fs.existsSync(outPath))
+                    ? resolve()
+                    : reject(new Error(`退出码 ${code}: ${err.slice(-300)}`));
+                });
+              });
+              await sendVoiceForV2(key, `唱歌/${outName}`, {
+                label: `唱歌：${song}`,
+                resolved: { path: outPath, via: 'sing' },
+              });
+              log(`[sing] ${key} 点歌「${song}」唱完并已发送（${((Date.now() - t0) / 1000).toFixed(0)}s）`);
+            } catch (error) {
+              const msg = String(error?.message ?? error).slice(0, 200);
+              log(`[sing] ${key} 点歌「${song}」失败：${msg}`);
+              // 失败也留个记录，AI 下次能看到（不至于假装唱过了）
+              appendActivity(`${key} [sing] 点歌「${song}」失败：${msg}`);
+            } finally {
+              singInflight.delete(key);
+            }
+          })();
           return;
         }
 
@@ -8240,6 +8687,16 @@ async function main() {
     });
     server.listen(port, '127.0.0.1', () => {
       log(`本地控制台已启动：http://127.0.0.1:${port}`);
+      // 语音引擎自启（后台，不阻塞）：桥接起来后顺手确认她"能开口"。
+      // 失败只记一行日志——语音挂了不该影响打字聊天（同理于语音包"不装也能聊"）。
+      const vc0 = voiceCfg();
+      if (vc0.enabled && vc0.tts.enabled && vc0.tts.engine.autoStart) {
+        void getVoiceEngine().ensure().then((r) => {
+          log(r.ok
+            ? `[语音] 引擎就绪（${vc0.tts.engine.label} :${vc0.tts.engine.port}${r.already ? '，本来就在跑' : '，已自动拉起'}）`
+            : `[语音] 引擎没就绪：${r.error || r.hint || '未知原因'}`);
+        }).catch((e) => log(`[语音] 引擎自启异常：${e?.message ?? e}`));
+      }
     });
     // 端口被占用说明已有实例在跑：以 exit 2 退出，守护脚本会识别为"已有实例"而不是无限重启
     server.on('error', (error) => {
@@ -8541,59 +8998,8 @@ async function main() {
     return body.data;
   }
 
-  // 直接发任意 OneBot 消息段（卡片/分享卡用）。文本发送仍走 sendToQQ，
-  // 这样限速、审计和会话守卫不被绕过。
-  async function onebotSendSegments(kind, id, segments) {
-    if (!Array.isArray(segments) || !segments.length) throw new Error('消息段为空');
-    const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
-    const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
-    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    const res = await fetch(`${httpUrl}/${action}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
-      },
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout(20000)
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
-      throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}`);
-    }
-    return body.data;
-  }
-
-  // B站视频卡片：默认发 com.tencent.structmsg 新闻链接卡（普通分享卡，点开进 B站）。
-  // 为什么不再默认走小程序：QQ 侧 B站小程序（appid 1109937557）已下架，点卡片提示
-  // 「小程序已下架」，而 appid 写死在 SnowLuma 的 get_mini_app_ark 里，桥接改不了。
-  // `share.cardMode = 'miniapp'` 仍可手动切回（确认小程序恢复后再说）。
-  // 返回 true 表示至少有卡片发出去了，调用方就不用再让 AI 在正文里发链接。
-  const sendBiliCard = createBiliCardSender({
-    getShare: () => cfg.biliBridge?.share ?? {},
-    fetchVideoInfo,
-    // 仅 miniapp 模式会用到：调 SnowLuma 的小程序 ARK。
-    requestMiniArk: async ({ title, desc, picUrl, jumpUrl }) => {
-      const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-      const res = await fetch(`${httpUrl}/get_mini_app_ark`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
-        },
-        body: JSON.stringify({ type: 'bili', title, desc, picUrl, jumpUrl }),
-        signal: AbortSignal.timeout(20000)
-      });
-      const body = await res.json().catch(() => ({}));
-      const data = body?.data?.data;
-      if (body?.status !== 'ok' || body?.retcode !== 0 || !data?.app || !data?.meta) {
-        throw new Error(body?.wording || `get_mini_app_ark 返回异常（${body?.retcode ?? res.status}）`);
-      }
-      return data;
-    },
-    sendGroupSegments: (id, segments) => onebotSendSegments('group', id, segments),
-    log,
-  });
+  // B站视频卡片发送器（sendBiliCard）与 onebotSendSegments 已于 2026-11-03 随 B站下线一起删除，
+  // 抖音分享走 douyin-share-scheduler 的纯文本标题+链接。
 
   // ── 图片/表情字节解析（供一代自动内联与二代按需工具） ────────────────────
   function mimeFromBuffer(buf) {
@@ -10568,7 +10974,7 @@ async function main() {
     st.activeExitAt = now;
     // 先取消尚未触发的旧回复/补刀定时器，避免退场期间再冒出旧发言
     cancelSocialTimers(key);
-    const roleHint = currentRoleHint();
+    const roleHint = currentRoleHint(key);
     const promptText = buildActiveExitPrompt(key, roleHint);
     scheduleSocialReply(
       key, promptText,
@@ -10656,16 +11062,18 @@ async function main() {
     try { return String(roleRawContent() ?? '').trim(); } catch { return ''; }
   }
 
-  function purposeContextBlocks() {
+  function purposeContextBlocks(chatKey = '') {
     const roleState = readRoleState();
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）` : '';
     const identityLine = selfIdentityTextV2();
     const adminText = adminPromptLine(true);
     const personaText = purposePersonaText();
-    const biliBrief = cfg.biliBridge?.enabled !== false && cfg.biliBridge?.memory?.enabled !== false
+    // 2026-11-03：判据从 biliBridge 换成 douyinBridge —— 之前靠老配置里 biliBridge.enabled
+    // 还是 true 才碰巧生效，用户一关 B 站，抖音记忆就整段不注入了。
+    const douyinBrief = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
       ? biliMemory.briefBlock()
       : '';
-    const memoryCardText = memoryCardPromptBlock();
+    const memoryCardText = memoryCardPromptBlock(chatKey);
     return [
       roleLine,
       // 人格卡是动机的先验：她是什么样的人，决定她更容易被什么打动。
@@ -10673,7 +11081,7 @@ async function main() {
       identityLine,
       adminText,
       memoryCardText ? `【记忆卡】\n${memoryCardText.slice(0, 2400)}` : '',
-      biliBrief ? `【B站记忆】\n${biliBrief.slice(0, 1800)}` : '',
+      douyinBrief ? `【抖音记忆】\n${douyinBrief.slice(0, 1800)}` : '',
     ].filter(Boolean);
   }
 
@@ -10873,7 +11281,7 @@ async function main() {
       ownerUin: owner,
       ownerName: String(adminIdentity()?.displayName || '').trim() || '主人',
       token,
-      contextBlocks: purposeContextBlocks(),
+      contextBlocks: purposeContextBlocks(owner ? `private:${owner}` : ''),
       materials,
       candidates: selection.candidates,
       selected: selection.purpose,
@@ -11405,7 +11813,7 @@ async function main() {
               st.proactiveNextCheckAt = now + randInt(Number(cfg.social?.proactiveCheckMinMs ?? 2700000), Number(cfg.social?.proactiveCheckMaxMs ?? 5400000));
               if (Math.random() < Number(cfg.social?.proactiveProbability ?? 0.2)) {
                 enterActive(key);
-                const roleHint = currentRoleHint();
+                const roleHint = currentRoleHint(key);
                 const promptText = buildProactivePrompt(key, roleHint);
                 scheduleSocialReply(
                   key, promptText,
@@ -11521,7 +11929,7 @@ async function main() {
         log(`摘要投喂创建会话失败 (${k}): ${error?.message ?? error}`);
         continue;
       }
-      const roleHint = currentRoleHint();
+      const roleHint = currentRoleHint(key ?? '');
       const summaryText = `${roleHint ? roleHint + '\n\n' : ''}【群聊摘要】过去一段时间群里发生了这些（你未逐条参与）：\n${lines}\n\n【最近对话】\n${buildContextBlock(k)}\n\n你不需要回复，只需记住这些内容，后续聊天会更自然。`;
       const silentId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       social.silentTurns.set(sessionId, [...(social.silentTurns.get(sessionId) ?? []), { id: silentId, ts: Date.now() }]);
@@ -11618,17 +12026,49 @@ async function main() {
   function ownerMessageTag() {
     return adminMarker(adminIdentity());
   }
-  // 记忆卡注入块：插件每次整理后原子写 memory-card-prompt-qq.md，这里按 mtime 缓存读。
-  // 不解析 JSON、不依赖插件代码——桥接和插件是不同进程，文件是唯一契约。
-  let memoryCardPromptCache = { key: '', text: '' };
-  function memoryCardPromptBlock() {
+  // 记忆卡注入块（2026-11-03 改为**按会话渲染**）。
+  // 以前所有 QQ 会话都读同一份 memory-card-prompt-qq.md：A 的私聊内容会出现在和 B 的对话里，
+  // 这就是「QQ 会话记忆会串」。现在按 conversationKey 过滤后再渲染；卡文件 mtime 变了才重新解析。
+  const MEMORY_INJECT_MAX_CHARS = 2200; // 与 memory-card.js 的 injectMaxChars.qq 默认值一致
+  let memoryCardFileCache = { key: '', card: null };
+  const memoryPromptByChat = new Map(); // conversationKey -> { v, text }
+  function memoryCardFile() {
     try {
-      const stat = fs.statSync(MEMORY_CARD_PATHS.promptQq);
+      const stat = fs.statSync(MEMORY_CARD_PATHS.json);
       const key = `${stat.mtimeMs}:${stat.size}`;
-      if (memoryCardPromptCache.key === key) return memoryCardPromptCache.text;
-      const text = fs.readFileSync(MEMORY_CARD_PATHS.promptQq, 'utf8').trim();
-      memoryCardPromptCache = { key, text };
+      if (memoryCardFileCache.key === key) return memoryCardFileCache.card;
+      const card = loadMemoryCard(MEMORY_CARD_PATHS);
+      memoryCardFileCache = { key, card };
+      if (memoryPromptByChat.size > 200) memoryPromptByChat.clear();
+      return card;
+    } catch {
+      return null;
+    }
+  }
+  function memoryCardPromptBlock(chatKey = '') {
+    const card = memoryCardFile();
+    if (card) {
+      const k = String(chatKey ?? '');
+      const v = `${memoryCardFileCache.key}|${k}`;
+      const hit = memoryPromptByChat.get(k);
+      if (hit && hit.v === v) return hit.text;
+      let text = '';
+      try {
+        text = renderMemoryCard(card, {
+          platform: 'qq',
+          maxChars: MEMORY_INJECT_MAX_CHARS,
+          conversationKey: k,
+          now: Date.now(),
+        }).trim();
+      } catch {
+        text = '';
+      }
+      memoryPromptByChat.set(k, { v, text });
       return text;
+    }
+    // 兜底：卡读不到时退回插件预渲染的文件（老行为，全量）
+    try {
+      return fs.readFileSync(MEMORY_CARD_PATHS.promptQq, 'utf8').trim();
     } catch {
       return '';
     }
@@ -11636,24 +12076,25 @@ async function main() {
 
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
-  function roleHintForMode(mode) {
+  function roleHintForMode(mode, chatKey = '') {
     const selected = selectRoleText(roleRawContent(), mode);
     const base = selected
       ? (selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected)
       : '';
-    // B站记忆单独追加：不受人格卡 6000 字上限影响（上限只保护角色卡本身）。
-    // 这样群友问起 B 站经历时，她知道那就是自己的 B站账号，而不是“另一个人”。
-    const biliBrief = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
+    // 抖音记忆单独追加：不受人格卡 6000 字上限影响（上限只保护角色卡本身）。
+    // 这样群友问起「你最近刷到什么」时，她知道那是自己的经历，而不是“另一个人”的。
+    const douyinBrief = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
       ? biliMemory.briefBlock()
       : '';
     // 管理员规则放在人格卡之后、记忆之前：优先级高于人格卡，又不会被长记忆挤掉。
     const adminBlock = adminPromptLine(false);
-    // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
-    const memoryBlock = memoryCardPromptBlock();
-    return [base, adminBlock, biliBrief, memoryBlock].filter(Boolean).join('\n\n');
+    // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。
+    // 按会话过滤：只注入本会话 + 和主人的记忆，别人私聊/别的群的内容不进当前提示词。
+    const memoryBlock = memoryCardPromptBlock(chatKey);
+    return [base, adminBlock, douyinBrief, memoryBlock].filter(Boolean).join('\n\n');
   }
-  function currentRoleHint() {
-    return roleHintForMode('v1');
+  function currentRoleHint(chatKey = '') {
+    return roleHintForMode('v1', chatKey);
   }
 
   // ── 最近聊天上下文（chat 模式）────────────────────────────────────────────
@@ -11898,9 +12339,9 @@ async function main() {
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
   }
 
-  function currentRoleHintV2() {
+  function currentRoleHintV2(chatKey = '') {
     // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
-    const raw = roleHintForMode('v2');
+    const raw = roleHintForMode('v2', chatKey);
     if (!raw) return '';
     // 一代仿真模式专用指令整行过滤，避免污染二代工具协议。
     // 用 role-card.js 导出的那份（文件顶部已 import）：这里原先又抄了一份同源正则，
@@ -12601,9 +13042,9 @@ async function main() {
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
-    // B站 记忆简报关掉时（biliBridge.memory.enabled=false），B站 侧的自我锚点会整段消失；
-    // 那时补一份自我卡，保证「认得自己的 B站 主页」不依赖记忆同步开关。
-    const biliMemoryOn = Boolean(cfg.biliBridge?.enabled) && cfg.biliBridge?.memory?.enabled !== false;
+    // 抖音记忆简报关掉时（douyinBridge.memory.enabled=false），那一侧的自我锚点会整段消失；
+    // 那时补一份自我卡，保证「认得自己是谁」不依赖记忆同步开关。
+    const biliMemoryOn = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false;
     const selfCardFallback = biliMemoryOn ? '' : buildSelfIdentityBlock({
       qqNickname: selfDisplayName,
       qqUin: selfUserId,
@@ -12684,16 +13125,16 @@ async function main() {
     const initialPromptText = reason === 'bootstrap' ? formatInitialPromptV2(key) : '';
     const initialPromptLine = initialPromptText ? `${initialPromptText}\n\n` : '';
     // 二代模式不自动注入完整角色卡（让 AI 调 qq_get_prompt），但 B 站记忆必须每轮都在：
-    // 否则群友问起「B站那个号」时，它会把自己当成另一个人。
-    const biliBrief = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
+    // 否则群友问起「你最近刷到什么」时，它会把自己当成另一个人。
+    const biliBrief = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
       ? biliMemory.briefBlock()
       : '';
-    const biliRecall = lastMsg && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
+    const biliRecall = lastMsg && cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))
       : '';
     const biliLine = biliBrief || biliRecall ? `${biliBrief}${biliRecall ? `${biliRecall}\n` : ''}\n` : '';
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
-    const memoryCardText = memoryCardPromptBlock();
+    const memoryCardText = memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     if (reason === 'bootstrap') {
@@ -13796,7 +14237,7 @@ async function main() {
     }
 
     // 角色扮演提示注入（仅注入给 agent，不影响群友之间的正常对话语义）
-    const roleHint = currentRoleHint();
+    const roleHint = currentRoleHint(key);
 
     // 最近聊天上下文：先取「当前消息之前」的窗口，再把当前消息记进窗口。
     const recentBlock = currentMode === 'chat' ? buildRecentChatBlock(key) : '';
@@ -13874,9 +14315,9 @@ async function main() {
     // 发送者后面必须带 QQ 号：人格卡里的「称呼表」是按 QQ 号映射的，
     // 只给昵称的话模型根本对不上号（曾出现「表里写 omm，实际却叫阿零」）。
     const senderLabel = `${event.sender?.card || event.sender?.nickname || String(event.user_id)}(${String(event.user_id)})`;
-    // 群友提到 B 站 / 视频 / 某次看片时，按关键词从完整记忆里捞几条相关细节，
-    // 和常驻的「B站记忆简报」互补：简报给身份和最近见闻，检索给具体那次。
-    const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
+    // 群友提到抖音 / 视频 / 某次刷到的内容时，按关键词从完整记忆里捞几条相关细节，
+    // 和常驻的「抖音记忆简报」互补：简报给身份和最近见闻，检索给具体那次。
+    const biliRecall = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(textContent)
       : '';
     const promptText = recentBlock + (roleHint ? roleHint + '\n\n' : '') + (biliRecall ? biliRecall + '\n\n' : '') + chimeInHint
@@ -13913,7 +14354,7 @@ async function main() {
         st.probeDeadline = 0;
         // 私聊：发给你就是叫你，直接即时投递，不等轮询、不参与沉默
         if (kind === 'private') {
-          const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
+          const biliRecall = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
             ? biliMemory.recallBlock(textContent)
             : '';
           const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}${isOwner ? ownerMessageTag() : ''}${textContent}${mediaHintFor(key, messageRef, mediaList)}`;
@@ -13944,13 +14385,13 @@ async function main() {
 
       // 触发成功：进入活跃，贴最近上下文 + 当前消息 + 人格（仅此一次），让 AI 回复
       enterActive(key);
-      const roleHint = currentRoleHint();
+      const roleHint = currentRoleHint(key);
       const currentLine = (isOwner && kind === 'private') ? `${ownerMessageTag()}${sender}：${textContent}` : `${sender}：${textContent}`;
       const directionHint = textContent.includes('[引用') ? DIRECTION_HINT + '\n' : '';
       const replyInstruction = direct
         ? `请回复消息。\n${directionHint}${SPACE_SPLIT_HINT}`
         : `请根据情况决定是否回复。如果不需要回应、想潜水/不接话，请只输出 ${SILENT_MARKER}；否则正常回复。\n${directionHint}${SPACE_SPLIT_HINT}`;
-      const biliRecall = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
+      const biliRecall = cfg.douyinBridge?.enabled !== false && cfg.douyinBridge?.memory?.enabled !== false
         ? biliMemory.recallBlock(textContent)
         : '';
       const promptText = `${roleHint ? roleHint + '\n\n' : ''}${biliRecall ? biliRecall + '\n\n' : ''}【群聊上下文】\n${buildContextBlock(key)}\n【当前消息】${currentLine}${mediaHintFor(key, messageRef, mediaList)}\n\n${replyInstruction}`;
@@ -14953,66 +15394,73 @@ async function main() {
 
   // ── B站：记忆注入 / 动态同步 / 每天 8 次分享 ─────────────────────────────
   // groups 为空时默认跟随 allow.groups（白名单群）。这是用户明确要求的“白名单每个群”。
-  // 设置页的「启动B站」开关在合体层 config.json（不是桥接 config.json）。
-  // 桥接的分享定时器以前只在启动时读一次 biliBridge.enabled，用户关了开关也照发；
+  // 设置页的「启动抖音」开关在合体层 config.json（不是桥接 config.json）。
+  // 桥接的分享定时器以前只在启动时读一次 enabled，用户关了开关也照发；
   // 这里按 mtime 缓存 30 秒读一次，关了就跳过（2026-10-26 修）。
-  let biliStartCache = { at: 0, enabled: true };
-  function biliStartEnabledByUnified() {
+  // 2026-11-03：判据从 platforms.start.bili 换成 .douyin，函数名跟着改，避免下次再踩。
+  let douyinStartCache = { at: 0, enabled: true };
+  function douyinStartEnabledByUnified() {
     const now = Date.now();
-    if (now - biliStartCache.at < 30_000) return biliStartCache.enabled;
+    if (now - douyinStartCache.at < 30_000) return douyinStartCache.enabled;
     let enabled = true;
     try {
       const file = path.join(SURFCORE_DIR, 'config.json');
       const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-      enabled = data?.platforms?.start?.bili !== false;
+      enabled = data?.platforms?.start?.douyin !== false;
     } catch {}
-    biliStartCache = { at: now, enabled };
+    douyinStartCache = { at: now, enabled };
     return enabled;
   }
 
-  const biliGroupList = (list) => (Array.isArray(list) ? list : [])
-    .map((v) => String(v).trim())
-    .filter((v) => /^\d+$/.test(v));
-  if (cfg.biliBridge?.enabled) {
-    const shareGroups = biliGroupList(cfg.biliBridge.share.groups.length ? cfg.biliBridge.share.groups : cfg.allow.groups);
-    const dynamicsGroups = biliGroupList(cfg.biliBridge.dynamics.groups.length ? cfg.biliBridge.dynamics.groups : cfg.allow.groups);
-    if (cfg.biliBridge.memory.enabled) {
+  // 2026-11-03：B 站那套（动态同步 / 定时分享）随 B 站一起下线，抖音接位。
+  // 抖音这边两块都是「只读插件的落盘结果」：
+  //   · 记忆：观看记录 + 日报 → 注入 QQ 提示词
+  //   · 分享：到点挑一条她刷过的作品，把标题+链接发到白名单群，再让角色补两句短评
+  // config.json 里还没有 douyinBridge 时按默认值走（readQqConfig 只做合并，不做归一）。
+  const douyinBridge = cfg.douyinBridge ?? { enabled: true, memory: { enabled: true, refreshIntervalMs: 600_000 } };
+  if (douyinBridge.enabled !== false) {
+    if (douyinBridge.memory?.enabled !== false) {
       void biliMemory.refresh({ force: true });
-      const t = setInterval(() => { void biliMemory.refresh(); }, cfg.biliBridge.memory.refreshIntervalMs);
+      const t = setInterval(() => { void biliMemory.refresh(); }, douyinBridge.memory?.refreshIntervalMs ?? 600_000);
       t.unref?.();
     }
-    if (cfg.biliBridge.dynamics.enabled && dynamicsGroups.length) {
-      biliDynamics = createBiliDynamicsSync({
-        stateDir: PLATFORM_STATE_DIR,
-        log,
-        sendToQQ,
-        groups: dynamicsGroups,
-        isReady: () => snowlumaHealth.connected === true,
-        intervalMs: cfg.biliBridge.dynamics.pollIntervalMs,
-        selfName: biliMemory.selfName?.() ?? '',
-      });
-      biliDynamics.start();
-    } else if (cfg.biliBridge.dynamics.enabled) {
-      log('[B站动态] 没有白名单群，未启动');
+    const shareCfg = douyinBridge.share ?? {};
+    if (shareCfg.enabled === true) {
+      const shareGroups = (Array.isArray(shareCfg.groups) && shareCfg.groups.length
+        ? shareCfg.groups
+        : (cfg.allow?.groups ?? []))
+        .map((v) => String(v).trim())
+        .filter((v) => /^\d+$/.test(v));
+      if (shareGroups.length) {
+        douyinShare = createDouyinShareScheduler({
+          stateDir: PLATFORM_STATE_DIR,
+          log,
+          deliverPrompt,
+          groups: shareGroups,
+          memory: biliMemory,
+          isReady: () => dshReady,
+          times: shareCfg.times,
+          gapMs: shareCfg.gapMs,
+          getMode: () => currentMode,
+          // cardMode = link：先发「【抖音】标题 + 链接」纯文本（QQ 卡片不可靠，见 PITFALLS #24）；
+          // off：不发卡片，完全由角色输出，链接由提示词要求她照抄。
+          sendCard: shareCfg.cardMode === 'off'
+            ? null
+            : async (key, card) => {
+              const text = buildShareCardText(card);
+              if (!text) return false;
+              await sendToQQ(key, text);
+              return lastSendSucceeded(key);
+            },
+          isEnabled: () => cfg.douyinBridge?.enabled !== false && douyinStartEnabledByUnified(),
+        });
+        douyinShare.start();
+      } else {
+        log('[抖音分享] 没有白名单群，未启动');
+      }
     }
-    if (cfg.biliBridge.share.enabled && shareGroups.length) {
-      biliShare = createBiliShareScheduler({
-        stateDir: PLATFORM_STATE_DIR,
-        log,
-        deliverPrompt,
-        groups: shareGroups,
-        memory: biliMemory,
-        isReady: () => dshReady,
-        times: cfg.biliBridge.share.times,
-        gapMs: cfg.biliBridge.share.gapMs,
-        getMode: () => currentMode,
-        sendCard: sendBiliCard,
-        isEnabled: () => cfg.biliBridge?.enabled !== false && biliStartEnabledByUnified(),
-      });
-      biliShare.start();
-    } else if (cfg.biliBridge.share.enabled) {
-      log('[B站分享] 没有白名单群，未启动');
-    }
+  } else {
+    log('[抖音记忆] douyinBridge.enabled = false，跳过');
   }
 
   startDshWatch();

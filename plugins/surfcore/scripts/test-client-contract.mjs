@@ -32,58 +32,18 @@ globalThis.window = {
 
 await import('../lib/client.js');
 assert.ok(client, 'client.js 没有被 ModuleLoader 加载');
-assert.ok(Array.isArray(client.BILI_FIELDS), 'BILI_FIELDS 没有导出');
-assert.ok(Array.isArray(client.QQ_BILI_SHARE_FIELDS), 'QQ_BILI_SHARE_FIELDS 没有导出');
-
-const biliPaths = client.BILI_FIELDS.flatMap((group) => group.fields.map((field) => field.path.join('.')));
-for (const wanted of [
-  'limits.daily',
-  'limits.replyDaily',
-  'limits.taDaily',
-  'limits.mineDaily',
-  'limits.minePerPerson',
-  'limits.globalMin',
-  'limits.perUpMin',
-  'limits.perVideoMin',
-  'limits.perThreadMin',
-  'dynamics.enabled',
-  'dynamics.gapMin',
-  'dynamics.kinds.best.enabled',
-  'dynamics.kinds.best.slot',
-  'dynamics.kinds.best.minLen',
-  'dynamics.kinds.best.maxLen',
-  'dynamics.kinds.best.prefix',
-  'dynamics.kinds.gaming.slot',
-]) {
-  assert.ok(biliPaths.includes(wanted), `B站页缺少可编辑字段：${wanted}`);
-}
-
-const sharePaths = client.QQ_BILI_SHARE_FIELDS.map((field) => field.path.join('.'));
-for (const wanted of [
-  'biliBridge.enabled',
-  'biliBridge.share.enabled',
-  'biliBridge.share.times',
-  'biliBridge.share.groups',
-  'biliBridge.share.gapMs',
-  'biliBridge.share.cardMode',
-  'biliBridge.dynamics.enabled',
-  'biliBridge.dynamics.pollIntervalMs',
-  'biliBridge.dynamics.groups',
-]) {
-  assert.ok(sharePaths.includes(wanted), `QQ 分享段缺少字段：${wanted}`);
-}
+// 2026-11-03：B站 页与它的两张高级参数表（BILI_FIELDS / QQ_BILI_SHARE_FIELDS）已随
+// B站下线一起物理删除。抖音页的分享参数改由下面的 douyinBridge 断言把关。
 
 const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8');
-assert.ok(source.includes('"/bili/automation"'), '设置页没有调用 /bili/automation');
-assert.ok(source.includes('AutomationCard'), '设置页没有今天用量卡片');
-assert.ok(source.includes('QqShareSection'), '设置页没有 QQ 分享段');
-// PITFALLS #21：QQ 分享段以前藏在 B站 页最底部、还是折叠的，用户找不到。
-assert.ok(source.includes('定时分享视频到群'), 'QQ 分享段标题必须写人话（含「定时分享视频到群」）');
-assert.ok(source.includes('"/bili/share-now"'), '缺少「立即分享一次」接口调用');
-assert.ok(source.includes('goTab'), 'QQ 页缺少跳转到 B站 页的入口');
-const cardModeField = client.QQ_BILI_SHARE_FIELDS.find((f) => f.path.join('.') === 'biliBridge.share.cardMode');
-assert.equal(cardModeField?.kind, 'select', '分享形式必须是下拉，不是布尔开关');
-assert.deepEqual((cardModeField.options ?? []).map(([v]) => v), ['text', 'miniapp', 'off']);
+// 2026-11-03：B 站下线，「B站」页换成「抖音」页。刷视频由 dsh-douyin-agent 插件跑，
+// 设置页这边只读它的状态，所以契约改成「读 /douyin/* + 不得再出现 BiliTab」。
+assert.ok(source.includes('["douyin", "抖音"]'), '标签页里没有「抖音」');
+assert.ok(source.includes('"/douyin/status"'), '抖音页没有读 /douyin/status');
+assert.ok(source.includes('"/douyin/history'), '抖音页没有读观看历史');
+assert.ok(source.includes('"/douyin/memory/refresh"'), '抖音页缺少「同步抖音记忆到 QQ」');
+assert.ok(!source.includes('h(BiliTab'), 'B 站页应该已经下线，不该还挂着 BiliTab');
+assert.ok(!source.includes('tab === "bili"'), 'B 站标签页的渲染分支应该已经删掉');
 
 // QQ 白名单必须在设置页有一张常驻卡片（PITFALLS #27：以前只藏在折叠的「白名单与权限」组里）。
 assert.ok(source.includes('WhitelistCard'), 'QQ 页缺少白名单卡片');
@@ -160,23 +120,25 @@ for (const action of ['purpose-status', 'purpose-preview', 'purpose-run']) {
 //   · 人格卡不再在概览重复显示（统一到「角色」页，和角色包在一起）。
 assert.ok(source.includes('function PlatformStartCard'), '缺少平台启动开关卡片');
 assert.ok(source.includes('"platforms", "start", "qq"'), 'QQ 启动开关没有绑定 platforms.start.qq');
-assert.ok(source.includes('"platforms", "start", "bili"'), 'B站 启动开关没有绑定 platforms.start.bili');
-assert.ok(source.includes('h(PlatformStartCard'), 'QQ / B站 页没有渲染启动开关卡片');
-for (const label of ['一键启动', '启动QQ', '启动B站']) {
-  // 「一键启动」按钮文案后面会跟（含 SnowLuma），按前缀认即可。
+assert.ok(source.includes('h(PlatformStartCard'), 'QQ 页没有渲染启动开关卡片');
+// 2026-11-03：B 站下线后只剩 QQ 一个需要「启动」的平台；「启动B站」按钮必须消失，
+// 但老书签/老脚本打 start-bili 时插件要明确回 410，不能假装成功。
+assert.ok(!source.includes('"启动B站"'), '概览不该再有「启动B站」按钮');
+assert.ok(!source.includes('act("start-bili")'), '设置页不该再调用 start-bili');
+assert.ok(pluginIndexSource.includes("action === 'start-bili'"), '插件仍应保留 start-bili 分支（回 410 说明已下线）');
+assert.ok(pluginIndexSource.includes("action === 'refresh-douyin'"), '插件缺少 refresh-douyin 动作');
+for (const label of ['一键启动', '启动QQ']) {
   const ok = label === '一键启动'
     ? source.includes('一键启动')
     : (source.includes(`>${label}<`) || source.includes(`"${label}"`));
   assert.ok(ok, `概览启动卡缺少按钮：${label}`);
 }
-for (const action of ['start-qq', 'start-bili']) {
-  assert.ok(source.includes(`act("${action}")`), `设置页没有调用 ${action}`);
-  assert.ok(pluginIndexSource.includes(`action === '${action}'`), `插件代理缺少 ${action} 动作`);
-}
+assert.ok(source.includes('act("start-qq")'), '设置页没有调用 start-qq');
+assert.ok(pluginIndexSource.includes("action === 'start-qq'"), '插件代理缺少 start-qq 动作');
 assert.ok(!source.includes('启动与人格卡'), '概览不应再出现「启动与人格卡」旧标题');
-assert.ok(!source.includes('一键启动全部（含 SnowLuma）'), '旧的「一键启动全部」按钮应被替换成三个按钮');
+assert.ok(!source.includes('一键启动全部（含 SnowLuma）'), '旧的「一键启动全部」按钮应被替换成两个按钮');
 assert.ok(!source.includes('随 DSH 启动自动拉起 QQ 桥接'), '旧 bridge.autoStart 开关应迁到 QQ 页的「是否启动」');
-assert.ok(source.includes('去 QQ 页改启动开关') && source.includes('去 B站 页改启动开关'), '概览缺少去平台页改开关的入口');
+assert.ok(source.includes('去 QQ 页改启动开关'), '概览缺少去 QQ 页改开关的入口');
 assert.ok(source.includes('人格卡在「角色」页维护'), '概览移除人格卡后缺少指路文案');
 
 // 设置页 IA（2026-10-24 大清理）：人设/角色合并，关键设置常驻，其余进「高级设置」。
@@ -189,7 +151,6 @@ assert.ok(!source.includes('function PersonaTab'), '旧的 PersonaTab 必须删�
 assert.ok(!source.includes('goTab?.("persona")'), '还有按钮跳去已删除的「人设」页');
 for (const [marker, page] of [
   ['h(QqFishGuardStatusCard, { busy })', 'QQ'],
-  ['h(FishGuardStatusCard, { busy, toast })', 'B站'],
   ['h(MemoryCardPanel, { view: "summary"', '记忆'],
   ['h(Section, { title: `候选人', '对齐'],
   ['h(Section, { title: "配置 JSON（高级）"', '扩展'],
@@ -210,27 +171,12 @@ assert.ok(source.includes('act("snapshot"'), '角色页缺少立即存档');
 assert.ok(source.includes('act("restore"'), '角色页缺少回档');
 assert.ok(source.includes('act("create"'), '角色页缺少创建动作');
 
-// 观看历史 + 鱼群运行状态：用户明确要求「设置里能看到她看过什么 / 到底点没点赞」。
-assert.ok(source.includes('function WatchTab'), '设置页缺少观看历史页');
-assert.ok(source.includes('["watch", "观看历史"]'), '缺少「观看历史」标签');
-assert.ok(source.includes('"/watch-history'), '观看历史页没有调用 /watch-history');
-assert.ok(source.includes('"操作"'), '观看历史缺少「操作」列');
-assert.ok(source.includes('仅看了'), '观看历史缺少「仅看了」状态');
-const watchActionsSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'watch-actions.mjs'), 'utf8');
-assert.ok(watchActionsSource.includes('鱼群保护·聚拢回复'), '观看历史缺少鱼群聚拢标记');
-assert.ok(source.includes('function FishGuardStatusCard'), 'B站页缺少鱼群保护运行状态卡');
-assert.ok(source.includes('"/bili/fish-guard"'), '鱼群状态卡没有调用 /bili/fish-guard');
-assert.ok(source.includes('上次点赞'), '鱼群状态卡没有显示上次点赞结果');
-assert.ok(source.includes('最近鱼群检查'), 'B站状态卡没有显示鱼群检查记录');
-assert.ok(source.includes('点赞历史'), 'B站状态卡没有显示点赞历史');
-assert.ok(source.includes('likeHistory'), 'B站状态卡没有接 likeHistory');
-assert.ok(source.includes('鱼群判定关键词（B站）'), 'B站页没有独立的鱼群判定关键词组');
+// 2026-11-03：B 站页 + 观看历史页一起下线，「最近看过」并入抖音页。
+// 鱼群保护是 B 站评论区特有的（QQ 群成员那套在 QQ 页，没动），所以只保留 QQ 侧断言。
+assert.ok(!source.includes('["watch", "观看历史"]'), '「观看历史」标签应该并入抖音页');
+assert.ok(source.includes('最近看过'), '抖音页缺少「最近看过」区块');
 assert.ok(source.includes('鱼群判定关键词（QQ）'), 'QQ页没有独立的鱼群判定关键词组');
 assert.ok(source.includes('function ListInput'), '缺少允许输入逗号的 ListInput（旧实现会吞逗号）');
-const biliFishPaths = client.BILI_FIELDS.filter((g) => g.group.includes('鱼群')).flatMap((g) => g.fields.map((f) => f.path.join('.')));
-for (const wanted of ['fishGuard.namePrefixes', 'fishGuard.nameContains', 'fishGuard.nameSuffixes', 'fishGuard.extraFishMids', 'fishGuard.likeGapMinMs', 'fishGuard.failedLikeCooldownHours', 'fishGuard.forceGather']) {
-  assert.ok(biliFishPaths.includes(wanted), `B站鱼群保护缺少字段：${wanted}`);
-}
 const qqFishPaths = client.QQ_FIELDS.filter((g) => g.group.includes('鱼群')).flatMap((g) => g.fields.map((f) => f.path.join('.')));
 for (const wanted of ['fishGuard.namePrefixes', 'fishGuard.nameContains', 'fishGuard.nameSuffixes', 'fishGuard.groupNameSuffixes']) {
   assert.ok(qqFishPaths.includes(wanted), `QQ鱼群保护缺少字段：${wanted}`);
@@ -277,48 +223,34 @@ assert.ok(source.includes('/token-budget'), '设置页没有接 /token-budget �
 assert.ok(source.includes('function QqFishGuardStatusCard'), 'QQ 页缺少鱼群触发记录卡');
 assert.ok(source.includes('"/fish-guard/qq"'), 'QQ 鱼群卡没有调用 /fish-guard/qq');
 assert.ok(source.includes('最近触发'), 'QQ 鱼群卡标题没有写人话');
-const biliAgentField = client.BILI_FIELDS.flatMap((g) => g.fields).find((f) => f.path.join('.') === 'agent.sandbox');
-assert.ok(biliAgentField, 'B站页缺少 agent.sandbox 会话权限设置');
-assert.equal(biliAgentField.kind, 'select');
-assert.deepEqual((biliAgentField.options ?? []).map(([v]) => v), ['danger-full-access', 'workspace-write']);
-
-// 2026-10-23 用户定：每日分享默认发自己的动态（视频卡片），下拉第一项必须是 dynamic。
-const shareViaField = client.BILI_FIELDS.flatMap((g) => g.fields).find((f) => f.path.join('.') === 'share.via');
-assert.ok(shareViaField, 'B站页缺少 share.via');
-assert.equal(shareViaField.kind, 'select');
-assert.equal(shareViaField.options?.[0]?.[0], 'dynamic', 'share.via 默认项必须是 dynamic');
-assert.ok(source.includes('night.minGapMin'), '作息页缺少 night.minGapMin');
-assert.ok(source.includes('每窗至少 1'), '作息页提示没有写清 C 的每窗至少 1');
 assert.ok(source.includes('容量警告字数') && source.includes('warnChars'), '记忆卡缺少无上限的警告字数设置');
 assert.ok(source.includes('被 @/叫到时越过间隔'), 'Token 防爆破缺少 @ 越过间隔开关');
 assert.ok(source.includes('chat.presence.onlineShare'), '设置页缺少 chat 在线占比');
 
-// 2026-10-23 用户要求：每个偏好能调权重；新用户能「一键抓取」关键词。
-assert.ok(source.includes('function TasteEditor'), 'B站页缺少口味权重编辑器');
-assert.ok(source.includes('/preferences/scan?'), '口味编辑器没有调用 /preferences/scan');
-assert.ok(source.includes('一键抓取我的偏好'), '缺少「一键抓取」按钮');
-assert.ok(source.includes('抓取账号'), '抓取结果没有显示「抓的是哪个账号」');
-assert.ok(source.includes('不读浏览器登录的账号'), '抓取说明没有写清不读浏览器账号');
-assert.ok(source.includes('function BiliQrModal'), '缺少扫码登录弹窗');
-assert.ok(source.includes('"/bili/qr/start"'), '扫码弹窗没有调用 /bili/qr/start');
-assert.ok(source.includes('/bili/qr/poll'), '扫码弹窗没有轮询 /bili/qr/poll');
-assert.ok(source.includes('扫码登录小肥鱼'), 'B站 凭据卡缺少「扫码登录小肥鱼」');
-assert.ok(source.includes('扫码登录主人的 B站 账号'), '主人扫码弹窗标题缺失');
-assert.ok(source.includes('抓取主人'), '抓取目标缺少「抓取主人」');
-assert.ok(source.includes('["preferences", "weights"]'), '口味权重没有落到 preferences.weights');
-assert.ok(source.includes('权重 0 = 停用'), '口味权重缺少 0=停用 的说明');
-const tasteGroup = client.BILI_FIELDS.find((g) => g.group.includes('口味'));
-assert.ok(tasteGroup, 'B站参数里缺少口味分组');
-assert.ok(tasteGroup.fields.some((f) => f.path.join('.') === 'preferences.like'), '口味分组缺少 preferences.like');
+// 2026-11-03：B 站扫码登录 / 口味抓取 / 鱼群保护这些「B 站专属」入口随页面一起下线。
+// 抖音的心愿单与口味由插件自己维护（设置 → 刷抖音 → 人格与兴趣），这里不再提供第二套。
+// 只断言「页面不再渲染」这些组件：它们的定义可能还留在文件里做冷备份，
+// 但只要没有 h(...) 调用，用户就看不到、也点不到。
+for (const gone of ['h(TasteEditor', 'h(WatchTab', 'h(FishGuardStatusCard', 'h(QqShareSection', 'h(AutomationCard']) {
+  assert.ok(!source.includes(gone), `B 站专属入口应已下线：${gone}`);
+}
+assert.ok(source.includes('设置 → 刷抖音'), '抖音页必须指路到插件的设置入口');
+
+// 分享到群（2026-11-03 第二步）：素材来自她刷过的作品，配置落在 qq 侧 douyinBridge.share。
+// 注意路径前缀必须是 set([...]) 而不是 setUnified([...])：douyinBridge 属于 QQ 配置
+// （readQqConfig），写到合体层的话桥接读不到，用户会看到「开了但从不发」。
+assert.ok(source.includes('分享到群'), '抖音页缺少「分享到群」卡片');
+assert.ok(source.includes('"/douyin/share-now"'), '抖音页缺少「立即分享一次」调用');
+assert.ok(source.includes('立即分享一次'), '抖音页缺少「立即分享一次」按钮');
+for (const path of ['"douyinBridge", "share", "enabled"', '"douyinBridge", "share", "times"', '"douyinBridge", "share", "groups"']) {
+  assert.ok(source.includes(`set([${path}]`), `分享配置应写到 QQ 侧的 ${path}`);
+  assert.ok(!source.includes(`setUnified([${path}]`), `分享配置不该写到合体层：${path}`);
+}
+assert.ok(source.includes('6 天内不重复'), '分享卡片应说明去重规则');
 
 // ── 跨平台互认 + 微博下线（2026-10-23）────────────────────────────────────────
-// B站 侧唤醒必须先注入「自己是谁」：QQ 昵称/号（桥接落盘）+ B站 昵称/UID。
-// 没有它，别人递来她的 QQ 主页截图，她只会当陌生人（PITFALLS #40）。
-const schedulerSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'scheduler.js'), 'utf8');
-assert.ok(schedulerSource.includes("from '../../../src/self-identity.js'"), 'B站 侧没有引用统一自我卡模块');
-assert.ok(schedulerSource.includes('selfIdentityBlockForBili'), 'B站 唤醒缺少自我锚点块');
-assert.ok(schedulerSource.includes('readQqSelfIdentity'), 'B站 侧没有读桥接落的 QQ 自我身份');
-assert.ok(/identityContextLines[\s\S]{0,400}selfIdentityBlockForBili/.test(schedulerSource), '自我锚点没有接进每轮唤醒的上下文');
+// B站 侧唤醒（scheduler.js）已整体删除；跨平台自我锚点现在只走桥接的 QQ 注入路径，
+// 由下面的「自我锚点」断言直接盯 bridge.js。
 // 微博明确不做：注册表里不能再有占位，设置页也不能再提。
 const platformsSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'platforms.js'), 'utf8');
 assert.ok(!/weibo/.test(platformsSource), 'platforms.js 里还留着 weibo 占位');
@@ -346,16 +278,21 @@ assert.ok(client.__test?.setPath, 'client 没有导出 setPath 测试钩子');
   client.__test.setPath(target3, '', 1);
   assert.deepEqual(target3, {}, '空路径不能写入垃圾键');
 }
-assert.ok(source.includes('set(["night", "windows"], v)'), '作息窗口没有用数组路径绑定 night.windows');
-assert.ok(!source.includes('set("night.windows"'), '作息窗口还在传字符串路径（会退化成字符级嵌套）');
+// 作息窗口编辑器随 B 站页下线；数组路径的回归用例由上面的 __test.setPath 覆盖。
 assert.ok(source.includes('onAllowAllChange: (value) => set(["allowAllWhenEmpty"], value)'), '「白名单为空时全部放行」没有用数组路径绑定');
 assert.ok(!source.includes('set("allowAllWhenEmpty"'), '「白名单为空时全部放行」还在传字符串路径');
-// 记忆页 B站→QQ 开关：checked 必须读可编辑草稿，不能读服务端快照 qq.biliBridge。
-assert.ok(source.includes('const biliToQqDraft ='), '记忆页 B站→QQ 开关缺少可编辑草稿');
-assert.ok(source.includes('checked: biliToQqDraft'), '记忆页 B站→QQ 开关没有绑定可编辑草稿（点了会弹回）');
+// 记忆页 抖音→QQ 开关：checked 必须读可编辑草稿，不能读服务端快照 qq.douyinBridge。
+assert.ok(source.includes('const douyinToQqDraft ='), '记忆页 抖音→QQ 开关缺少可编辑草稿');
+assert.ok(source.includes('checked: douyinToQqDraft'), '记忆页 抖音→QQ 开关没有绑定可编辑草稿（点了会弹回）');
+// 草稿必须在保存前落到 QQ 配置的 douyinBridge.memory.enabled，否则桥接读不到。
+assert.ok(source.includes('unified?.__douyinToQqToggle'), '保存时没有把草稿落回 douyinBridge.memory.enabled');
+assert.ok(!source.includes('__biliToQqToggle'), 'B 站开关的旧草稿字段应已清除');
 // 「只同步这些群」必须用允许逗号的列表编辑器，不能每次按键 split/join（PITFALLS #49）。
 assert.ok(/只同步这些群[\s\S]{0,400}h\(IdListEditor/.test(source), '「只同步这些群」没有使用 IdListEditor');
-assert.ok(!source.includes('(qqToBili.includeGroups ?? []).join("，")'), '「只同步这些群」还在用 split/join 绑输入框（逗号会被吞）');
-assert.ok(source.includes('onChange: (list) => setQqToBili("includeGroups", list)'), '「只同步这些群」没有接线到 includeGroups');
+assert.ok(!source.includes('(qqToDouyin.includeGroups ?? []).join("，")'), '「只同步这些群」还在用 split/join 绑输入框（逗号会被吞）');
+assert.ok(source.includes('onChange: (list) => setQqToDouyin("includeGroups", list)'), '「只同步这些群」没有接线到 includeGroups');
+// 记忆页/对齐页不能再出现 B 站口径（用户 2026-11-03 明确要求）。
+assert.ok(!source.includes('QQ ⇄ B站'), '记忆页/对齐页还写着 QQ ⇄ B站');
+assert.ok(source.includes('QQ ⇄ 抖音'), '记忆页/对齐页应显示 QQ ⇄ 抖音');
 
 console.log('client contract tests OK');

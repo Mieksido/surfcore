@@ -28,7 +28,10 @@ export const PLATFORM_CAPABILITIES = Object.freeze([
 
 const BUILTIN_PLATFORMS = [
   { id: 'qq', name: 'QQ', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'prompt.block', 'actions'] },
-  { id: 'bili', name: 'B站', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] },
+  // 2026-11-03：B 站下线，抖音接位。「刷视频」本身由 dsh-douyin-agent 插件跑，
+  // 这里只登记身份/记忆/提示词这一层（与 qq 对等）。
+  { id: 'douyin', name: '抖音', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] },
+  { id: 'bili', name: 'B站（已下线）', version: '0.0.0', status: 'disabled', builtin: true, capabilities: [] },
   { id: 'tieba', name: '贴吧', version: '0.0.0', status: 'planned', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block'] },
 ];
 

@@ -5,7 +5,7 @@
  *   · QQ 侧：读/写 <surfcore>/config.json、桥接探活/启停/重启、模式与 ownerQQ、
  *            白名单、social/socialV2/chat/slang/webSearch 等全部参数；
  *   · B站侧：读/写 ~/.dsh/surfcore/bili.config.json、cookie 写入、依赖体检、
- *            待审回复、通知测试、生物钟（scheduler.js）；
+ *            待审回复、通知测试；
  *   · 合体层：统一人设卡、QQ→B站 脱敏记忆、身份对齐、扩展接口、平台适配器
  *            （qq/bili 内置，tieba 预留）。
  *
@@ -37,7 +37,8 @@ import {
   updateCharacterFromPayload,
 } from './characters.js';
 import { activeMemoryPaths, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
-import { automationSnapshot } from './automation.js';
+import { probeCdp, readDouyinStatus, readLatestReport, readRecentObservations, resolveDouyinPaths } from './douyin-status.js';
+import { createDouyinMemory } from '../../../src/douyin-memory.js';
 import {
   backupFile, listBackups, pathSummary,
   readAll, readBiliConfig, readJson, readQqConfig, readUnified,
@@ -53,7 +54,7 @@ import {
 } from './align.js';
 import {
   auditTail, biliToQqStatus, memoryStatus, previewQqForBili, rebuildAllPrompts,
-  refreshBiliToQq, scanBiliFeedForCandidates, scanQqFeedForCandidates,
+  previewDouyinBrief, refreshBiliToQq, scanBiliFeedForCandidates, scanQqFeedForCandidates,
   syncQqToBili,
 } from './memory.js';
 import {
@@ -63,7 +64,6 @@ import {
 import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
 import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
-import { startScheduler } from './scheduler.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_VERSION, electronDownloadUrl } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
@@ -78,15 +78,8 @@ import {
   memoryCardStatusNow, notifyOwnerIfNeeded, restoreMemoryCardBackup, runMemoryCardMaintenance,
   startMemoryCardTimer,
 } from './memory-card.js';
-import { readWatchHistory } from '../tools/lib/watch-history.mjs';
-import { enrichWatchHistory } from '../tools/lib/watch-actions.mjs';
-import { scanPreferences } from '../tools/lib/pref-scan.mjs';
-import {
-  cancelQrLogin, closeAllQrLogins, pollQrLogin, readFishAccount, readOwnerAccount, startQrLogin,
-} from './bili-qr-login.mjs';
 import { fishGuardStateSummary } from '../tools/lib/fish-guard.mjs';
 import { summarizeQqFishGuard } from './qq-fish-guard.js';
-import { applySessionPermission } from './scheduler.js';
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -321,7 +314,8 @@ export function apply(ctx) {
   // 保存配置时宿主会把正在跑的那一边停掉（save/restart 流程见 handleConfig）。
   function platformStartState() {
     const start = readUnified().config.platforms?.start ?? {};
-    return { qq: start.qq !== false, bili: start.bili !== false };
+    // 2026-11-03：抖音接位；bili 只保留回显（恒为关，B 站已下线）。
+    return { qq: start.qq !== false, douyin: start.douyin !== false, bili: false };
   }
   function platformStartEnabled(id) {
     return platformStartState()[id] !== false;
@@ -337,40 +331,12 @@ export function apply(ctx) {
       sessionId: schedulerStatus.sessionId ?? null,
     };
   }
-  // B站生物钟：合体后由本插件接管（旧 dsh-bili-whale 会被停用）。
-  // 抽成函数给「一键启动」复用：DSH 重启后插件加载时按平台开关决定是否自动启动，
-  // 失败后也能手动拉起。
+  // 2026-11-03：B 站下线。「自己刷视频」从本插件搬走，交给 DSH 插件 dsh-douyin-agent
+  // （设置 → 刷抖音），它在自己的专用 Edge 里跑自主观看、问候、私信回复、日报。
+  // 这里只保留一个恒定的「已下线」状态，任何调用点（启动/一键启动/切角色）都不会再起会话，
+  // 避免两套东西同时开浏览器、同时写人格记忆。
   function startSchedulerNow() {
-    if (scheduler && schedulerStatus.running) return schedulerStatus;
-    if (!platformStartEnabled('bili')) {
-      schedulerStatus = idleSchedulerStatus('disabled');
-      pluginLog('生物钟未启动：B站 启动开关关闭（设置 → B站 → 启动 B站）');
-      return schedulerStatus;
-    }
-    // 没登录过 B站 就不要自动起会话：新用户第一次装完，60s 一次的 tick 只会空烧 token。
-    // （凭据由扫码登录写入 BILI_CRED；用户登录后会自然启动。）
-    if (!fs.existsSync(BILI_CRED)) {
-      schedulerStatus = idleSchedulerStatus('not-logged-in');
-      pluginLog('生物钟未启动：B站 还没登录（设置 → B站 → 扫码登录），避免空转消耗 token');
-      return schedulerStatus;
-    }
-    try {
-      const character = readCurrentCharacter();
-      const sessionId = character ? `bili-whale-${character.id}` : 'bili-whale';
-      scheduler = startScheduler(ctx, {
-        dshHome: DSH_HOME,
-        biliMjs: BILI_MJS,
-        cwd: os.homedir(),
-        sessionId,
-        tokenBudget,
-        log: (message) => pluginLog(message),
-      });
-      schedulerStatus = { running: true, disabled: false, reason: '', startedAt: new Date().toISOString(), lastError: null, lastTickAt: null, sessionId };
-      pluginLog(`生物钟已启动（会话 ${sessionId}）`);
-    } catch (error) {
-      schedulerStatus.lastError = String(error?.message ?? error);
-      pluginLog('生物钟启动失败：', schedulerStatus.lastError);
-    }
+    schedulerStatus = { running: false, disabled: true, reason: 'retired', startedAt: null, lastError: null, lastTickAt: null, sessionId: null };
     return schedulerStatus;
   }
   startSchedulerNow();
@@ -998,7 +964,8 @@ export function apply(ctx) {
         ok: true,
         status: memoryStatus(),
         qqPreview: previewQqForBili({ maxChars: previewChars }),
-        biliPreview: biliToQqStatus().briefPreview,
+        // 2026-11-03：B站 简报换成抖音简报（biliPreview 这个键名一并退役）。
+        douyinPreview: previewDouyinBrief({ maxChars: previewChars }),
         audit: auditTail(40),
         policyVersion: PRIVACY_POLICY_VERSION,
       });
@@ -1368,15 +1335,16 @@ export function apply(ctx) {
       add('插件目录', fs.existsSync(PLUGIN_ROOT), PLUGIN_ROOT);
       add('surfcore 根目录', fs.existsSync(QQ_CONFIG), maskPath(QQ_CONFIG));
       add('QQ 桥接源码', fs.existsSync(path.join(path.dirname(QQ_CONFIG), 'src', 'bridge.js')), 'src/bridge.js');
-      add('B站工具链', fs.existsSync(BILI_MJS), maskPath(BILI_MJS));
-      add('B站配置', fs.existsSync(BILI_CONFIG), maskPath(BILI_CONFIG));
-      add('B站 cookie', fs.existsSync(BILI_CRED), fs.existsSync(BILI_CRED) ? '已写入（不回显内容）' : '未写入');
+      const douyinStatus = readDouyinStatus();
+      add('抖音插件 dsh-douyin-agent', douyinStatus.installed, douyinStatus.installed ? `v${douyinStatus.version} · ${maskPath(douyinStatus.pluginDir)}` : '未安装：设置 → 插件 里装 dsh-douyin-agent');
+      add('抖音专用浏览器', douyinStatus.browser?.ready === true, douyinStatus.browser ? `端口 ${douyinStatus.browser.port}（ready）` : '还没打开（设置 → 刷抖音 → 打开抖音）');
+      add('抖音登录资料', fs.existsSync(resolveDouyinPaths().profileDir), maskPath(resolveDouyinPaths().profileDir));
       add('人设卡', fs.existsSync(resolvePersonaFile()), maskPath(resolvePersonaFile()));
       add('身份对齐表', fs.existsSync(ALIGN_FILE), maskPath(ALIGN_FILE));
-      const qqMemoryOn = readAll().unified.memory?.qqToBili?.enabled === true;
-      add('QQ→B站记忆', qqMemoryOn ? fs.existsSync(activeMemoryPaths().qqForBili) : true,
-        qqMemoryOn ? maskPath(activeMemoryPaths().qqForBili) : '未开启（正常）');
-      add('B站→QQ简报', fs.existsSync(path.join(activePlatformStateDir(QQ_STATE_DIR()), 'bili-memory-brief.md')), '当前角色 bili/bili-memory-brief.md');
+      const qqMemoryOn = readAll().unified.memory?.qqToDouyin?.enabled === true;
+      add('QQ→抖音记忆', qqMemoryOn ? fs.existsSync(activeMemoryPaths().qqForDouyin) : true,
+        qqMemoryOn ? maskPath(activeMemoryPaths().qqForDouyin) : '未开启（正常）');
+      add('抖音→QQ简报', fs.existsSync(path.join(activePlatformStateDir(QQ_STATE_DIR()), 'douyin-memory-brief.md')), '当前角色 douyin/douyin-memory-brief.md');
       let ffmpeg = false;
       try {
         const result = await new Promise((resolve) => execFile('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true }, (error) => resolve(!error)));
@@ -2145,21 +2113,25 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
       return;
     }
     if (action === 'start-bili') {
-      if (!platformStartEnabled('bili')) {
-        json(res, 409, { ok: false, error: 'B站 启动开关已关闭：去「B站」页打开「启动 B站」并保存' });
-        return;
+      // B 站已下线（2026-11-03）。老按钮/老书签打到这里时给一句人话，不假装成功。
+      json(res, 410, { ok: false, error: 'B 站生物钟已下线：刷视频改由 dsh-douyin-agent 插件负责（DSH 设置 → 刷抖音）' });
+      return;
+    }
+    if (action === 'refresh-douyin') {
+      // 概览的「刷新抖音记忆」：读插件落盘的观看记录/日报，重新生成 douyin-memory*.md。
+      try {
+        const dir = activePlatformStateDir(QQ_STATE_DIR());
+        const memory = createDouyinMemory({ stateDir: dir, log: (message) => pluginLog(message) });
+        const stats = await memory.refresh({ force: true });
+        json(res, 200, { ok: true, message: `抖音记忆已刷新：${stats?.entries ?? 0} 条作品${stats?.hasReport ? '，含日报' : ''}`, stats });
+      } catch (error) {
+        json(res, 500, { ok: false, error: String(error?.message ?? error) });
       }
-      const running = Boolean(scheduler && schedulerStatus.running);
-      const schedulerState = startSchedulerNow();
-      json(res, 200, {
-        ok: schedulerState.running === true,
-        message: running ? 'B站生物钟本来就在跑' : (schedulerState.running ? 'B站生物钟已启动' : `B站生物钟未启动：${schedulerState.lastError ?? '看插件日志'}`),
-        scheduler: schedulerState,
-      });
       return;
     }
     if (action === 'start-all') {
-      // 一键启动：按平台启动开关拉起 QQ 桥接 / B站生物钟；QQ 打开时才尝试打开 SnowLuma。
+      // 一键启动：拉起 QQ 桥接，QQ 打开时才尝试打开 SnowLuma。
+      // 2026-11-03：B站生物钟（scheduler.js）已随 B站整体下线删除，这里只剩 QQ 一条链路。
       const starts = platformStartState();
       const status = await bridgeStatus();
       const stale = bridgeStaleReason(status);
@@ -2167,16 +2139,13 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
       const bridge = starts.qq
         ? (stale ? await restartBridge({ dshWebUrl }) : await startBridge({ dshWebUrl }))
         : { ok: true, skipped: true, message: 'QQ 启动开关关闭，已跳过桥接' };
-      const schedulerState = starts.bili
-        ? startSchedulerNow()
-        : { ...idleSchedulerStatus('disabled'), message: 'B站 启动开关关闭，已跳过生物钟' };
+      const schedulerState = idleSchedulerStatus('disabled');
       const snowluma = starts.qq ? await launchSnowLuma() : { ok: true, skipped: true, message: 'QQ 启动开关关闭，已跳过 SnowLuma' };
-      const coreOk = (!starts.qq || bridge?.ok !== false) && (!starts.bili || schedulerState.running);
+      const coreOk = (!starts.qq || bridge?.ok !== false);
       const message = [
         bridge?.message,
-        starts.bili ? (schedulerState.running ? 'B站生物钟在跑' : 'B站生物钟未启动') : '',
         snowluma?.message || snowluma?.error,
-        starts.qq || starts.bili ? '启动完成后会弹窗告诉你结果' : 'QQ 和 B站 的启动开关都关着，没有需要启动的平台',
+        starts.qq ? '启动完成后会弹窗告诉你结果' : 'QQ 启动开关关着，没有需要启动的平台',
       ].filter(Boolean).join('；');
       json(res, 200, {
         ok: coreOk,
@@ -2234,25 +2203,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
       json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
       return;
     }
-    if (action === 'refresh-bili') { json(res, 200, await refreshBiliToQq({ callBridge })); return; }
     json(res, 400, { ok: false, error: '未知 action' });
-  }
-
-  // ── B站动作：依赖体检 / cookie / 待审 / 通知测试 ────────────────────────
-  function runBili(args, timeoutMs = 120_000) {
-    return new Promise((resolve) => {
-      execFile(findNodeExe(), [BILI_MJS, ...args], {
-        cwd: BILI_TOOLS_DIR,
-        timeout: timeoutMs,
-        windowsHide: true,
-        maxBuffer: 8 * 1024 * 1024,
-      }, (error, stdout, stderr) => resolve({
-        ok: !error,
-        code: error?.code ?? 0,
-        out: String(stdout ?? '').slice(-20_000),
-        err: String(stderr ?? '').slice(-4000),
-      }));
-    });
   }
 
   // ── QQ 鱼群保护（设置页「最近触发」）────────────────────────────────────
@@ -2275,300 +2226,79 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
     }
   }
 
-  // ── 观看历史（设置页「观看历史」）───────────────────────────────────────
-  // 数据来自当前角色 bili/watch-history.jsonl；旧数据从 bili-memory.json 补。
-  function handleWatchHistory(res, url) {
-    try {
-      const current = readCurrentCharacter();
-      const data = readWatchHistory({
-        limit: Number(url.searchParams.get('limit')) || 200,
-        q: url.searchParams.get('q') ?? '',
-        days: Number(url.searchParams.get('days')) || 0,
-      });
-      // 2026-10-23 用户要求：每条看过之后她做了什么（评论怎么发的/收藏/动态）。
-      const enriched = enrichWatchHistory(data.items);
-      json(res, 200, {
-        ok: true,
-        character: current ? { id: current.id, name: current.name, epoch: current.epoch } : null,
-        ...data,
-        items: enriched.items,
-        actions: enriched.actions,
-      });
-    } catch (error) {
-      json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  }
 
-  // ── 偏好关键词扫描（设置页「口味权重 / 一键抓取」）──────────────────────
-  // 只读：从当前账号的观看历史 / 收藏夹 + 本地记录里抽候选词，不写配置、不外发。
-  async function handlePreferenceScan(res, url) {
-    const raw = String(url.searchParams.get('sources') ?? '').trim();
-    const sources = raw
-      ? raw.split(/[,，]/).map((item) => item.trim()).filter(Boolean)
-      : undefined;
-    const target = ['fish', 'owner', 'both'].includes(String(url.searchParams.get('target') ?? ''))
-      ? String(url.searchParams.get('target'))
-      : 'fish';
-    const limit = Math.max(4, Math.min(60, Number(url.searchParams.get('limit')) || 24));
-    let timer = null;
-    try {
-      const result = await Promise.race([
-        scanPreferences({ sources, limit, target }),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('扫描超时（20 秒）：网络太慢，可先在命令行跑 prefs scan')), 20_000);
-          timer.unref?.();
-        }),
-      ]);
-      json(res, 200, result);
-    } catch (error) {
-      json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  async function handleBili(req, res, url) {
+  // ── 抖音（2026-11-03 替代 B 站）：只读 dsh-douyin-agent 的状态 ──────────
+  // 插件没有对外 HTTP，SurfCore 只读它落盘的 state/memory，不写、不启停。
+  async function handleDouyin(req, res, url) {
     const pathname = url.pathname;
-    if (req.method === 'GET' && pathname.endsWith('/fish-guard')) {
-      const dir = activePlatformStateDir(BILI_DIR);
-      const stateFile = path.join(dir, 'fish-guard.json');
-      const state = readJson(stateFile, {}) ?? {};
-      const cfg = readBiliConfig().config?.fishGuard ?? {};
-      const current = readCurrentCharacter();
-      json(res, 200, {
-        ok: true,
-        character: current ? { id: current.id, name: current.name, epoch: current.epoch } : null,
-        credentials: fs.existsSync(BILI_CRED),
-        stateFile,
-        fishGuard: fishGuardStateSummary(state, cfg),
-      });
-      return;
-    }
-    if (req.method === 'POST' && pathname.endsWith('/session-permission')) {
-      // 手动修复：把当前角色的 B站 会话切到配置的权限（默认 danger-full-access）。
-      // 定时器也会自动做；这个按钮用于「现在就想让她能跑命令」时立刻生效。
-      const body = JSON.parse(await readBody(req) || '{}');
-      const current = readCurrentCharacter();
-      const sessionId = current ? `bili-whale-${current.id}` : 'bili-whale';
-      const target = String(body.target ?? readBiliConfig().config?.agent?.sandbox ?? 'danger-full-access');
-      let inspected = false;
-      try {
-        if (ctx.sessionController?.inspect) { await ctx.sessionController.inspect(sessionId); inspected = true; }
-      } catch (error) {
-        pluginLog(`[权限] inspect ${sessionId} 失败：${error?.message ?? error}`);
-      }
-      // inspect 之后 session 可能还没同步进 ctx.sessions。
-      if (inspected) await new Promise((resolve) => setTimeout(resolve, 120));
-      const result = applySessionPermission(ctx, sessionId, target, (message) => pluginLog(message));
-      json(res, 200, {
-        ok: result.ok,
-        sessionId,
-        target,
-        inspected,
-        ...result,
-        message: result.ok
-          ? (result.changed ? `已切到 ${target}` : `已经是 ${target}`)
-          : ({
-            'session-not-active': '会话还没挂上（等下一次醒来会自动设置）',
-            'permission-services-unavailable': 'DSH 没有提供 permissionPresets 服务',
-            'set-failed': `设置失败：${result.error ?? '未知错误'}`,
-          }[result.reason] ?? result.reason),
-      });
-      return;
-    }
-    if (req.method === 'GET' && pathname.endsWith('/deps')) {
-      const result = await runBili(['deps', '--json'], 60_000);
-      let parsed = null;
-      try { parsed = JSON.parse(result.out); } catch {}
-      json(res, 200, { ok: parsed?.ok === true, ...(parsed ?? {}), raw: result.out.slice(0, 2000), err: result.err });
-      return;
-    }
-    if (req.method === 'GET' && pathname.endsWith('/pending')) {
-      const file = path.join(BILI_AI_DIR, 'pending-replies.json');
-      const data = readJson(file, { items: [] }) ?? { items: [] };
-      json(res, 200, { ok: true, items: data.items ?? [] });
-      return;
-    }
-    if (req.method === 'GET' && pathname.endsWith('/automation')) {
-      json(res, 200, automationSnapshot());
-      return;
-    }
-    if (req.method === 'GET' && pathname.endsWith('/notify-config')) {
-      const cfg = readBiliConfig().config;
-      json(res, 200, { ok: true, notify: cfg.notify, listen: cfg.listen, share: cfg.share, quota: cfg.quota });
-      return;
-    }
-    // 「立即分享一次」：转发到桥接控制台的 /api/bili/share-now。
-    // 这是**真的会发到群**的操作，UI 侧必须二次确认；这里只做代理，不自己挑素材。
-    if (req.method === 'POST' && pathname.endsWith('/share-now')) {
-      const result = await callBridge('/api/bili/share-now', { method: 'POST', body: {}, timeoutMs: 120_000 });
-      const payload = result.data ?? {};
-      // 桥接返回 { ok, result: { ok, sent, card, why } }；这里摊平成 UI 好用的形状。
-      const inner = payload.result ?? payload;
-      // 留一行日志：点「立即分享一次」后出问题时，能直接看到是桥接没响应还是桥接拒绝。
-      pluginLog(`「立即分享一次」bridge=${result.status} ok=${result.ok} sent=${inner.sent ?? 0}`
-        + `${inner.card?.bvid ? ` bvid=${inner.card.bvid}` : ''}`
-        + `${result.ok ? '' : ` error=${result.error || payload.error || 'unknown'}`}`);
-      json(res, result.ok ? 200 : 502, {
-        ok: result.ok && payload.ok !== false && inner.ok !== false,
-        sent: Number(inner.sent ?? 0),
-        card: inner.card ?? null,
-        ...(inner.why ? { why: inner.why } : {}),
-        ...(result.ok ? {} : { error: result.error || payload.error || '桥接没有响应' }),
-      });
-      return;
-    }
-    if (req.method === 'GET' && pathname.endsWith('/accounts')) {
-      const cfg = readBiliConfig().config ?? {};
-      const fish = readFishAccount();
-      // 旧 credentials.json 只有 sessdata/bili_jct/buvid3；mid/昵称回落到配置里的 self。
-      if (fish.configured && !fish.mid && cfg.self?.mid) {
-        fish.mid = String(cfg.self.mid);
-        fish.name = String(cfg.self.name ?? '');
-      }
-      json(res, 200, {
-        ok: true,
-        fish,
-        owner: readOwnerAccount(),
-        expected: {
-          self: { mid: String(cfg.self?.mid ?? ''), name: String(cfg.self?.name ?? '') },
-          owner: { mid: String(cfg.owner?.mid ?? ''), name: String(cfg.owner?.name ?? '') },
-        },
-      });
-      return;
-    }
-    if (req.method === 'GET' && pathname.endsWith('/qr/poll')) {
-      const id = String(url.searchParams.get('id') ?? '').trim();
-      if (!/^qr_[0-9a-f-]{36}$/i.test(id)) { json(res, 400, { ok: false, error: 'id 不合法' }); return; }
-      const result = await pollQrLogin(id);
-      // ok:false 也是有效状态（wrong-account/failed），用 200 让前端按 status 处理。
-      json(res, 200, result);
-      return;
-    }
-    if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 GET/POST' }); return; }
-    const body = JSON.parse(await readBody(req) || '{}');
-    const action = String(body.action ?? '');
-    if (pathname.endsWith('/qr/start')) {
-      const target = body.target === 'fish' ? 'fish' : 'owner';
-      const cfg = readBiliConfig().config ?? {};
-      const expected = target === 'owner'
-        ? { mid: String(cfg.owner?.mid ?? ''), name: String(cfg.owner?.name ?? '') }
-        : { mid: String(cfg.self?.mid ?? ''), name: String(cfg.self?.name ?? '') };
-      try {
-        pluginLog(`[扫码登录] 打开 B站 登录页 target=${target}`);
-        const result = await startQrLogin({
-          target,
-          expectedMid: expected.mid,
-          expectedName: expected.name,
-          allowSameAsOwner: body.allowSameAsOwner === true,
-        });
-        json(res, 200, { ok: true, ...result });
-      } catch (error) {
-        pluginLog(`[扫码登录] 打开失败：${String(error?.message ?? error)}`);
-        json(res, 503, { ok: false, error: String(error?.message ?? error) });
-      }
-      return;
-    }
-    // 换 B站 号：把旧凭据/对齐归档后清掉，允许重新扫码绑定（2026-10-27 用户反馈"换号被卡死"）
-    if (pathname.endsWith('/account/reset')) {
-      const target = body.target === 'owner' ? 'owner' : (body.target === 'both' ? 'both' : 'fish');
-      const archived = [];
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const destDir = path.join(BACKUP_DIR, `bili-switch-${stamp}`);
-      const archive = (file, label) => {
+    try {
+      if (req.method === 'GET' && pathname.endsWith('/status')) {
+        const status = readDouyinStatus();
+        const alive = await probeCdp(status.browser?.port);
+        // 分享这块：配置读合体层，池子大小读记忆（都是本地文件，不碰桥接）。
+        let share = null;
         try {
-          if (!fs.existsSync(file)) return;
-          fs.mkdirSync(destDir, { recursive: true });
-          const dest = path.join(destDir, `${label}${path.extname(file) || '.json'}`);
-          fs.copyFileSync(file, dest);
-          archived.push(maskPath(dest));
+          // 注意读 readQqConfig 而不是 readUnified：douyinBridge 住在 QQ 侧配置里，
+          // 合体层没有这个键，读错了界面会一直显示「关」。
+          const shareCfg = readQqConfig().config.douyinBridge?.share ?? {};
+          const dir = activePlatformStateDir(QQ_STATE_DIR());
+          const pool = createDouyinMemory({ stateDir: dir }).shareStatus();
+          share = {
+            enabled: shareCfg.enabled === true,
+            times: shareCfg.times ?? [],
+            groups: shareCfg.groups ?? [],
+            cardMode: shareCfg.cardMode ?? 'link',
+            ...pool,
+          };
         } catch (error) {
-          pluginLog(`[换号] 归档失败 ${label}：${String(error?.message ?? error)}`);
+          share = { enabled: false, error: String(error?.message ?? error) };
         }
-      };
-      const ownerCred = path.join(BILI_DIR, 'owner-credentials.json');
-      if (target === 'fish' || target === 'both') {
-        archive(BILI_CRED, 'fish-credentials');
-        archive(ALIGN_FILE, 'alignments');
-        try { fs.rmSync(BILI_CRED, { force: true }); } catch {}
-      }
-      if (target === 'owner' || target === 'both') {
-        archive(ownerCred, 'owner-credentials');
-        try { fs.rmSync(ownerCred, { force: true }); } catch {}
-      }
-      // 清掉配置里对应的 mid，避免下一次扫码又被"不是当前小肥鱼/主人"挡住
-      try {
-        const bili = readBiliConfig().config ?? {};
-        if (target === 'fish' || target === 'both') bili.self = { mid: '', name: '' };
-        if (target === 'owner' || target === 'both') bili.owner = { mid: '', name: '' };
-        saveBiliConfig(bili);
-      } catch (error) {
-        pluginLog(`[换号] 清配置失败：${String(error?.message ?? error)}`);
-      }
-      pluginLog(`[换号] 已归档并清除 target=${target}；归档 ${archived.length} 个文件`);
-      json(res, 200, { ok: true, target, archived });
-      return;
-    }
-    if (pathname.endsWith('/qr/cancel')) {
-      const id = String(body.id ?? '').trim();
-      if (id) cancelQrLogin(id);
-      json(res, 200, { ok: true });
-      return;
-    }
-    if (action === 'cookie') {
-      const sessdata = String(body.sessdata ?? '').trim();
-      const bili_jct = String(body.bili_jct ?? '').trim();
-      const buvid3 = String(body.buvid3 ?? '').trim();
-      if (!sessdata || !bili_jct) { json(res, 400, { ok: false, error: 'SESSDATA 和 bili_jct 必填' }); return; }
-      fs.mkdirSync(path.dirname(BILI_CRED), { recursive: true });
-      writeJsonAtomic(BILI_CRED, { sessdata, bili_jct, buvid3 });
-      try { fs.chmodSync(BILI_CRED, 0o600); } catch {}
-      let whoNow = null;
-      try {
-        const navRes = await fetch('https://api.bilibili.com/x/web-interface/nav', {
-          headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/', cookie: `SESSDATA=${sessdata}; bili_jct=${bili_jct}; buvid3=${buvid3}` },
+        json(res, 200, {
+          ok: true,
+          ...status,
+          browser: status.browser ? { ...status.browser, alive } : null,
+          share,
+          paths: resolveDouyinPaths(),
         });
-        const navJson = await navRes.json().catch(() => ({}));
-        if (navJson?.data?.isLogin && navJson.data.mid) {
-          whoNow = { mid: String(navJson.data.mid), name: String(navJson.data.uname ?? '') };
-          const bili = readBiliConfig().config;
-          bili.self = whoNow;
-          saveBiliConfig(bili);
-        }
-      } catch {}
-      json(res, 200, { ok: true, detail: whoNow ? `已写入 ✓ 当前登录：${whoNow.name}（mid ${whoNow.mid}）` : '已写入（但 nav 没确认成功 —— cookie 可能缺项或过期）', self: whoNow });
-      return;
-    }
-    if (action === 'notify-test') {
-      const notifyMjs = path.join(BILI_TOOLS_DIR, 'commands', 'notify.mjs');
-      const result = await new Promise((resolve) => {
-        execFile(findNodeExe(), [notifyMjs, '--test'], { cwd: BILI_TOOLS_DIR, timeout: 60_000, windowsHide: true }, (error, stdout, stderr) => resolve({
-          ok: !error, out: String(stdout ?? '').slice(0, 2000), err: String(stderr ?? '').slice(0, 2000),
-        }));
-      });
-      json(res, 200, { ok: result.ok, ...result });
-      return;
-    }
-    if (action === 'pending-approve' || action === 'pending-reject') {
-      const id = String(body.id ?? '');
-      if (!id) { json(res, 400, { ok: false, error: '需要 id' }); return; }
-      if (action === 'pending-reject') {
-        const result = await runBili(['reply-draft', 'drop', id], 30_000);
-        json(res, 200, { ok: result.ok, out: result.out.slice(0, 500), err: result.err.slice(0, 500) });
         return;
       }
-      const take = await runBili(['reply-draft', 'take', id], 30_000);
-      let item = null;
-      try { item = JSON.parse(take.out.trim().split('\n').pop()); } catch {}
-      if (!item) { json(res, 400, { ok: false, error: '队列里没有这条（可能已经发过）', out: take.out.slice(0, 500) }); return; }
-      const args = ['comment', '--oid', item.oid, '--root', item.root, '--parent', item.parent,
-        '--message', item.message, '--auto', '--go'];
-      if (item.bvid) args.push('--bvid', item.bvid);
-      const send = await runBili(args, 120_000);
-      json(res, 200, { ok: send.ok && /code=0/.test(send.out), out: send.out.slice(-1000), err: send.err.slice(-500) });
-      return;
+      if (req.method === 'GET' && pathname.endsWith('/history')) {
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 50));
+        const q = String(url.searchParams.get('q') ?? '').trim().toLowerCase();
+        let items = readRecentObservations(resolveDouyinPaths(), 200);
+        if (q) items = items.filter((item) => `${item.title} ${item.author} ${item.videoId}`.toLowerCase().includes(q));
+        json(res, 200, { ok: true, total: items.length, items: items.slice(0, limit) });
+        return;
+      }
+      if (req.method === 'POST' && pathname.endsWith('/memory/refresh')) {
+        // 抖音→QQ 记忆由桥接在跑；这里给设置页一个「立刻生成」的入口，
+        // 桥接没起也能用（同一个生成器，写同一个目录）。
+        const dir = activePlatformStateDir(QQ_STATE_DIR());
+        const memory = createDouyinMemory({ stateDir: dir, log: (message) => pluginLog(message) });
+        const stats = await memory.refresh({ force: true });
+        json(res, 200, { ok: true, stats });
+        return;
+      }
+      if (req.method === 'POST' && pathname.endsWith('/share-now')) {
+        // 「立即分享一次」：真正的调度在桥接里（那边才有 QQ 会话），这里转发。
+        // 60 秒超时：要先给每个群发一次标题+链接，再投一次提示词。
+        try {
+          const result = await callBridge('/api/douyin/share-now', { method: 'POST', timeoutMs: 60_000 });
+          json(res, 200, { ok: result?.ok !== false, result: result?.result ?? result });
+        } catch (error) {
+          json(res, 500, { ok: false, error: `桥接不可用：${String(error?.message ?? error)}` });
+        }
+        return;
+      }
+      if (req.method === 'GET' && pathname.endsWith('/report')) {
+        const report = readLatestReport(resolveDouyinPaths());
+        json(res, 200, report ? { ok: true, report } : { ok: true, report: null });
+        return;
+      }
+      json(res, 404, { ok: false, error: `未知接口：${pathname}` });
+    } catch (error) {
+      json(res, 500, { ok: false, error: String(error?.message ?? error) });
     }
-    json(res, 400, { ok: false, error: '未知 action' });
   }
 
   // ── 日志 ────────────────────────────────────────────────────────────────
@@ -2645,12 +2375,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
     if (pathname === `${API_PREFIX}/persona`) { await handlePersona(req, res); return; }
     if (pathname === `${API_PREFIX}/memory`) { await handleMemory(req, res, url); return; }
-    if (pathname === `${API_PREFIX}/watch-history`) { handleWatchHistory(res, url); return; }
-    if (pathname === `${API_PREFIX}/preferences/scan`) {
-      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
-      await handlePreferenceScan(res, url);
-      return;
-    }
     if (pathname === `${API_PREFIX}/fish-guard/qq`) { handleQqFishGuard(res); return; }
     if (pathname === `${API_PREFIX}/memory-card/full`) { await handleMemoryCardFull(req, res, url); return; }
     if (pathname === `${API_PREFIX}/memory-card`) { await handleMemoryCard(req, res); return; }
@@ -2666,7 +2390,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
 
     if (pathname === `${API_PREFIX}/token-budget`) { await handleTokenBudget(req, res, url); return; }
     if (pathname === `${API_PREFIX}/updates`) { await handleUpdates(req, res); return; }
-    if (pathname.startsWith(`${API_PREFIX}/bili/`)) { await handleBili(req, res, url); return; }
+    if (pathname.startsWith(`${API_PREFIX}/douyin/`)) { await handleDouyin(req, res, url); return; }
     if (pathname === `${API_PREFIX}/logs`) { handleLogs(res, url); return; }
     if (pathname === `${API_PREFIX}/browse`) { await handleBrowse(req, res, url); return; }
     if (pathname === `${API_PREFIX}/privacy/explain`) {
@@ -2745,7 +2469,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
     try { sessionEventOff?.(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
-    try { closeAllQrLogins(); } catch {}
     if (characterTimer) clearInterval(characterTimer);
     if (syncTimer) clearInterval(syncTimer);
     if (bridgeRepairTimer) clearInterval(bridgeRepairTimer);

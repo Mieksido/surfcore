@@ -16,7 +16,6 @@
     "test:hardening": "node scripts/test-hardening.mjs",
     "test:reply-wait": "node scripts/test-reply-wait.mjs",
     "self-test": "node src/self-test.js",
-    "test:bili": "node scripts/test-bili-memory.mjs && node scripts/test-bili-dynamics.mjs",
     "test-md": "node scripts/test-md-to-plain.mjs",
     "test-wait": "node scripts/test-v2-wait.mjs",
     "test:initial-prompt": "node scripts/test-v2-initial-prompt.mjs",

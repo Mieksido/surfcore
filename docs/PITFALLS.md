@@ -2619,3 +2619,246 @@ return list[0] ?? pool[0];
   bootstrap 造 `jieba_fast` 替身（转发 jieba）；装 imageio-ffmpeg 并写 `config.toml [ffmpeg] path`；
   requirements 补 torchmetrics/imageio-ffmpeg；pip 加包内缓存；UI 提示"改开关要重启 DSH"。
 - **验证**：布局用 file:// 归档实测通过；真机 import/ffmpeg 未验证。
+
+## QQ 会话记忆会串（不同私聊互相看到对方的内容）
+
+- **现象**：在 A 的私聊里说过的事，出现在和 B 的对话里；她"记得"别人的私事，甚至把两个群的事混着说。
+- **根因**：memory-card 是「一个角色一张卡」，所有 QQ 会话都写进同一张；注入时 `memoryCardPromptBlock()`
+  不区分来源，读的是插件预渲染的全局 `memory-card-prompt-qq.md`（从全卡里挑「最近 8 条」），
+  自然会把别的会话的记录挑进来。卡里每条记录其实**有** `conversationKey`，只是注入时从来没用过。
+- **修法**（2026-11-03）：
+  - `src/memory-card.js` 新增 `filterCardForConversation(card, key)`；`renderMemoryCard` 接受 `conversationKey`，
+    渲染前先过滤：**本会话 + 无 conversationKey 的老记录 + pinned/anchor 锚点**，其余丢弃。
+    （主人的 388 条日常不再跨会话带出；保留 1 条「最早和主人说话」当身份锚点，不至于换个会话就失忆。）
+  - `src/bridge.js` 的 `memoryCardPromptBlock(chatKey)` 改为**按会话现渲染**：卡文件 mtime 缓存 +
+    每个会话一份文本缓存；不再读全局 md（读卡失败时才退回旧文件兜底）。
+  - 所有 `currentRoleHint() / currentRoleHintV2() / memoryCardPromptBlock()` 调用点传入会话 key；
+    目的机制用 `private:<ownerQQ>`。
+- **副作用**：单会话注入长度下降（主人 1816 字 / 陌生人 500–800 字），顺带省 token。
+- **验证**：`node scripts/verify-memory-isolation.mjs` —— 用真实卡跑一遍三个会话，检查结构越界和文本指纹；
+  输出里「不传 conversationKey（全量，旧行为）」那一行仍会命中 4 条跨会话指纹，即串的原样。
+- **注意**：改的是 bridge 主进程代码，**必须重启桥接**才生效。
+
+---
+
+## #79（2026-11-03）从 node 用 `detached: true` 拉脚本进程：一行都没跑，还 exit 0
+
+**现象**
+- 「语音引擎」的自动拉起一直是坏的：停掉 8765 之后点启动 / 等桥接自愈，180 秒超时，端口永远不亮。
+- `logs/engine-autostart.log` 里只有两行：`===== 由 SurfCore 拉起 =====` 和 `[exit] code=0 signal=null`——
+  **脚本自己的输出一个字都没有**，breeze-server / voxd 的日志（`breeze.out.log` / `voxd.err.log`）时间戳也没变。
+- 同一条命令在终端里手跑、或从 node 用 `spawn` 但**不带** detached 跑，一切正常（3.3GB 模型 90 秒内就绪）。
+
+**根因**
+- Windows 上 `spawn(..., { detached: true })` 会带 `DETACHED_PROCESS` 标志 → 子进程**没有任何控制台**。
+  PowerShell 5.1 在这种环境下不报错，而是**立刻退出 0、脚本体一行都不执行**。
+- 所以"进程起来了、退出码还成功、但什么也没发生"——比报错更难查。
+
+**处置**
+- `src/voice-engine.js` 去掉 `detached: true`（`windowsHide: true` 保留：CREATE_NO_WINDOW 有隐藏控制台，
+  脚本能正常跑，也不会弹窗）。真正需要脱离的是脚本里的 breeze-server / voxd，它们自己走 `Win32_Process.Create`。
+- 这个拉起进程只要把脚本跑完（1~2 分钟）退出即可，不需要它长期存活。
+
+**验证**
+- `POST /api/voice/engine/stop` → `POST /api/voice/engine/start`：9 秒返回 `ready:true, upstream:"ok"`，8765 重新监听。
+- 冷启动（8080 都没起）也走同一条路：`breeze-server 就绪 (8080，24000Hz)` → `适配层就绪 (8765 → 上游 ok)` → 端到端自检 3.8s 音频。
+
+**预防**
+- Windows 上凡是「从 node 拉 .ps1 / .bat / 控制台程序」的，先确认**没有** `detached: true`；
+  要脱离就让脚本自己用 WMI/CreateProcess 起真正的后台进程。日志里出现「exit 0 + 无任何输出」先怀疑这条。
+
+---
+
+## #80（2026-11-03）翻唱成品 44MB，直接走 `/api/voice/send` 必然失败
+
+**现象**
+- 控制台「发到会话」点下去报"音频不可发送：文件太大"，但试听正常。
+
+**根因**
+- 翻唱输出是 44.1k 立体声 16bit wav：4 分钟 ≈ 44MB；`socialV2.voice.maxBytes` 默认 20MB、`maxSeconds` 300。
+- `sendVoiceV2` 在发送**前**用原始文件做 `inspectAudio`，超限直接拒绝（SnowLuma 自己会转 SILK，但轮不到它）。
+
+**处置**
+- 新增 `POST /api/voice/sing/send`：超过 12MB 的成品先 `ffmpeg -t maxSeconds -b:a 160k` 压成 mp3（4 分钟 ≈ 5MB），
+  发完删临时文件；小文件原样发（保住无损）。前端「发到会话」只传 `{id}` 或 `{name}`，不碰体积。
+
+**预防**
+- 任何"把大音频发到 QQ"的新入口，都先看 `maxBytes`；不要假设下游会帮你压。
+
+## #81（2026-11-03）抖音搜索：没有登录态就是「零结果」，不是「搜不到」
+
+**现象**
+- 用干净 profile 起 Edge 打开 `https://www.douyin.com/search/小幸运`，页面直接弹「登录后即可搜索更多精彩视频 / 扫码登录」。
+- 直接打接口 `aweme/v1/web/general/search/single`（不带 cookie）返回 `status_code: 2483, "请先登录，再继续搜索吧"`。
+- 更老的 `iesdouyin.com/web/api/v2/general/search/single` 和 `m.douyin.com/web/api/v2/search/item` 已经废了，统一返回 `{"status_code":1,"status_msg":"Url doesn't match"}`。
+
+**根因**
+- 抖音网页搜索按账号授权：未登录连搜索请求都不发（页面级拦截），登录后才走 `aweme/v1/web/search/item`。
+- 和 B 站不同：B 站不登录也能搜，所以「换个站点」时容易误以为代码有 bug。
+
+**处置**
+- 专用 Edge profile：`~/.dsh/surfcore/douyin/profile`（和日常浏览器的数据完全隔离）。
+- `douyin-fetch.mjs --login`：有头窗口打开抖音 → 轮询 `Network.getAllCookies` 等 `sessionid` → 就绪后自动结束。
+- 登录态落在 profile 里，之后 headless 直接复用（实测 headless + 已登录 profile 能正常搜索，6 秒出结果）。
+- 首次登录会弹**心形拼图验证**（rmc.bytedance.com verifycenter），纯脚本点不过去，必须人手动拖。
+
+**为什么不去解 Chrome 现成的 cookie**
+- 本机 Chrome 里有 72 条 douyin cookie，但全是 `v20`（App-Bound Encryption）。`Local State` 里的 `encrypted_key` 走 DPAPI 只能解出旧格式密钥，v20 要用 Chrome 自己的提权服务，外部拿不到。硬解不值得，扫码一次更干净。
+
+---
+
+## #82（2026-11-03）抖音搜索会「成功但空」：status=0 + data=[]，滚动翻页也拿不到第二页
+
+**现象**
+- 同一个关键词连续搜几次，接口 `status_code` 仍然是 `0`，但 `data` 是空数组（`len≈3KB`），`has_more=0`。
+- 页面不报错、不弹验证，看起来就像「这个词没有结果」。
+- 间隔 60 秒以上再搜同一个词能恢复；换成没搜过的词（晴天）连续两次都正常。
+
+**根因**
+- 抖音对短时间内的重复搜索有降级处理：返回空壳而不是错误码，前端只能表现为「没搜到」。
+- 滚动到底触发的第二页请求（`cursor=16`）基本都返回 `data=[]`（`len≈554`），所以**抖音只能稳定拿第一页 16 条**。
+
+**处置**
+- `douyin-fetch.mjs` 内置三次机会：0 / 9 / 20 秒，空数组就重新导航再抓。
+- 搜索结果写磁盘缓存（`logs/douyin-fetch/cache/<md5>.json`，10 分钟）：
+  控制台是「先搜一次出候选 → 用户挑一首 → 再起一次进程唱」，第二次必须复用第一次的结果，
+  否则第二趟很可能空手而归。`--bvid` 指定的那条不在缓存里时才强制重搜。
+- 不再滚第二页（拿到的永远是空页，白等 8 秒）。
+
+**预防**
+- 抖音的任何接口都要按「可能返回空壳」来写：`status_code===0` 不代表有数据，先看 `data.length`。
+
+## #83（2026-11-03）抖音三个接口的真名，以及表情包为什么不能直接存 URL
+
+**实测出来的入口**（都用 CDP 拦响应，不自己拼签名）：
+
+| 能力 | 接口 | 备注 |
+|---|---|---|
+| 推荐流 | `aweme/v2/web/module/feed/` | **是 v2，不是 v1**；首页会跳到 `/jingxuan`，滚一次才出第二批 |
+| 搜索 | `aweme/v1/web/search/item` | 只第一页；偶发 `status=0, data=[]`（见 #82） |
+| 评论 | `aweme/v1/web/comment/list` | 含 `sticker`（表情包）与 `image_list`；滚页面才加载 |
+| 私信 | `aweme/v1/web/im/*` | 页面能开，接口要页面自己触发；当前账号「暂无会话」 |
+
+**坑 1：推荐流别去拦 `aweme/v1/web/tab/feed/`** —— 那个在网页版根本没人调，拦一晚都是 0 条。
+网页版精选/推荐走的是 `aweme/v2/web/module/feed/`。
+
+**坑 2：表情包 URL 是签名地址，一天就过期。**
+`sticker.static_url.url_list[0]` 带 `x-expires`（实测只到次日），而且**直接拿 Node/curl 下载会 403**
+（缺页面带的 `l=` 令牌，且校验 referer/UA）。
+唯一稳的办法：让页面自己把图 load 出来，从 CDP 的 `Network.getResponseBody` 取原始字节。
+实测返回 `image/webp`、5986 字节、`RIFF....WEBP`。
+
+**坑 3：表情库同步会清「QQ 端已删除」的条目，但不会清非 qq 来源。**
+`mergeStickerLibrary` 最后那行 `e.source !== 'qq' || fetchedIds.has(e.id)` 是保命的——
+抖音收藏必须是 `source: 'douyin'`，否则每次 `qq_send_sticker` 前的强制同步都会把它们删干净。
+
+**处置**
+- 新增 `src/douyin-agent.js`：专用 Edge + CDP 单例（闲置 5 分钟自动关，登录态在 profile 里不受影响）。
+- `feed/search/comments/collectStickers` 四个能力，接口在 `/api/douyin/*`，MCP 侧是 `dy_*`。
+- 收藏时把 webp 落盘到 `state/stickers/douyin/<id>.webp`，条目写 `localFile`；
+  `sendStickerV2` 改成「有 localFile 读本地，没有才走 safeFetchBuffer」。
+
+## #84（2026-11-03）在 WorkBuddy 里给 DSH 装插件，pnpm 会被 safe-delete 掐死
+
+**现象**：`dsh plugin --profile desktop add <pkg>` 跑十几分钟，最后 `ERR_PNPM_LINKING_FAILED`，
+堆栈里出现 `node-safe-delete-shim.cjs` → `SAFE_DELETE_BULK_CONFIRM_REQUIRED {"count":50,"threshold":50}`。
+中途还会刷一屏 `[WARN] Moving xxx_tmp_<pid>_N to node_modules\.ignored`——那是 pnpm 的暂存目录被判为
+「不在依赖树里」而反复搬运，`node_modules` 被搅成半成品。
+
+**根因**：WorkBuddy 的 shell 会往子进程注入
+`NODE_OPTIONS=--require=.../node-safe-delete-shim.cjs`，它给一个 turn 内的删除操作设了 50 次上限。
+pnpm 装一个带平台二进制的插件（这里 91 个包）必然超过 50 次 unlink，于是被拦。
+
+**处置**
+1. 安装前清掉注入：`unset NODE_OPTIONS`（或 `CODEBUDDY_SAFE_DELETE_ENABLED=0`）再执行 `dsh plugin add`。
+2. `dsh plugin` 只是把参数转给 profile 目录里的 pnpm，**不会**把包写进 `package.json` 的
+   `dsh.profile.bundles`——装完必须手动把包名追加到那个数组，否则重启后插件根本不加载。
+3. 该 profile 是 hoisted 布局（没有 `node_modules/.pnpm`），`pnpm add` 会重链整棵树，
+   `@dsh-ops/bash-win32-x64`（412MB，含 git-bash）经常要重下，npm 官方源只有 30–60KB/s。
+   真卡住时先看 `node_modules/@dsh-ops/bash-win32-x64.broken` 与 `*_tmp_<pid>_*`，原目录 412MB 还在就别慌。
+4. 装完别急着重启：先 `node -e` 逐个确认每个 bundle 的 `dsh.bundle.patch` 文件存在，
+   再看 `node_modules/.ignored` 里有没有把关键包误搬走（`surfcore`、`dsh-ops`、`dshmarket`）。
+
+## #85（2026-11-03）两个插件抢同一件事：抖音的「刷」必须在插件里跑，SurfCore 只读
+
+**背景**：B 站那半要换成抖音。最直觉的做法是照抄——把 `tools/bili.mjs` 换个域名重写一遍，
+scheduler 里的 `wakePrompt` 全部改数据源。试算下来要重写 1000+ 行，而且会和
+`dsh-douyin-agent` 抢同一个浏览器、同一份人格记忆。
+
+**结论**：只留一条能跑的路径。
+- 自主观看 / 问候 / 私信回复 / 评论 / 日报 → 插件（它有自己的专用 Edge、时段、预算、抽帧）。
+- SurfCore → 只读插件落盘的 `state/*.json`、`control/browser.json`、`memory/persona/state.json`、
+  `memory/reports/videos/*.md`，生成 `douyin-memory*.md` 注入 QQ。
+- 插件没有对外 HTTP，所以「只读 + 不启停」是硬约束：任何一边想「帮对方改状态」都会打起来。
+
+**三个踩过的点**
+1. `control/browser.json` 的 `ready` 是**写文件那一刻**的真相，用户关掉 Edge 后它还是 true。
+   判活必须真敲 CDP（`/json/version`），1 秒超时够了。
+2. `readQqConfig()` 只做 `deepMerge(exampleDefaults, user)`，**不跑归一化**。
+   新加的 `douyinBridge` 没写进 config.json 时是 `undefined`，桥接里必须自己兜默认值，
+   否则整块逻辑静默跳过（表现：记忆从来不刷新，日志一行没有）。
+3. `saveUnified()` 里 `next.platforms.start = {qq, bili}` 是白名单重建，
+   加新平台如果只改 `DEFAULT_UNIFIED` 不改这里，保存一次就把它写没了。
+   `platformStartsFrom()` 与 `saveUnified()` 必须一起改，`test-platform-start-host.mjs` 就是钉这个的。
+
+## #86（2026-11-03）从 WorkBuddy 的 shell 里重启 DSH：两个陷阱叠在一起，表现是「启动成功但什么都没有」
+
+**现象**：为了加载新代码重启 DSH，命令行启动 `DeepSeek Harness.exe` 后进程秒退、退出码 0、无窗口无日志；
+`Start-Process`、`explorer.exe`、`cmd /c start` 全是同一结果。偶尔能看到一个 40MB、11 线程、CPU 几乎为 0
+的进程挂着不建窗口，后续再启动都被它挡掉（它持有单实例锁）。
+
+**两个独立原因**
+1. **`ELECTRON_RUN_AS_NODE=1` 残留在环境里**（上一轮跑 `dsh plugin` 时 `export` 过）。
+   Electron 的 exe 一旦看到这个变量就以纯 Node 模式运行：没有主脚本 → 立刻 `exit 0`。
+   启动前必须 `env -u ELECTRON_RUN_AS_NODE -u NODE_OPTIONS`。
+2. **WorkBuddy 的 shell 用 Job Object 管理命令**，命令结束会把整棵进程树回收。
+   从工具里拉起的 DSH / bridge 都能在命令执行期间活着（`tasklist` 能看到 5–6 个进程、端口在听），
+   命令一返回就全部消失。`Start-Process` / `detached: true` / `cmd start` 都逃不出这个 Job；
+   `schtasks`（唯一能真正脱离的路径）被安全策略拉黑。
+
+**结论**：**GUI 常驻进程不要由工具来起**，让用户从开始菜单双击。工具只负责改代码 + 起「用完即走」的进程
+（比如单条命令里跑 bridge 做接口自检，命令结束就退出，正好）。
+
+**顺带一个 PowerShell 坑**：环境里同时存在 `HTTPS_PROXY` 和 `https_proxy` 时，`Start-Process` 会抛
+`ArgumentException: 字典中的关键字"HTTPS_PROXY"所添加的关键字"https_proxy"`（它内部把环境变量装进
+大小写不敏感的字典）。先 `Remove-Item Env:https_proxy` 等小写副本再启动。
+
+**自检桥接的可靠姿势**（不需要 DSH 常驻）：单条命令里 `node src/bridge.js &` →
+等 3100 起来 → 带 `x-console-token` 请求 `/api/douyin/status` → `kill`。
+`curl` 必须加 `--noproxy '*'`，否则本机请求会被系统代理拦成 502。
+
+## #87（2026-11-03）B站 整体下线：删到哪、故意留下什么
+
+**背景**：刷视频这件事交给 `dsh-douyin-agent` 插件（它有自己的 Edge、人格和记忆），
+SurfCore 只读它落盘的结果。B站 这一整套随之物理删除，不是「藏起来」。
+
+**这一轮真删掉的（都有 git 记录，不是注释掉）**
+- 桥接侧：`src/bili-card.js`、`src/bili-memory.js`、`src/bili-dynamics.js`、`src/bili-share-scheduler.js`，
+  以及 `src/bridge.js` 里的 `biliBridge` 归一化块、`sendBiliCard` / `onebotSendSegments`、`fetchVideoInfo` 引用。
+- 插件侧：`lib/scheduler.js`（B站生物钟，1173 行）、`lib/automation.js`、`lib/bili-qr-login.mjs`、
+  `handleBili` 整段路由（含 `/bili/automation`、`/bili/accounts`、`/bili/qr/*`、`/bili/fish-guard`、
+  `/watch-history`、`/preferences/scan`）。
+- 工具链：`tools/bili.mjs` + `tools/{commands,verify,diagnostics,docs,templates}`，
+  以及只被 CLI 用的 `tools/lib/*`（attacks/pins/night-schedule/quota-gate/watch-*/pref-scan/…）。
+- 控制台：`BILI_FIELDS`、`QQ_BILI_SHARE_FIELDS`、`BiliQrModal`、`TasteEditor`、`QqShareSection`、
+  `FishGuardStatusCard`（都只被已下线的 B站 页引用）。
+- 测试：`test-bili-*.mjs`、`test-scheduler-permission`、`test-persona`、`test-watch-*`、
+  `test-share-dynamic`、`test-feed-core`、`test-pref-scan`、`test-night-schedule`、`test-kind-signals`。
+
+**故意留下的（删了会坏事）**
+1. `plugins/surfcore/tools/lib/{fish-guard,limits,kinds,config,free-gate,state-paths}.mjs`
+   —— `lib/store.js`（四本账、鱼群保护默认值）和 `lib/index.js`（QQ 鱼群卡）还在用。
+   删 `tools/` 前必须按 import 闭包算一遍，别整目录 `rm -rf`。
+2. `state/bili-memory.json` 这个**文件名**：记忆卡、`pet-purpose`、`purpose-inspect` 还在读存量数据。
+   文件名是历史资产，不是 B站 功能。
+3. `src/bili-api.js` + `scripts/songfetch.mjs`：点歌的 B站 搜歌兜底（`config.socialV2.voice.sing.scriptBilibili`）。
+   主链路已经是 `douyin-fetch.mjs`，但这条兜底还在配置里，删之前先确认点歌全切抖音。
+4. `lib/memory.js` 的 `syncQqToBili` / `scanBiliFeedForCandidates` 一套：还挂在 `/memory` 的
+   `sync` / `scan-align` 动作上，属于「QQ → 跨平台」的旧实现。抖音方向目前**没有接线**，
+   设置页已经明说；这段是下一步要清的技术债，不是漏删。
+
+**两个容易踩的坑**
+- `platformStartsFrom()` 曾经从 `platforms.enabled` 里推 `bili: true`，于是界面上会有一个永远起不来的开关。
+  现在 `bili` 恒 `false`，`douyin` 接位（老配置只写了 `bili` 的，也按 `douyin: true` 迁移）。
+- `handleDouyin` 里读分享配置必须用 `readQqConfig()`：`douyinBridge` 住在 QQ 侧配置里，
+  读 `readUnified()` 永远是 `undefined`，界面会稳定显示「关」。

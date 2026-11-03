@@ -83,15 +83,23 @@ try {
 
   const overview = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
   assert.equal(overview.status, 200);
-  assert.deepEqual(overview.data.platformStart, { qq: false, bili: false },
-    '/overview 的 platformStart 应反映开关');
-  assert.equal(overview.data.scheduler.running, false, 'B站 开关关闭时生物钟不应运行');
-  assert.equal(overview.data.scheduler.disabled, true, 'B站 开关关闭时 scheduler.disabled 应为 true');
+  // 2026-11-03：B 站下线，平台开关只剩 qq / douyin；bili 仍回显但恒为关。
+  assert.equal(overview.data.platformStart.qq, false, '/overview 的 platformStart.qq 应反映开关');
+  assert.equal(overview.data.platformStart.douyin, true, '抖音默认接位（true）');
+  assert.equal(overview.data.platformStart.bili, false, 'B 站开关应恒为 false');
+  assert.equal(overview.data.scheduler.running, false, 'B 站下线后生物钟不应运行');
+  assert.equal(overview.data.scheduler.disabled, true, 'scheduler.disabled 应为 true');
 
-  for (const action of ['start-qq', 'start-bili']) {
-    const res = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action });
-    assert.equal(res.status, 409, `${action} 在开关关闭时应拒绝`);
-    assert.match(String(res.data.error ?? ''), /启动开关/, `${action} 的错误文案应说明开关关闭`);
+  {
+    const res = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-qq' });
+    assert.equal(res.status, 409, 'start-qq 在开关关闭时应拒绝');
+    assert.match(String(res.data.error ?? ''), /启动开关/, 'start-qq 的错误文案应说明开关关闭');
+  }
+  {
+    // B 站已下线：老书签打到 start-bili 要明确回 410，而不是假装启动成功。
+    const res = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-bili' });
+    assert.equal(res.status, 410, 'start-bili 应回 410 表示已下线');
+    assert.match(String(res.data.error ?? ''), /下线/, 'start-bili 的错误文案应说明已下线');
   }
 
   // 一键启动：两个都关 → 跳过两边，不启动任何进程。
@@ -103,13 +111,15 @@ try {
 
   // 保存配置时把开关打开（跳过真实进程，只验证配置落盘与返回值）。
   const saved = await invoke(api, 'POST', '/dsh-surfcore/api/config', {
-    unified: { platforms: { start: { qq: true, bili: true } } },
+    unified: { platforms: { start: { qq: true, douyin: true } } },
   });
   assert.equal(saved.status, 200);
   assert.equal(saved.data.platformStart?.qq, true);
-  assert.equal(saved.data.platformStart?.bili, true);
+  assert.equal(saved.data.platformStart?.douyin, true);
+  assert.equal(saved.data.platformStart?.bili, false, 'B 站已下线，回显恒为 false');
   const onDisk = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'));
-  assert.deepEqual(onDisk.platforms.start, { qq: true, bili: true });
+  assert.equal(onDisk.platforms.start.qq, true);
+  assert.equal(onDisk.platforms.start.douyin, true);
 
   console.log('platform-start host wiring OK');
 } finally {

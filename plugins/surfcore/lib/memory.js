@@ -377,6 +377,36 @@ export async function refreshBiliToQq({ callBridge }) {
   return { ok: true, stats, status: biliToQqStatus() };
 }
 
+/** 抖音 → QQ：桥接写出的简报在这里只做「状态 / 隐私复检」，不重复生成。 */
+export function douyinToQqStatus() {
+  const all = readAll();
+  const enabled = all.qq?.douyinBridge?.enabled !== false && all.qq?.douyinBridge?.memory?.enabled !== false;
+  const base = activePlatformStateDir(QQ_STATE_DIR);
+  const briefFile = path.join(base, 'douyin-memory-brief.md');
+  const docFile = path.join(base, 'douyin-memory.md');
+  let brief = '';
+  let docChars = 0;
+  let mtime = null;
+  try { brief = fs.readFileSync(briefFile, 'utf8'); } catch {}
+  try { const st = fs.statSync(docFile); docChars = st.size; mtime = st.mtime.toISOString(); } catch {}
+  const scan = scanText(brief);
+  return {
+    enabled,
+    available: Boolean(brief) || docChars > 0,
+    briefChars: brief.length,
+    docChars,
+    generatedAt: mtime,
+    blocked: scan.hits.some((hit) => hit.severe),
+    path: briefFile,
+  };
+}
+
+/** 抖音 → QQ 简报正文（设置页预览用）。桥接负责生成，这里只读。 */
+export function previewDouyinBrief({ maxChars = 4000 } = {}) {
+  const file = path.join(activePlatformStateDir(QQ_STATE_DIR), 'douyin-memory-brief.md');
+  try { return fs.readFileSync(file, 'utf8').trim().slice(0, maxChars); } catch { return ''; }
+}
+
 export function memoryStatus() {
   const all = readAll();
   const qqToBili = all.unified.memory?.qqToBili ?? {};
@@ -385,7 +415,19 @@ export function memoryStatus() {
   const bili = biliToQqStatus();
   const alignBili = (() => { try { return fs.readFileSync(BILI_ALIGNMENT_FILE, 'utf8').trim(); } catch { return ''; } })();
   const alignQq = (() => { try { return fs.readFileSync(QQ_ALIGNMENT_BRIEF, 'utf8').trim(); } catch { return ''; } })();
+  // 2026-11-03：抖音接位。QQ→抖音 与 QQ→B站 同一套机制，只是落盘文件名不同。
+  const qqToDouyinCfg = all.unified.memory?.qqToDouyin ?? {};
+  const douyinFile = activeMemoryPaths().qqForDouyin;
+  let douyinChars = 0;
+  try { douyinChars = fs.readFileSync(douyinFile, 'utf8').trim().length; } catch {}
   return {
+    qqToDouyin: {
+      enabled: qqToDouyinCfg.enabled === true,
+      lookbackDays: qqToDouyinCfg.lookbackDays ?? 7,
+      maxChars: qqToDouyinCfg.maxChars ?? 6000,
+      chars: douyinChars,
+      path: douyinFile,
+    },
     qqToBili: {
       enabled: qqToBili.enabled === true,
       lookbackDays: qqToBili.lookbackDays ?? 7,
@@ -401,6 +443,7 @@ export function memoryStatus() {
       path: biliBriefFile(),
       last: sync.lastBiliToQq ?? null,
     },
+    douyinToQq: douyinToQqStatus(),
     privacy: {
       policyVersion: PRIVACY_POLICY_VERSION,
       blockPrivateMessages: true,

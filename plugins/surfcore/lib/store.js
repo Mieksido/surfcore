@@ -98,6 +98,22 @@ export const DEFAULT_UNIFIED = {
       useNicknames: true,
       includeGroups: [],
     },
+    // 2026-11-03：B 站换成抖音。语义与 qqToBili 一样，只是落盘文件名不同。
+    qqToDouyin: {
+      enabled: false,
+      lookbackDays: 7,
+      maxMessages: 300,
+      maxChars: 6000,
+      intervalMs: 1800000,
+      includeOwner: false,
+      includeAgentReplies: false,
+      useNicknames: true,
+      includeGroups: [],
+    },
+    douyinToQq: {
+      // 真正的开关是 qq.douyinBridge.memory.enabled（默认 true）。
+      previewOnly: false,
+    },
     biliToQq: {
       // 真正的开关是 qq.biliBridge.memory.enabled（默认 true，保持原行为）。
       previewOnly: false,
@@ -129,13 +145,14 @@ export const DEFAULT_UNIFIED = {
   },
   extensions: { enabled: true, disabled: [] },
   platforms: {
-    enabled: ['qq', 'bili'],
+    // 2026-11-03：B 站下线，换成抖音（自主观看由 dsh-douyin-agent 插件跑）。
+    enabled: ['qq', 'douyin'],
     planned: ['tieba'],
     // 平台启动开关（2026-10-24 用户要求：不是所有用户都想同时开 QQ 和 B站）。
     // 这是「是否启动」的唯一真相：关掉后插件不会自动拉起该平台，也不会把它带进
     // 「一键启动」；正在跑的那一边由宿主在保存配置时停掉（见 lib/index.js）。
     // QQ 的旧开关 bridge.autoStart 只用于升级迁移，保存时会镜像回这个值。
-    start: { qq: true, bili: true },
+    start: { qq: true, douyin: true },
   },
   ui: { activeTab: 'overview', showAdvanced: false },
   // 组件更新（2026-10-26）：检查 SurfCore 本体 / 语音包 / 桌宠 / 未来登记的扩展。
@@ -321,7 +338,12 @@ export function platformStartsFrom(user = {}) {
     qq: typeof explicit.qq === 'boolean'
       ? explicit.qq
       : (legacyAutoStart !== null ? legacyAutoStart : fromEnabled('qq', true)),
-    bili: typeof explicit.bili === 'boolean' ? explicit.bili : fromEnabled('bili', true),
+    // 2026-11-03：抖音取代 B 站。老配置里只有 bili 的，一律让抖音默认接位（true），
+    // 因为原来关掉 B站 多半是「那套跑不动」，不是「不想要这个平台」。
+    douyin: typeof explicit.douyin === 'boolean' ? explicit.douyin : true,
+    // B站已下线：恒 false，且不再从老 enabled 数组里推出 true（否则界面会显示一个
+    // 永远起不来的开关）。老配置里的 'bili' 只当历史残留。
+    bili: false,
   };
 }
 
@@ -330,6 +352,12 @@ export function readUnified() {
   const config = deepMerge(DEFAULT_UNIFIED, user);
   config.platforms = isPlainObject(config.platforms) ? config.platforms : {};
   config.platforms.start = platformStartsFrom(user);
+  // 平台列表迁移：老配置写的是 ['qq','bili']，换成 ['qq','douyin']。
+  if (Array.isArray(config.platforms.enabled)) {
+    const next = config.platforms.enabled.map(String).filter((id) => id !== 'bili');
+    if (!next.includes('douyin')) next.push('douyin');
+    config.platforms.enabled = next;
+  }
   return {
     config,
     hasUserFile: Object.keys(user).length > 0,
@@ -405,6 +433,21 @@ export function normalizeQqConfig(input) {
   // `card` 保留成派生值，旧代码/旧配置读它不会错；UI 只暴露 cardMode 一个开关。
   cfg.biliBridge.share.cardMode = normalizeCardMode(cfg.biliBridge.share);
   cfg.biliBridge.share.card = cfg.biliBridge.share.cardMode !== 'off';
+
+  // 2026-11-03：抖音桥接（B 站那套的替代品）。结构保持与 biliBridge 一致，
+  // 这样 QQ 侧分享/记忆的代码只换数据源，不换形状。
+  cfg.douyinBridge = isPlainObject(cfg.douyinBridge) ? cfg.douyinBridge : {};
+  cfg.douyinBridge.enabled = cfg.douyinBridge.enabled !== false;
+  cfg.douyinBridge.memory = isPlainObject(cfg.douyinBridge.memory) ? cfg.douyinBridge.memory : {};
+  cfg.douyinBridge.memory.enabled = cfg.douyinBridge.memory.enabled !== false;
+  cfg.douyinBridge.memory.refreshIntervalMs = finiteNumber(cfg.douyinBridge.memory.refreshIntervalMs, 600_000, 60_000, 3_600_000, { integer: true });
+  cfg.douyinBridge.share = isPlainObject(cfg.douyinBridge.share) ? cfg.douyinBridge.share : {};
+  cfg.douyinBridge.share.enabled = cfg.douyinBridge.share.enabled !== false;
+  cfg.douyinBridge.share.times = normalizeTimes(cfg.douyinBridge.share.times, ['07:00', '11:00', '13:00', '15:00', '17:00', '19:00', '21:00', '23:00']);
+  cfg.douyinBridge.share.groups = normalizeIdList(cfg.douyinBridge.share.groups);
+  cfg.douyinBridge.share.gapMs = finiteNumber(cfg.douyinBridge.share.gapMs, 4000, 0, 60_000, { integer: true });
+  cfg.douyinBridge.share.cardMode = ['link', 'off'].includes(cfg.douyinBridge.share.cardMode) ? cfg.douyinBridge.share.cardMode : 'link';
+  cfg.douyinBridge.share.card = cfg.douyinBridge.share.cardMode !== 'off';
 
   if (isPlainObject(cfg.socialV2)) {
     cfg.socialV2.initialPromptMaxChars = finiteNumber(cfg.socialV2.initialPromptMaxChars, 2000, 100, 8000, { integer: true });
@@ -594,7 +637,10 @@ export function saveUnified(incoming) {
   const start = isPlainObject(next.platforms.start) ? next.platforms.start : {};
   next.platforms.start = {
     qq: start.qq !== false,
-    bili: start.bili !== false,
+    // 2026-11-03：抖音接位；bili 保留写入但恒为 false（B 站已下线），
+    // 老版本插件读这份配置时不会以为 B 站还开着。
+    douyin: start.douyin !== false,
+    bili: false,
   };
   next.bridge = isPlainObject(next.bridge) ? next.bridge : {};
   next.bridge.autoStart = next.platforms.start.qq;

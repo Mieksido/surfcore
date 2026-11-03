@@ -331,6 +331,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_slang_submit: 'slangSubmit',
   qq_send_voice: 'sendVoice',
   qq_list_voices: 'sendVoice',
+  qq_sing: 'sing',
   // 下面这些曾经漏登记。漏一个不是"多注册一个工具"那么轻：桥接那边按 `v2ToolEnabled(flag)`
   // 在**调用期**一律 403，而这里不登记就等于"控制台显示已关闭、模型每次请求仍收到它的完整
   // 描述与参数 schema，然后调用它、再拿到 403"——既白烧 token（本文件开头 176 行起就是为省这份
@@ -1192,7 +1193,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectStic
 if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !== false) {
   server.tool(
     'qq_send_voice',
-    '在指定会话发一条 QQ 语音。两种来源二选一：① text：把这句话用本地语音引擎现场合成后发出去（最常用，像"说一句"而不是"转发一段录音"）；② voice：把语音库里准备好的音频当语音条发出去（传 qq_list_voices 返回的 name，可带子目录/可省略扩展名）。注意：① text 受字数上限（默认 120 字）与合成耗时约束，太长就分次说或改打字；② 受频率上限约束（见 qq_list_voices 的 limits），超限会被拒绝；③ 语音是「开口说话」的强表达，别滥用，闲聊里偶尔发一条即可；④ 返回的 verified=true 表示已经用 get_msg 回读到这条消息的 record 段（语音确实落地了）—— 只有 verified=true 才能对用户说你发了语音；⑤ 返回 502/「语音合成失败」说明本地语音服务没起来，此时**改回打字**，不要重试也不要假装发了；⑥ readback 只对「收到的」语音有意义（QQ 会转写别人的语音），自己发的语音一般拿不到转写文本，默认关闭。',
+    '在指定会话发一条 QQ 语音。两种来源二选一：① text：把这句话用本地语音引擎现场合成后发出去（最常用，像"说一句"而不是"转发一段录音"）；② voice：把语音库里准备好的音频当语音条发出去（传 qq_list_voices 返回的 name，可带子目录/可省略扩展名）。注意：① text 受字数上限（默认 120 字）与合成耗时约束，太长就分次说或改打字；② 受频率上限约束（见 qq_list_voices 的 limits），超限会被拒绝；③ 语音是「开口说话」的强表达，别滥用，闲聊里偶尔发一条即可；④ 返回的 verified=true 表示已经用 get_msg 回读到这条消息的 record 段（语音确实落地了）—— 只有 verified=true 才能对用户说你发了语音；⑤ 返回 502/「语音合成失败」说明本地语音服务没起来，此时**改回打字**，不要重试也不要假装发了；⑥ readback 只对「收到的」语音有意义（QQ 会转写别人的语音），自己发的语音一般拿不到转写文本，默认关闭；⑦ 语音库的唱歌/子目录下是已经翻唱好的歌曲（命名规则：唱歌-<歌名>-<版本>.wav），用户要求「唱首歌 / 点歌 / 想听XX唱」时优先从这里挑一个发送，没有用户点的歌就选库裡现有的，并如实告诉用户你唱的是哪首、是哪一版；不要在没问过用户的情况下连发多条。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1220,6 +1221,30 @@ if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !==
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `发送语音失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_sing',
+    '点歌：用她的音色唱一首歌。给歌名或关键词，系统会自己去B站搜、下载、翻唱，唱完自动作为语音发到这个会话。注意：① 这是**异步**的——调用会立刻返回「已在准备」，真正唱完要等几分钟（direct 约 2~3 分钟，remix 约 4~6 分钟），期间照常聊别的就行，唱完语音会自己出现；② 同一会话同时只允许一首在唱，上一首没发出来之前再点会被拒绝；③ 用户没指定歌时，先看语音库里有没有现成的（qq_list_voices 的唱歌/目录），有就直接用 qq_send_voice 发，别浪费几分钟重唱；④ 只有用户明确要求「唱/点歌/想听歌」时才用，别主动唱；⑤ 调用后要如实告诉用户「正在找歌、唱完自动发」，不要说已经唱了；⑥ quality 默认 direct（快）；用户特别在意音质、或明确说「要分轨版/伴奏别被转坏」时才传 remix。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      song: z.string().describe('歌名或关键词，如「April Encounter 很美味」「夜曲 周杰伦」'),
+      quality: z.enum(['direct', 'remix']).optional().describe('direct=整段直转，快（默认）；remix=demucs 分轨+混音，音质好但慢一倍')
+    },
+    async ({ key, token, song, quality }) => {
+      try {
+        const data = await agentApi('/api/socialV2/sing', {
+          method: 'POST',
+          body: JSON.stringify({ key, song: String(song ?? ''), quality: quality || 'direct', token }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `点歌失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
@@ -1406,5 +1431,121 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
     }
   );
 }
+
+// ── 抖音：自己刷 / 自己搜 / 看评论 / 收藏表情包 ─────────────────────────
+// 这几个工具和 QQ 无关，是「她在抖音上能自己做的事」。浏览要开浏览器（几秒到十几秒），
+// 所以描述里都提醒「一次多拿几条，别一条一条刷」。
+const dyFmt = (items) => items.map((x, i) => `${i + 1}. [${x.id}] ${x.desc.slice(0, 60)}｜${x.author}｜${Math.floor(x.sec / 60)}:${String(x.sec % 60).padStart(2, '0')}｜${x.digg} 赞｜${x.url}`).join('\n');
+
+server.tool(
+  'dy_status',
+  '查抖音能力状态：专用浏览器在不在、有没有登录、已收藏多少抖音表情。',
+  {},
+  async () => {
+    try {
+      const d = await agentApi('/api/douyin/status', { timeoutMs: 20000 });
+      const line = [
+        d.enabled ? '已开启' : '已关闭',
+        d.browserRunning ? `浏览器在跑（:${d.port}）` : '浏览器没起（调用时会自动拉起）',
+        `抖音表情收藏 ${d.stickerCount ?? 0} 个`,
+      ].join('｜');
+      return { content: [{ type: 'text', text: line }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `查抖音状态失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'dy_feed',
+  '刷抖音推荐流（她自己的首页），返回标题/作者/时长/点赞/链接。一次建议取 5~10 条，别一条一条刷。',
+  { count: z.number().optional().describe('取几条，默认 8，最多 20') },
+  async ({ count }) => {
+    try {
+      const d = await agentApi('/api/douyin/feed', {
+        method: 'POST',
+        body: JSON.stringify({ count: Number(count) || 8 }),
+        timeoutMs: 90000,
+      });
+      if (!d.items?.length) return { content: [{ type: 'text', text: '这次推荐流没拿到内容，过一会儿再试' }] };
+      return { content: [{ type: 'text', text: `推荐流 ${d.items.length} 条：\n${dyFmt(d.items)}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `刷抖音失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'dy_search',
+  '在抖音里搜内容（歌、话题、人名都行），返回按可用度排好序的候选。要自己找素材或确认某首歌时用。',
+  {
+    keyword: z.string().describe('关键词，如「小幸运」「猫咪 搞笑」'),
+    limit: z.number().optional().describe('返回几条，默认 3'),
+  },
+  async ({ keyword, limit }) => {
+    try {
+      const d = await agentApi('/api/douyin/search', {
+        method: 'POST',
+        body: JSON.stringify({ keyword: String(keyword ?? ''), limit: Number(limit) || 3 }),
+        timeoutMs: 170000,
+      });
+      const list = d.candidates ?? [];
+      if (!list.length) return { content: [{ type: 'text', text: `抖音没搜到「${keyword}」（可能被限流，等下再试）` }] };
+      const text = list.map((c, i) => `${i + 1}. [${c.bvid}] ${c.title.slice(0, 50)}｜${c.author}｜${c.duration}｜${c.play} 赞${c.tags ? '｜' + c.tags : ''}`).join('\n');
+      return { content: [{ type: 'text', text: `抖音搜「${keyword}」共 ${d.total} 条，挑出 ${list.length} 条：\n${text}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `抖音搜索失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'dy_comments',
+  '看某条抖音作品的评论（标出哪几条带表情包）。作品 id 或链接都行。',
+  {
+    id: z.string().describe('作品 id 或 https://www.douyin.com/video/<id>'),
+    pages: z.number().optional().describe('往下翻几屏，默认 2'),
+  },
+  async ({ id, pages }) => {
+    try {
+      const d = await agentApi('/api/douyin/comments', {
+        method: 'POST',
+        body: JSON.stringify({ id: String(id ?? ''), pages: Number(pages) || 2 }),
+        timeoutMs: 90000,
+      });
+      if (!d.items?.length) return { content: [{ type: 'text', text: '没读到评论（可能这条关了评论，或还没加载出来）' }] };
+      const text = d.items.map((c, i) => `${i + 1}. ${c.user}：${c.text.slice(0, 60)}${c.hasSticker ? ' 〔带表情包〕' : ''}${c.digg ? ` (${c.digg}赞)` : ''}`).join('\n');
+      return { content: [{ type: 'text', text: `评论 ${d.count} 条，其中 ${d.withSticker} 条带表情包：\n${text}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读评论失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'dy_collect_stickers',
+  '把某条抖音作品评论区的表情包收进她自己的表情库，之后用 qq_list_stickers 找编号、qq_send_sticker 发出来。',
+  {
+    id: z.string().describe('作品 id 或链接'),
+    limit: z.number().optional().describe('最多收几个，默认 6'),
+  },
+  async ({ id, limit }) => {
+    try {
+      const d = await agentApi('/api/douyin/collect', {
+        method: 'POST',
+        body: JSON.stringify({ id: String(id ?? ''), limit: Number(limit) || 6 }),
+        timeoutMs: 150000,
+      });
+      if (!d.saved?.length) {
+        const why = d.failed?.length ? `（${d.failed.length} 个没取到图：${d.failed.map((x) => x.error).slice(0, 2).join('；')}）` : '';
+        return { content: [{ type: 'text', text: `这条的评论区没有可收的表情包${why}` }] };
+      }
+      const text = d.saved.map((s) => `#${String(s.no).padStart(2, '0')} ${s.desc.slice(0, 30)}`).join('\n');
+      return { content: [{ type: 'text', text: `收进表情库 ${d.saved.length} 个（评论里共 ${d.found} 个带表情）：\n${text}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `收藏表情失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
 
 await server.connect(new StdioServerTransport());

@@ -89,7 +89,11 @@ export function normalizeStickerEntry(raw) {
     keywords,
     tags,
     usage: sanitizeStickerText(entry.usage, 200),
-    source: entry.source === 'manual' ? 'manual' : (entry.source === 'ai' ? 'ai' : 'qq'),
+    // 抖音评论表情是签名 URL（约 1 天过期），收藏时会把字节落到本地；
+    // 发送端优先读 localFile，读不到再回落到远端 url。
+    localFile: String(entry.localFile || '').trim(),
+    source: entry.source === 'manual' ? 'manual'
+      : (entry.source === 'ai' ? 'ai' : (entry.source === 'douyin' ? 'douyin' : 'qq')),
     useCount: Math.max(0, Number(entry.useCount) || 0),
     lastUsedAt: Number(entry.lastUsedAt) || 0,
     lastContext: sanitizeStickerText(entry.lastContext, 200),
