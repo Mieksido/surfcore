@@ -7,7 +7,9 @@
 
 ## 0. 一句话状态
 
-SurfCore 里 B站 那一整套**已经物理删除**（不是隐藏、不是开关关掉），抖音用「只读 `dsh-douyin-agent` 落盘结果」的方式接位。代码改完、单测基本绿，但**全部改动还没提交**，而且**运行中的 DSH 还是重启前的旧代码** —— 下一步就是提交 + 重启 + 实机验。
+SurfCore 里 B站 那一整套**已经物理删除**（不是隐藏、不是开关关掉），抖音用「只读 `dsh-douyin-agent` 落盘结果」的方式接位。
+代码**已提交**（`9c7b634`），测试与审计通过；**剩下的只有三件需要人动手的事**：重启 DSH、跑一轮抖音把素材池填上、开分享开关。
+本轮还顺手抓到并修掉一个会「静默撒谎」的 bug：host 测试把合成作品写进了线上抖音记忆（见 §10）。
 
 ---
 
@@ -15,13 +17,14 @@ SurfCore 里 B站 那一整套**已经物理删除**（不是隐藏、不是开�
 
 | 维度 | 状态 |
 | --- | --- |
-| 工作树 | `main` 分支上 **95 个删除 / 49 个修改 / 12 个未跟踪**，一个 commit 都没打 |
-| 插件测试链 | `plugins/surfcore` 的 33 个脚本全过，**只有 `test-updates-voice.mjs` 红**（要联网拉 GitHub，环境问题，不是代码问题） |
+| 工作树 | `main`，`9c7b634 feat: B站 下线，抖音接位…`，**干净**（157 项改动已入库） |
+| 插件测试链 | 30 个脚本逐个跑过，全绿；只有 `test-updates-voice.mjs` 红（联网拉 GitHub，环境问题） |
 | 根审计 | `node scripts/test-audit.mjs` → **55/66**；红的 11 个见 §6，都是本轮之前就红的 |
-| 运行时 | DSH 6 个进程在跑、桥接 `:3100` 活着（`/api/status` 返 401 = 活着但要令牌），但**跑的是旧代码** |
-| 抖音插件 | `dsh-douyin-agent@1.4.7` 已装在 `C:\Users\HX\.dsh\profiles\desktop`，SnowLuma 已连 |
-| 抖音素材池 | **空的**。`C:\Users\HX\.dsh\surfcore\douyin-memory.md` 写着「还没有看过任何作品的记录」——插件那边还没点过「开始有限轮次」 |
-| 分享开关 | **默认关**。运行时 `C:\Users\HX\.dsh\surfcore\config.json` 里连 `douyinBridge` 这个键都还没写，走的是默认值 |
+| 运行时 | DSH 6 个进程在跑、桥接 `:3100` 活着，但**跑的是旧代码**（`/api/overview` 仍 404、`/api/douyin/status` 还没有 `share` 字段）→ 必须重启 |
+| 抖音插件 | `dsh-douyin-agent@1.4.7` 已装、路径解析正确（`readDouyinStatus()` → `installed:true, version:"1.4.7"`），SnowLuma 已连 |
+| 抖音素材池 | **空的**（`status.entries=0`、`sharePool=[]`、`available:false`）。被测试污染的假数据已清掉 |
+| 分享开关 | **默认关**。`~/.dsh/surfcore/config.json` 里还没有 `douyinBridge` 键，走默认值 |
+
 
 ---
 
@@ -90,15 +93,12 @@ SurfCore（DSH 插件 + 本地桥接 :3100）
 
 ## 5. 待办（按这个顺序）
 
-1. **先提交**。95 删 + 49 改摊在工作树里风险很高，一次 commit 或先开 `feat/douyin` 分支都行。
-   ```bash
-   git add -A && git commit -m "feat: B站 下线，抖音接位（记忆注入 + 定时分享 + 控制台）"
-   ```
+1. ~~**先提交**~~ ✅ 已完成：`9c7b634`（157 项改动一次入库）。回滚手段见 §7。
 2. **重启 DSH**（用户来点，不要我用工具拉 —— PITFALLS #86）：
    - 从开始菜单双击 DSH 启动，**不要**通过本工具起：WorkBuddy 的 Job Object 会在命令结束时回收整棵进程树，GUI 会秒退；
    - 启动前确认没有 `ELECTRON_RUN_AS_NODE=1` 残留（有的话 Electron 会退化成 node 直接退出）。
-3. **重启后按 §7 验六条**，尤其 `/api/douyin/status` 要返回 `share` 字段。
-4. **把抖音素材池填上**：在抖音插件面板点「开始有限轮次」，跑一轮后 `douyin-memory.md` 才会从「还没有看过任何作品」变成有记录；然后到设置页 → 抖音 → 「分享到群」开开关、填时间点和群号。
+3. **重启后按 §6 验六条**，尤其 `/api/douyin/status` 要返回 `share` 字段。
+4. **把抖音素材池填上**：在抖音插件面板点「开始有限轮次」，跑一轮后 `douyin-memory.md` 才会从空变成有记录；然后到设置页 → 抖音 → 「分享到群」开开关、填时间点和群号。
 5. **剩余命名债（下一轮）**：Token 分项、记忆卡 `scope`/`platform` 仍叫 `bili`。
    要动的话一起动这几处，否则会半截：
    - `src/token-budget.js`：`SCOPES` / `CATEGORY_SCOPES` / `SCOPE_LABELS` / `DEFAULT_LIMITS` / `totalsOf` / `writeDailyUsage`；
@@ -126,14 +126,17 @@ cd plugins/surfcore && npm test; cd ../..
 node scripts/test-audit.mjs 2>&1 | grep -E "FAILED|Audit suite"
 
 # 4) 桥接与插件接口（注意必须 --noproxy，系统代理会拦本机）
-TOKEN=$(cat C:/Users/HX/.dsh/surfcore/console-token)
+# 令牌在「仓库 state/」下，不是 ~/.dsh/surfcore（老交接写错了，实测 401 就是踩这个）
+TOKEN=$(cat state/console-token)
 curl -s --noproxy '*' -H "x-console-token: $TOKEN" http://127.0.0.1:3100/api/douyin/status | head -c 400
 curl -s --noproxy '*' -H "x-console-token: $TOKEN" http://127.0.0.1:3100/api/overview     | head -c 400
 ```
 
 期望：
-- `/api/douyin/status` → `ok:true`、`version:"1.4.7"`、`paths` 有四项、**`share` 字段在**（`{enabled,times,groups,cardMode,poolSize,sharedCount,...}`）。
-- `/api/overview` → 200，不再 500（修过 `QQ_STATE_DIR()` 被当函数调的 bug）。
+- `/api/douyin/status` → `ok`、`memory.plugin` 里有真实插件路径、**`share` 字段在**（`{enabled,times,groups,cardMode,poolSize,sharedCount,...}`）。
+  > 注意：桥接这条路由**没有**顶层 `version`；`1.4.7` 在插件自己的路由
+  > `/dsh-surfcore/api/douyin/status`（`readDouyinStatus()` 实测 `installed:true, version:"1.4.7"`）。
+- `/api/overview` → 200，不再 404/500（旧代码 404 = 没重启；修过 `QQ_STATE_DIR()` 被当函数调的 bug 后 500 也没了）。
 
 **红着的 11 个根审计脚本（本轮之前就红，与删 B站 无关）**：
 `test-audit-setup-guards`、`test-self-identity`、`test-identity-guard`、`test-qq-preset-contract`、`test-preset-prompt`、`test-voice`、`test-voice-system`、`test-preset-local-tools`、`test-qq-mode-plugin`、`test-agent-preset-patches`、`test-version`。
@@ -162,21 +165,63 @@ git reset --hard HEAD && git clean -fd
 | --- | --- |
 | 仓库 | `D:\HX\Documents\deepseek-harness\default-workspace\surfcore` |
 | 插件代码 | `plugins/surfcore/lib/` |
-| 桥接 | `src/bridge.js`（本地 `:3100`，令牌 `C:\Users\HX\.dsh\surfcore\console-token`） |
-| 运行时状态 | `C:\Users\HX\.dsh\surfcore\`（`config.json` 是 QQ 侧；`douyin-memory*.md`、`douyin-share-state.json`、`token-budget.json`） |
+| 桥接 | `src/bridge.js`（本地 `:3100`，令牌 `<repo>/state/console-token`） |
+| 插件侧状态 | `C:\Users\HX\.dsh\surfcore\`（`config.json` 合体层、`audit.jsonl`、`plugin.log`、`token-budget.json`、`memory/`、`characters/`） |
+| QQ 侧状态 | `<repo>\state\`（`douyin-memory.md/-brief.md/-json`、`douyin-share-state.json`、`alignments.json`、`sessions.json`、`social-v2.json`、`bridge.log`）。**提示词注入读的是这里**，不是 `~/.dsh/surfcore` |
 | 抖音插件包 | `C:\Users\HX\.dsh\profiles\desktop\node_modules\dsh-douyin-agent`（`state/`、`memory/`） |
 | 抖音浏览器 | `C:\Users\HX\.dsh\douyin-browser\{cli-profile,control,memory}`，CDP 端口 **9227** |
 | 配置分层 | `readUnified()` → 合体层（`platforms.start`、`memory.qqToDouyin`）；`readQqConfig()` → QQ 侧（`douyinBridge`、`allow.groups`）。**`douyinBridge` 住 QQ 侧，写进合体层桥接读不到** |
 
 ---
 
-## 9. 本轮新踩的坑（详见 PITFALLS #84–#87）
+## 9. 本轮新踩的坑（详见 PITFALLS #84–#88）
 
 - **#84** WorkBuddy 的 safe-delete 会掐死 pnpm 安装（装抖音插件时踩到）。
 - **#85** 两个插件抢同一件事时，只读约束那三条（上面 §2）。
 - **#86** 重启 DSH 的两个陷阱：`ELECTRON_RUN_AS_NODE` 残留 + Job Object 回收进程树 → **GUI 常驻进程不要由工具起**。
 - **#87** B站 下线删到哪、故意留下什么（本文 §4 的详版）。
+- **#88** host 测试只隔离 `DSH_HOME` 没隔离 `SURFCORE_QQBOT_ROOT`，把合成作品写进线上抖音记忆（§10）。
 
 另外两个当场修的 bug，别再改回去：
 1. `douyinToQqStatus()` 里曾写 `activePlatformStateDir(QQ_STATE_DIR())` —— `QQ_STATE_DIR` 是字符串导出，调用即抛错，`/overview` 直接 500。
 2. `platformStartsFrom()` 曾从 `platforms.enabled` 推出 `bili: true`，界面上会多一个永远起不来的开关；现在 `bili` 恒 `false`，`douyin` 接位（老配置只写 `bili` 的按 `douyin: true` 迁移）。
+
+---
+
+## 10. 收尾轮补记（2026-11-03 23:1x，接手人）
+
+### 做了什么
+
+| 事 | 结果 |
+| --- | --- |
+| 提交 | `9c7b634`：94 删 / 47 改 / 12 增 / 1 重命名，工作树干净。本地 git 身份按历史作者补成 `Mieksido <113783930+Mieksido@users.noreply.github.com>`（原先没配，commit 直接失败） |
+| 语法检查 | `src/{bridge,douyin-agent,douyin-memory,douyin-share-scheduler}.js` + 插件侧 5 个文件 `node --check` 全过 |
+| 插件测试链 | 30 个脚本逐个跑（`test-updates-voice` 跳过联网那条），**全绿** |
+| 根审计 | 55/66，红的 11 个与 §6 列的一致（HEAD 基线上也红） |
+| 顺手修的真 bug | host 测试写进线上抖音记忆 → 见下 + PITFALLS #88 |
+| 只读探测 | 真实插件 `installed:true / version:1.4.7`；空池下 `entries=0 / sharePool=[] / shareStatus={poolSize:0,...}`，`briefBlock()` 空串（空池不注入，符合设计） |
+
+### 抓到的坑（PITFALLS #88）
+
+`test-douyin-host.mjs` 只隔离了 `DSH_HOME`，没隔离 `SURFCORE_QQBOT_ROOT`，于是 `/douyin/memory/refresh`
+把测试里写死的 `猫咪日常 / 深夜食堂`（videoId 111/222）写进了**真实** `state/douyin-memory.md`。
+这份文件是 QQ 提示词的事实来源 —— 带着它重启，她会在群里说自己看过这两条从没看过的视频。
+
+已修：测试里造了一个假 QQ 根（`config.json` + `src/bridge.js` 存根）+ 设 `SURFCORE_QQBOT_ROOT`，
+并加两条断言把隔离钉死；被污染的三件套已删（会从真实空池重新生成）。
+复跑后 `state/` 不再新增任何文件。
+
+> 写 `apply(ctx)` 级 host 测试的通用规矩：**`DSH_HOME` + `USERPROFILE` + `SURFCORE_QQBOT_ROOT` 三个一起设**。
+
+### 现在卡在哪
+
+只剩三件必须人动手的（工具这边做不了/不该做）：
+
+1. **重启 DSH**（坑 #86 的两条注意事项）。
+2. 重启后跑 §6 的四组校验（`/api/overview` 现在是 404，就是旧代码的铁证）。
+3. 抖音插件面板点「开始有限轮次」把素材池填上 → 否则分享调度器一直返回「没有新鲜素材」。
+
+### 没动的东西（下一轮）
+
+§5 第 5 条的命名债原样留着：Token 页仍是「QQ / B站 / 其他 / 总额」四项（自洽、测试绿），
+记忆卡 `scope/platform` 仍是 `bili`（存量数据键名，改名要写迁移）。别半截动。

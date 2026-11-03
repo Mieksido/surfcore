@@ -17,6 +17,14 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-douyin-'));
 const stateDir = path.join(tmp, 'surfcore');
 fs.mkdirSync(stateDir, { recursive: true });
 
+// QQ 侧根目录也必须隔离：/douyin/memory/refresh 落盘走 activePlatformStateDir(QQ_STATE_DIR())，
+// 只设 DSH_HOME 不够 —— QQBOT_ROOT 会探针命中真实仓库（有 config.json + src/bridge.js），
+// 于是测试假数据被写进线上 state/douyin-memory.md，还能被 QQ 提示词注入。PITFALLS #88。
+const qqbotRoot = path.join(tmp, 'qqbot');
+fs.mkdirSync(path.join(qqbotRoot, 'src'), { recursive: true });
+fs.writeFileSync(path.join(qqbotRoot, 'config.json'), JSON.stringify({ consoleToken: '' }));
+fs.writeFileSync(path.join(qqbotRoot, 'src', 'bridge.js'), '// test stub：仅用于让 looksLikeQqbotRoot() 认这个目录\n');
+
 // 合成一份插件安装目录 + 状态
 const pluginDir = path.join(tmp, 'node_modules', 'dsh-douyin-agent');
 fs.mkdirSync(path.join(pluginDir, 'state'), { recursive: true });
@@ -52,6 +60,7 @@ fs.writeFileSync(path.join(dyHome, 'memory', 'reports', 'videos', '2026-11-03.md
 
 process.env.DSH_HOME = tmp;
 process.env.USERPROFILE = tmp;
+process.env.SURFCORE_QQBOT_ROOT = qqbotRoot;
 process.env.DOUYIN_PLUGIN_DIR = pluginDir;
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
@@ -127,6 +136,11 @@ try {
   assert.equal(refresh.status, 200);
   assert.equal(refresh.data.stats.entries, 2, '两条观察都应进记忆');
   assert.equal(refresh.data.stats.hasReport, true, '应认到当天日报');
+
+  // 隔离断言：QQ 侧根目录必须是临时目录，刷新结果也只能落在它下面。
+  const pathsMod = await import('../lib/paths.js');
+  assert.equal(pathsMod.QQBOT_ROOT, qqbotRoot, 'QQBOT_ROOT 指向了真实仓库：测试会污染线上抖音记忆');
+  assert.ok(fs.existsSync(path.join(qqbotRoot, 'state', 'douyin-memory.md')), '抖音记忆应写在隔离的 QQ 根目录下');
   // 落盘位置是「当前角色」的平台目录（activePlatformStateDir），不是 surfcore 根目录，
   // 所以这里只断言内容里确实有作品，路径由 douyin-memory 单测覆盖。
   const { createDouyinMemory } = await import('../../../src/douyin-memory.js');

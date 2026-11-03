@@ -2862,3 +2862,37 @@ SurfCore 只读它落盘的结果。B站 这一整套随之物理删除，不是
   现在 `bili` 恒 `false`，`douyin` 接位（老配置只写了 `bili` 的，也按 `douyin: true` 迁移）。
 - `handleDouyin` 里读分享配置必须用 `readQqConfig()`：`douyinBridge` 住在 QQ 侧配置里，
   读 `readUnified()` 永远是 `undefined`，界面会稳定显示「关」。
+
+## #88（2026-11-03）插件 host 测试写进了线上抖音记忆：假作品会被当成「她真的看过」
+
+**怎么发现的**：接手做 `docs/HANDOFF-2026-11-03-BILI-TO-DOUYIN.md` 的收尾，跑完测试链后看
+`state/douyin-memory.md` 的时间戳是「刚刚」，内容是 `猫咪日常` / `深夜食堂`（两个 videoId 111/222）——
+那正是 `test-douyin-host.mjs` 里写死的合成观察。真实的抖音素材池是空的。
+
+**影响面**（比「测出来一个红」严重得多）：桥接生成 QQ 提示词时把 `douyin-memory.md` 当事实注入。
+一旦带着这份假数据重启，她会在群里说「我昨天看了深夜食堂」，而这是测试编的。**不是崩溃，是静默撒谎。**
+
+**根因**：`plugins/surfcore/lib/paths.js` 里两个目录是两条独立链路：
+
+| 目录 | 来源 | 测试里怎么隔离 |
+| --- | --- | --- |
+| `STATE_DIR`（`<DSH_HOME>/surfcore`） | `DSH_HOME` / `USERPROFILE` | 设 `DSH_HOME=tmp` 就够 |
+| `QQ_STATE_DIR`（`<QQBOT_ROOT>/state`） | `SURFCORE_ROOT` → `SURFCORE_QQBOT_ROOT` → 仓库根 → cwd，取第一个 **探针命中** 的（有 `config.json` + `src/bridge.js`） | **必须显式设 `SURFCORE_QQBOT_ROOT`** |
+
+`test-douyin-host.mjs` 只设了前者，于是 `QQBOT_ROOT` 探针一路走到真实仓库根，`/douyin/memory/refresh`
+把合成观察写进真 `state/douyin-memory*.{md,json}`。（`test-memory-card-api.mjs` 早就设了 `SURFCORE_QQBOT_ROOT`，所以它没中招。）
+
+**修法**
+1. `test-douyin-host.mjs`：临时目录里造一个假 QQ 根（`config.json` + `src/bridge.js` 存根），设
+   `SURFCORE_QQBOT_ROOT`，并新增两条断言把隔离钉死：
+   `assert.equal(pathsMod.QQBOT_ROOT, qqbotRoot)`、刷新产物必须落在 `qqbotRoot/state/douyin-memory.md`。
+2. 删掉被污染的三件套（`state/douyin-memory.md` / `-brief.md` / `-json`），让它从真实空池重新生成。
+3. 复跑：测试仍绿，跑完 `state/` 一个文件都不新增（`find state -type f -newermt` 空）。
+
+**以后写任何 `apply(ctx)` 级别的 host 测试，三个环境变量一起设**：
+`DSH_HOME` + `USERPROFILE` + `SURFCORE_QQBOT_ROOT`（造带 `config.json`/`src/bridge.js` 的假根）。
+只设前两个 = 状态目录隔离了、平台目录没隔离，照样写线上。
+
+**残留（已知、无害）**：`test-host-smoke.mjs` / `test-platform-start-host.mjs` 仍会写一次
+`state/alignment-brief.md`，内容是空串（真实 `state/` 下没有 `alignments.json`，空就是正确内容）。
+这两个测试是「照真实配置冒烟」的设计，没跟着改；要彻底隔离再单独做。
