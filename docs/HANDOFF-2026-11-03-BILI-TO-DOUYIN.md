@@ -182,7 +182,8 @@ git reset --hard HEAD && git clean -fd
 | 插件代码 | `plugins/surfcore/lib/` |
 | 桥接 | `src/bridge.js`（本地 `:3100`，令牌 `<repo>/state/console-token`） |
 | 插件侧状态 | `C:\Users\HX\.dsh\surfcore\`（`config.json` 合体层、`audit.jsonl`、`plugin.log`、`token-budget.json`、`memory/`、`characters/`） |
-| QQ 侧状态 | `<repo>\state\`（`douyin-memory.md/-brief.md/-json`、`douyin-share-state.json`、`alignments.json`、`sessions.json`、`social-v2.json`、`bridge.log`）。**提示词注入读的是这里**，不是 `~/.dsh/surfcore` |
+| QQ 侧状态 | `<repo>\state\`：`sessions.json`、`social-v2.json`、`bridge.log`、`alignments.json`、`console-token`、`token-usage.jsonl` |
+| 观看记忆落盘 | `~/.dsh/surfcore/characters/<角色id>/bili/douyin-memory{,-brief}.md, .json` + `douyin-share-state.json`。**提示词注入读这里**（`activePlatformStateDir()`，无角色时才回退仓库 `state/`）。目录名叫 `bili` 是历史遗留，见 §11 |
 | 抖音插件包 | `C:\Users\HX\.dsh\profiles\desktop\node_modules\dsh-douyin-agent`（`state/`、`memory/`） |
 | 抖音浏览器 | `C:\Users\HX\.dsh\douyin-browser\{cli-profile,control,memory}`，CDP 端口 **9227** |
 | 配置分层 | `readUnified()` → 合体层（`platforms.start`、`memory.qqToDouyin`）；`readQqConfig()` → QQ 侧（`douyinBridge`、`allow.groups`）。**`douyinBridge` 住 QQ 侧，写进合体层桥接读不到** |
@@ -221,8 +222,12 @@ git reset --hard HEAD && git clean -fd
 ### 抓到的坑（PITFALLS #88）
 
 `test-douyin-host.mjs` 只隔离了 `DSH_HOME`，没隔离 `SURFCORE_QQBOT_ROOT`，于是 `/douyin/memory/refresh`
-把测试里写死的 `猫咪日常 / 深夜食堂`（videoId 111/222）写进了**真实** `state/douyin-memory.md`。
-这份文件是 QQ 提示词的事实来源 —— 带着它重启，她会在群里说自己看过这两条从没看过的视频。
+把测试里写死的 `猫咪日常 / 深夜食堂`（videoId 111/222）写进了**真实**的仓库 `state/douyin-memory.md`。
+
+> 影响面要说准（我一开始说过头了）：这条注入链路读的是 `activePlatformStateDir()`，
+> 有活跃角色时是 `~/.dsh/surfcore/characters/<id>/bili/`，**不是**仓库 `state/`（那是无角色时的 legacy 回退）。
+> 本机有角色，所以假数据**没进过提示词**；但「往真实运行目录写测试数据」这件事本身必须修，
+> 在没有角色 / legacy 布局的机器上就会直接让她撒谎。
 
 已修：测试里造了一个假 QQ 根（`config.json` + `src/bridge.js` 存根）+ 设 `SURFCORE_QQBOT_ROOT`，
 并加两条断言把隔离钉死；被污染的三件套已删（会从真实空池重新生成）。
