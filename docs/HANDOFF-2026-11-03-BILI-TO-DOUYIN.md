@@ -298,3 +298,17 @@ git reset --hard HEAD && git clean -fd
   （这条会进 QQ 提示词，不改的话她会以为自己在刷 B站）。
 - 对齐页仍留着「QQ ↔ B站 UID + 称呼」表单（`lib/client.js` AdminAlign 区）：跨平台身份对齐**现在没有对端**了，
   但删它要连 `alignments.json` 的存量数据一起决定怎么处理 —— 属于**产品决策**，不是改名。
+
+### 顺手发现的一笔新债：角色目录里的平台文件夹叫 `bili/`
+
+`src/character-persona.js`：
+
+```js
+characterPaths(id) → { biliDir: path.join(dir, 'bili'), ... }
+activePlatformStateDir(legacyDir) → cur ? characterPaths(cur.id).biliDir : legacyDir
+```
+
+也就是说**抖音记忆现在住在 `~/.dsh/surfcore/characters/<角色id>/bili/douyin-memory.md`** ——
+文件夹名还是 `bili`，里面装的是抖音的东西。这不是显示层文案，而是**磁盘布局，所有读写都经过它**：
+改名等于给每个角色搬一次目录（还要兼容老角色包、快照、回滚）。这轮**没动**，记在这里；
+真要改就单开一轮：`characterPaths().biliDir` → 新键名 + 建 `legacyBiliDir` 回退 + 一次性迁移 + 快照兼容。
