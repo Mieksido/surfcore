@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ALERT_RATIO, DEFAULT_LIMITS, SCOPES, allRatios, collectAlerts, collectHits,
+  ALERT_RATIO, DEFAULT_LIMITS, LEGACY_SCOPES, SCOPES, allRatios, collectAlerts, collectHits,
   describeHit, evaluateBudget, formatLimit, formatMoney, formatTokens, formatUsed,
   localDayKey, localDayStart, normalizeLimitPair, normalizeLimits, normalizeUsage,
   parseCnyText, parseTokenText, ratioOf, readAlert, readBudget, readDailyUsage,
@@ -53,30 +53,36 @@ assert.throws(() => normalizeLimitPair({ cny: 'abc' }), /无法识别人民币�
 // ── 2. 默认值与归一化 ────────────────────────────────────────────────────
 const defaults = normalizeLimits(undefined);
 check(defaults.qq.cny === 8 && defaults.qq.tokens === null, '默认 QQ ¥8（沿用已上线的花费闸）');
-check(defaults.bili.cny === null && defaults.total.cny === null, 'B站 / 总额默认不限');
+check(defaults.other.cny === null && defaults.total.cny === null, '其他 / 总额默认不限');
+check(!('bili' in defaults), 'B站 下线后不再是额度分项');
 check(normalizeLimits({ qq: { tokens: '20M' } }).qq.tokens === 20_000_000, '自定义 token 额度');
-check(normalizeLimits({ qq: { tokens: '20M' } }).bili.cny === null, '缺的 scope 不被误写成 0');
+check(normalizeLimits({ qq: { tokens: '20M' } }).other.cny === null, '缺的 scope 不被误写成 0');
+// 旧额度文件里还有 bili：能读，但不再作为分项出现在结果里。
+check(normalizeLimits({ bili: { tokens: '50M' } }).other.tokens === null, '旧 bili 额度被忽略，不会漏进别的分项');
 
 // ── 3. 用量合并 / 比例 / 拦截 ────────────────────────────────────────────
+// 故意带上旧账本里的 bili：它必须并进 other，总额一分不能少。
 const usage = normalizeUsage({
   qq: { cost: 6.4, tokens: 8_000_000 },
   bili: { cost: 1.6, tokens: 2_000_000 },
   other: { cost: 0.2, tokens: 100_000 },
 });
-check(near(usage.total.cost, 8.2), '总额 = 三类之和（金额）');
-check(usage.total.tokens === 10_100_000, '总额 = 三类之和（token）');
+check(near(usage.total.cost, 8.2), '总额 = QQ + 其他（含历史 B站）（金额）');
+check(usage.total.tokens === 10_100_000, '总额 = QQ + 其他（含历史 B站）（token）');
+check(near(usage.other.cost, 1.8) && usage.other.tokens === 2_100_000, '旧 bili 用量并进 other，不丢数字');
+check(!('bili' in usage), '归一化结果里不再有 bili 分项');
 check(near(ratioOf(6.4, 8), 0.8), '80% 比例');
 check(ratioOf(1, null) === null && ratioOf(1, 0) === null, '不限时没有比例');
 
 const limits = normalizeLimits({
   qq: { cny: 8 },
-  bili: { tokens: 5_000_000 },
+  other: { tokens: 5_000_000 },
   total: { cny: 10 },
 });
 const ratios = allRatios(usage, limits);
 check(near(ratios.qq.cny, 0.8), 'QQ 金额比例 80%');
 check(ratios.qq.tokens === null, 'QQ 未设 token 额度 → 比例 null');
-check(near(ratios.bili.tokens, 0.4), 'B站 token 比例 40%');
+check(near(ratios.other.tokens, 0.42), '其他 token 比例 42%（含并进来的历史 B站用量）');
 check(near(ratios.total.cny, 0.82), '总额金额比例 82%');
 
 const alerts = collectAlerts(usage, limits);
@@ -91,10 +97,13 @@ check(blocked.blocked === false, '80% 只提醒，不拦截');
 const overUsage = normalizeUsage({ qq: { cost: 8, tokens: 0 } });
 const blockedOver = evaluateBudget(overUsage, limits, { scopes: ['qq', 'total'] });
 check(blockedOver.blocked === true && blockedOver.scopes.qq === true, 'QQ 到 100% 拦截');
-const totalOver = evaluateBudget(normalizeUsage({ qq: { cost: 5 }, bili: { cost: 5.01 } }), limits, { scopes: ['qq', 'total'] });
+const totalOver = evaluateBudget(normalizeUsage({ qq: { cost: 5 }, other: { cost: 5.01 } }), limits, { scopes: ['qq', 'total'] });
 check(totalOver.blocked === true && totalOver.scopes.total === true, '总额到 100% 也拦截');
-const biliOver = evaluateBudget(normalizeUsage({ bili: { tokens: 5_000_000 } }), limits, { scopes: ['bili', 'total'] });
-check(biliOver.blocked === true && biliOver.scopes.bili === true, 'B站 token 到 100% 拦截');
+const otherOver = evaluateBudget(normalizeUsage({ other: { tokens: 5_000_000 } }), limits, { scopes: ['other', 'total'] });
+check(otherOver.blocked === true && otherOver.scopes.other === true, '其他 token 到 100% 拦截');
+// 旧 bili 用量不会再单独触发拦截（它已并进 other，只有 other 的额度能拦它）。
+const legacyOnly = evaluateBudget(normalizeUsage({ bili: { tokens: 5_000_000 } }), limits, { scopes: ['other'] });
+check(legacyOnly.blocked === true, '旧 bili 用量达到 other 额度时照样会拦（并进 other 后不失效）');
 check(evaluateBudget(normalizeUsage({}), { qq: { cny: null } }, { scopes: ['qq', 'total'] }).blocked === false, '不限额度时永不拦截');
 check(collectHits(usage, limits, { threshold: 1.2 }).length === 0, '阈值高于当前比例时不命中');
 
@@ -123,15 +132,18 @@ try {
   fs.writeFileSync(path.join(dir, 'token-budget.json'), JSON.stringify({ limits: { qq: { cny: 'abc' } } }), 'utf8');
   check(readBudget(dir).qq.cny === 8, '坏额度字符串回落默认，不能静默变「不限」');
 
-  const saved = writeBudget(dir, { qq: { cny: '¥5', tokens: '20M' }, bili: { tokens: '50M' }, total: { cny: 20 } });
+  const saved = writeBudget(dir, { qq: { cny: '¥5', tokens: '20M' }, other: { tokens: '50M' }, total: { cny: 20 } });
   check(saved.qq.cny === 5 && saved.qq.tokens === 20_000_000, 'writeBudget 归一化并落盘');
   const reloaded = readBudget(dir);
-  check(reloaded.qq.cny === 5 && reloaded.bili.tokens === 50_000_000 && reloaded.total.cny === 20, '重新读取额度一致');
-  check(reloaded.other.cny === null, '未写的 scope 保持不限');
+  check(reloaded.qq.cny === 5 && reloaded.other.tokens === 50_000_000 && reloaded.total.cny === 20, '重新读取额度一致');
+  check(!('bili' in reloaded), '落盘后的额度里不会再有 bili 键');
 
   writeDailyUsage(dir, { qq: { cost: 6.4, tokens: 8_000_000 }, bili: { cost: 1.6 }, other: { cost: 0.2 } }, { day: '2026-10-23' });
   const daily = readDailyUsage(dir, '2026-10-23');
   check(near(daily.qq.cost, 6.4) && near(daily.total.cost, 8.2), '当天用量文件读写正确');
+  check(near(daily.other.cost, 1.8), '旧文件里的 bili 读回来并进 other');
+  const rawDaily = JSON.parse(fs.readFileSync(path.join(dir, 'token-usage-daily.json'), 'utf8'));
+  check(!('bili' in rawDaily), '写回磁盘时不再写 bili 键');
   check(daily.stale === false, '当天文件不算 stale');
   const oldDay = readDailyUsage(dir, '2026-10-24');
   check(oldDay.stale === true && oldDay.qq.cost === 0 && oldDay.total.cost === 0, '旧日文件不被当成今天');
@@ -168,7 +180,9 @@ try {
 
   // totalsOf / normalizeUsage 的幂等性
   check(totalsOf(usage).tokens === usage.total.tokens, 'totalsOf 与 normalizeUsage 一致');
-  check(SCOPES.length === 4 && DEFAULT_LIMITS.qq.cny === 8, '导出常量稳定');
+  check(SCOPES.length === 3 && SCOPES.join(',') === 'qq,other,total', '分项只剩 QQ / 其他 / 总额');
+  check(DEFAULT_LIMITS.qq.cny === 8, '导出常量稳定');
+  check(LEGACY_SCOPES.includes('bili'), '旧 bili 键仍被识别为历史分项（否则升级当天用量会凭空变少）');
 
   // 接线：宿主路由 / 插件服务 / 桥接 endpoint 三处必须都在，否则「额度页能改但不生效」
   const host = fs.readFileSync(path.join(import.meta.dirname, '..', 'plugins', 'surfcore', 'lib', 'index.js'), 'utf8');

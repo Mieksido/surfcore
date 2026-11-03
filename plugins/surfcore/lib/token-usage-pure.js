@@ -12,13 +12,17 @@ import {
   totalTokensOf,
 } from '../../../src/model-prices.js';
 
-export const CATEGORY_KEYS = ['qq', 'bili', 'other'];
+// 三类用量：QQ / 其他 / 总额（总额不在这里，由 token-budget 汇总）。
+// 2026-11-03 B站 下线：`bili` 不再是分类。历史数据（旧 state 里的 bili 桶、
+// 旧 `bili-whale*` 会话的 category）在归一化时并入 `other`，不丢数字、不再单列。
+export const CATEGORY_KEYS = ['qq', 'other'];
+export const LEGACY_CATEGORY_KEYS = ['bili'];
 export const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
 export const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 export const clamp0 = (v) => Math.max(0, Number(v) || 0);
 
 export function emptyCategories() {
-  return { qq: { cost: 0, tokens: 0 }, bili: { cost: 0, tokens: 0 }, other: { cost: 0, tokens: 0 } };
+  return { qq: { cost: 0, tokens: 0 }, other: { cost: 0, tokens: 0 } };
 }
 
 export function normalizeCategories(input) {
@@ -28,6 +32,11 @@ export function normalizeCategories(input) {
       cost: clamp0(input?.[key]?.cost),
       tokens: Math.round(clamp0(input?.[key]?.tokens)),
     };
+  }
+  // 旧账本里的 B站 用量并进「其他」：总额不变，分项不再露出一个永远为 0 的卡。
+  for (const key of LEGACY_CATEGORY_KEYS) {
+    out.other.cost += clamp0(input?.[key]?.cost);
+    out.other.tokens += Math.round(clamp0(input?.[key]?.tokens));
   }
   return out;
 }
@@ -50,7 +59,9 @@ export function emptySession() {
 export function normalizeSession(input) {
   const out = emptySession();
   if (!isPlainObject(input)) return out;
-  out.category = CATEGORY_KEYS.includes(input.category) ? input.category : null;
+  // 旧状态里存着 category:'bili' 的会话：当作「其他」，否则读回来会变成一个不存在的分类。
+  const rawCategory = input.category === 'bili' ? 'other' : input.category;
+  out.category = CATEGORY_KEYS.includes(rawCategory) ? rawCategory : null;
   out.createdAt = num(input.createdAt);
   out.lastSeenAt = num(input.lastSeenAt);
   out.seen = normalizeBuckets(input.seen);

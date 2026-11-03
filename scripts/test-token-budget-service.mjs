@@ -1,7 +1,7 @@
 // SurfCore 插件侧 token 用量采集 / 额度闸门回归（fake DSH，不连真宿主、不发 QQ）。
 //
 // 重点钉住：
-// 1. 分类：QQ（qq-chat / sessions.json）、B站（bili-whale* + 子会话）、其他（黑话），
+// 1. 分类：QQ（qq-chat / sessions.json）、其他（黑话 + 历史 bili-whale* 会话及其子会话），
 //    用户自己的 cordis 会话不计入 SurfCore 总额；
 // 2. 启动回填：按事件时间只补「今天的部分」，不会把昨天的累计算进今天；
 // 3. 热重载：同一天重建服务不会把已经算过的用量再算一遍；
@@ -117,27 +117,27 @@ service.persist = service.persist; // keep API explicit
 
 const status = await service.status({ takeAlertFlag: true });
 check(near(status.usage.qq.cost, 1.4), `QQ 今日 ¥1.40（实得 ${status.usage.qq.cost.toFixed(4)}）`);
-check(near(status.usage.bili.cost, 2.8 + 0.42), `B站 含子会话 ¥3.22（实得 ${status.usage.bili.cost.toFixed(4)}）`);
-check(near(status.usage.other.cost, 0.7), `其他（黑话）¥0.70（实得 ${status.usage.other.cost.toFixed(4)}）`);
-check(near(status.usage.total.cost, 1.4 + 3.22 + 0.7), `总额 = 三类之和（实得 ${status.usage.total.cost.toFixed(4)}）`);
-check(status.sessions['qq-1'] === 'qq' && status.sessions['bili-whale-char-1'] === 'bili', 'QQ / B站 分类正确');
-check(status.sessions['bili-child-1'] === 'bili', 'B站 子会话继承父类');
+// B站 下线后：旧 `bili-whale*` 会话的花费（¥3.22，含子会话）并进「其他」，总额不变。
+check(near(status.usage.other.cost, 0.7 + 3.22), `其他 = 黑话 0.70 + 历史 B站 3.22（实得 ${status.usage.other.cost.toFixed(4)}）`);
+check(near(status.usage.total.cost, 1.4 + 3.22 + 0.7), `总额 = QQ + 其他（实得 ${status.usage.total.cost.toFixed(4)}）`);
+check(status.usage.bili === undefined, '用量结构里不再有 bili 分项');
+check(status.sessions['qq-1'] === 'qq' && status.sessions['bili-whale-char-1'] === 'other', 'QQ 分类照旧；旧 B站 会话归入其他');
+check(status.sessions['bili-child-1'] === 'other', '子会话继承父类（也是其他）');
 check(status.sessions['slang-1'] === 'other', '黑话学习会话归入其他');
 check(status.sessions['cordis-1'] === undefined, '用户自己的 cordis 会话不计入 SurfCore');
 check(status.usage.total.tokens === 1_100_000 + 2_200_000 + 330_000 + 550_000, `总额 token 数正确（实得 ${status.usage.total.tokens}）`);
 
 // 默认 QQ ¥8：当前 1.4 不应拦截；B站 未设额度也不拦截
-check(status.blocked.qq === false && status.blocked.bili === false && status.blocked.total === false, '未到上限不拦截');
+check(status.blocked.qq === false && status.blocked.other === false && status.blocked.total === false, '未到上限不拦截');
 check(status.alert === null, `总额 5.32 < 80%×8=6.4 时不提醒（实得 ${status.usage.total.cost}）`);
 
-// 保存额度：QQ ¥2、B站 4M token、总额 ¥6；此时总额 5.32 已过 80%（4.8），应提醒
+// 保存额度：QQ ¥2、其他 4M token、总额 ¥6；此时总额 5.32 已过 80%（4.8），应提醒
 const saved = service.saveLimits({
   qq: { cny: 2, tokens: null },
-  bili: { cny: null, tokens: 4_000_000 },
-  other: { cny: null, tokens: null },
+  other: { cny: null, tokens: 4_000_000 },
   total: { cny: 6, tokens: null },
 });
-check(saved.qq.cny === 2 && saved.bili.tokens === 4_000_000, '保存额度归一化');
+check(saved.qq.cny === 2 && saved.other.tokens === 4_000_000, '保存额度归一化');
 const alertStatus = await service.status({ takeAlertFlag: true });
 check(Boolean(alertStatus.alert), '总额到 80% 返回第一次提醒');
 check(alertStatus.alert.items.some((item) => item.scope === 'total' && item.unit === 'cny'), '提醒包含总额金额项');
@@ -148,14 +148,14 @@ check(afterAlert.alert === null && afterAlert.alertedToday?.day, '同一天第�
 // 把 QQ 额度压到 ¥1.2（当前 1.4）：超过 100% 才拦
 service.saveLimits({
   qq: { cny: 1.2, tokens: null },
-  bili: { cny: null, tokens: 4_000_000 },
+  other: { cny: null, tokens: 4_000_000 },
   total: { cny: 6, tokens: null },
 });
 const qqGate = await service.block('qq');
 check(qqGate.blocked === true, 'QQ 分项到 100% 拦截');
 check(qqGate.message.includes('QQ') && qqGate.message.includes('%'), `拦截文案含分项和比例（${qqGate.message}）`);
-const biliGate = await service.block('bili');
-check(biliGate.blocked === false, 'B站 当前 3.22/4M token（token 维度未到）不拦');
+const otherGate = await service.block('other');
+check(otherGate.blocked === false, '其他 当前 3.08M/4M token（token 维度未到）不拦');
 const totalGate = await service.block('total');
 check(totalGate.blocked === false, '总额 5.32/6 未到 100%，不拦');
 
@@ -203,7 +203,7 @@ check(nextDay2.usage.qq.tokens === 110_000, `第二天只算当天（实得 ${ne
 
 // 清空额度
 const reset = service2.resetLimits();
-check(reset.qq.cny === null && reset.total.cny === null && reset.bili.tokens === null, '清空额度');
+check(reset.qq.cny === null && reset.total.cny === null && reset.other.tokens === null, '清空额度');
 
 // 磁盘上的 daily 快照应与状态一致
 const daily = readDailyUsage(path.join(dshHome, 'surfcore'), localDayKey(clock));

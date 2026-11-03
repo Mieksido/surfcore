@@ -2,8 +2,8 @@
  * 每日 token 额度：SurfCore 的统一账本口径（2026-10-23 用户定）。
  *
  * 为什么单独一个模块、而不是散在桥接和插件里：
- *   · QQ 桥接要按额度决定「还要不要唤醒」，B站 调度器要决定「还要不要叫醒」，
- *     设置页要展示同一份用量 —— 三处必须用**同一套单位/比例/拦截语义**，
+ *   · QQ 桥接要按额度决定「还要不要唤醒」，设置页要展示同一份用量 ——
+ *     两处必须用**同一套单位/比例/拦截语义**，
  *     否则会出现「页面显示没到、桥接却说超了」这种互相打脸的现场。
  *   · 额度既可以用人民币填，也可以用 token 数填；两种单位可以同时设。
  *     各自独立比较，谁先到 80% 谁触发提醒，谁先到 100% 谁拦截。
@@ -25,10 +25,17 @@ import path from 'node:path';
 export const BUDGET_VERSION = 1;
 /** 80% 触发提醒；100% 才拦截。 */
 export const ALERT_RATIO = 0.8;
-export const SCOPES = Object.freeze(['qq', 'bili', 'other', 'total']);
-export const CATEGORY_SCOPES = Object.freeze(['qq', 'bili', 'other']);
+/**
+ * 2026-11-03：B站 下线后分项从四项降为三项（QQ / 其他 / 总额）。
+ * 旧账本里可能还有 `bili` 桶，读入时并进 `other`（见 normalizeUsage），
+ * 总额、当日花费不会因为这次改名而变少。
+ */
+export const SCOPES = Object.freeze(['qq', 'other', 'total']);
+export const CATEGORY_SCOPES = Object.freeze(['qq', 'other']);
+/** 已下线平台的历史分项键：只为读旧文件保留，不再出现在页面/提示里。 */
+export const LEGACY_SCOPES = Object.freeze(['bili']);
 export const UNIT_KEYS = Object.freeze(['cny', 'tokens']);
-export const SCOPE_LABELS = Object.freeze({ qq: 'QQ', bili: 'B站', other: '其他', total: '总额' });
+export const SCOPE_LABELS = Object.freeze({ qq: 'QQ', other: '其他', total: '总额' });
 export const UNIT_LABELS = Object.freeze({ cny: '元', tokens: 'token' });
 export const BUDGET_FILES = Object.freeze({
   budget: 'token-budget.json',
@@ -39,11 +46,10 @@ export const BUDGET_FILES = Object.freeze({
 
 /**
  * 默认额度：QQ 沿用 2026-10-23 已上线的 ¥8（近 24h 花费闸迁移为自然日）；
- * B站 / 其他 / 总额默认不限，等用户在设置页自己开。
+ * 其他 / 总额默认不限，等用户在设置页自己开。
  */
 export const DEFAULT_LIMITS = Object.freeze({
   qq: Object.freeze({ cny: 8, tokens: null }),
-  bili: Object.freeze({ cny: null, tokens: null }),
   other: Object.freeze({ cny: null, tokens: null }),
   total: Object.freeze({ cny: null, tokens: null })
 });
@@ -145,7 +151,7 @@ function parseTokenValue(value) {
   return normalizeTokenCount(value);
 }
 
-/** 归一化整份额度；缺的 scope 用 fallback 补，避免旧文件把 B站 误变成 0=不限。 */
+/** 归一化整份额度；缺的 scope 用 fallback 补，避免旧文件把某项误变成 0=不限（旧文件里的 `bili` 直接丢弃）。 */
 export function normalizeLimits(input, fallback = DEFAULT_LIMITS) {
   const source = isPlainObject(input) ? (isPlainObject(input.limits) ? input.limits : input) : {};
   const base = isPlainObject(fallback) ? fallback : DEFAULT_LIMITS;
@@ -171,22 +177,36 @@ export function normalizeUsagePair(input) {
   };
 }
 
-/** 三类之和 = 总额。 */
+/**
+ * 各类之和 = 总额。`bili` 是已下线平台的历史桶：算进总额，但不作为分项再出现。
+ */
 export function totalsOf(usage) {
   const qq = normalizeUsagePair(usage?.qq);
-  const bili = normalizeUsagePair(usage?.bili);
   const other = normalizeUsagePair(usage?.other);
+  const legacy = LEGACY_SCOPES.reduce((acc, scope) => {
+    const pair = normalizeUsagePair(usage?.[scope]);
+    return { cost: acc.cost + pair.cost, tokens: acc.tokens + pair.tokens };
+  }, { cost: 0, tokens: 0 });
   return {
-    cost: qq.cost + bili.cost + other.cost,
-    tokens: qq.tokens + bili.tokens + other.tokens
+    cost: qq.cost + other.cost + legacy.cost,
+    tokens: qq.tokens + other.tokens + legacy.tokens
   };
 }
 
-/** 统一成 `{qq,bili,other,total}`（每个都带 cost/tokens）。 */
+/**
+ * 统一成 `{qq,other,total}`（每个都带 cost/tokens）。
+ * 旧文件里的 `bili` 并进 `other`：用户看到的三项加起来仍然等于总额，
+ * 不会出现「总额对得上、但底下四项只显示三项」的错位。
+ */
 export function normalizeUsage(input) {
   const out = {};
   for (const scope of CATEGORY_SCOPES) out[scope] = normalizeUsagePair(input?.[scope]);
-  out.total = totalsOf(out);
+  for (const scope of LEGACY_SCOPES) {
+    const pair = normalizeUsagePair(input?.[scope]);
+    out.other.cost += pair.cost;
+    out.other.tokens += pair.tokens;
+  }
+  out.total = totalsOf({ qq: out.qq, other: out.other });
   return out;
 }
 
@@ -288,7 +308,6 @@ export function writeDailyUsage(dir, usage, { day = localDayKey(), at = Date.now
     at: Number(at),
     source,
     qq: normalized.qq,
-    bili: normalized.bili,
     other: normalized.other,
     total: normalized.total,
     sessions: isPlainObject(sessions) ? sessions : {}

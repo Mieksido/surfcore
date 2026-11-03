@@ -10412,9 +10412,10 @@ async function main() {
   }
 
   // ── 每日 token 额度（2026-10-23 用户要求）────────────────────────────
-  // 权威用量由插件用 session/event 采集并写 token-usage-daily.json（含 B站）；
+  // 权威用量由插件用 session/event 采集并写 token-usage-daily.json；
   // 桥接只读快照，快照超过 10 分钟没更新才回落到自己的 tokenLedger。
-  // 这样 QQ 的唤醒闸门也能看到「B站 今天花了多少」，总额度才是真的总额度。
+  // 这样 QQ 的唤醒闸门也能看到「QQ 之外（黑话学习、桌宠等）今天花了多少」，
+  // 总额度才是真的总额度。（B站 于 2026-11-03 下线，历史 bili 用量读入时并进「其他」。）
   function bridgeBudgetLimits() {
     const g = tokenGuardCfg();
     const raw = g.maxDailyCostCNY;
@@ -10423,7 +10424,6 @@ async function main() {
     const cny = raw === undefined || raw === null || !Number.isFinite(n) ? 8 : (n > 0 ? n : null);
     return readBudget(SURFCORE_DIR, {
       qq: { cny, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: null, tokens: null },
       total: { cny: null, tokens: null },
     });
@@ -10442,17 +10442,17 @@ async function main() {
       log(`[token-budget] 读取桥接账本失败：${String(error?.message ?? error).slice(0, 120)}`);
     }
     const qq = ledger?.qq ?? { cost: 0, tokens: 0 };
+    // 2026-11-03 B站 下线：分项只剩 QQ / 其他。旧快照里的 `bili` 桶已由
+    // normalizeUsage 并进 `other`，这里不再单列，总额的口径保持不变。
     const other = ledger?.other ?? { cost: 0, tokens: 0 };
-    const bili = snapshot.day === day ? snapshot.bili : { cost: 0, tokens: 0 };
     return {
       day,
       at: snapshot.at,
       qq,
-      bili,
       other,
       total: {
-        cost: (qq.cost ?? 0) + (bili.cost ?? 0) + (other.cost ?? 0),
-        tokens: (qq.tokens ?? 0) + (bili.tokens ?? 0) + (other.tokens ?? 0),
+        cost: (qq.cost ?? 0) + (other.cost ?? 0),
+        tokens: (qq.tokens ?? 0) + (other.tokens ?? 0),
       },
       source: 'bridge-ledger',
       stale: true,

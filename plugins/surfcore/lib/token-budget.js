@@ -2,8 +2,8 @@
  * SurfCore 插件侧的「今日 token 用量」采集器（2026-10-23 用户要求）。
  *
  * 为什么要插件自己采，而不是只读 QQ 桥接的账本：
- *   · 桥接只 follow QQ 会话，看不到 `bili-whale*`（B站 生物钟）和它们的子会话；
- *   · 用户要的是「QQ / B站 / 其他」三类的当日总量，桥接账本没有 B站；
+ *   · 桥接只 follow QQ 会话，看不到桌宠、黑话学习这些非 QQ 会话；
+ *   · 用户要的是「QQ / 其他」两类的当日总量（2026-11-03 B站 下线后从三类降为两类）；
  *   · 插件的 `ctx.on('session/event')` 能拿到**所有**已提交的 assistant usage，
  *     按事件时间计价，天然区分高峰/空闲，比轮询投影更准、更省。
  *
@@ -15,8 +15,9 @@
  *   · 每日 0 点（本地时区）重置当日累计；跨天事件按事件时间归属，不按处理时间。
  *
  * 分类：
- *   · B站：sessionId 以 `bili-whale` 开头（含角色后缀），子会话继承父类；
- *   · 其他：黑话学习会话（state/slang-session.json）或标题含「黑话」的 qq-chat；
+ *   · 其他：黑话学习会话（state/slang-session.json）、标题含「黑话」的 qq-chat，
+ *     以及历史 `bili-whale*` 会话（B站 已下线，只为把旧账算进「其他」而不是漏掉）；
+ *   · 子会话继承父会话分类；
  *   · QQ：agentPreset 以 `qq-chat` 开头，或 sessions.json 里映射的会话；
  *   · 其余（cordis / standard 用户会话）**不计入** SurfCore 总额。
  */
@@ -84,7 +85,6 @@ function budgetFallbackFromQqConfig(cfg) {
     : (n > 0 ? n : null);
   return {
     qq: { cny, tokens: null },
-    bili: { cny: null, tokens: null },
     other: { cny: null, tokens: null },
     total: { cny: null, tokens: null },
   };
@@ -190,7 +190,9 @@ export function createTokenBudgetService({
     if (!id) return null;
     const learnerId = readLearnerId();
     if (learnerId && id === learnerId) return 'other';
-    if (/^bili-whale(?:-|$)/.test(id)) return 'bili';
+    // B站 已下线（2026-11-03）：这类会话不会再产生，但旧 state 里还有存量，
+    // 归到「其他」而不是漏掉，否则当日用量会在升级瞬间凭空变少。
+    if (/^bili-whale(?:-|$)/.test(id)) return 'other';
     const parent = header.parentSession ?? summary.parentSessionId;
     if (parent) {
       const parentCategory = sessionCategory.get(String(parent)) ?? state.sessions[String(parent)]?.category;
@@ -289,7 +291,7 @@ export function createTokenBudgetService({
         return; // 下次 status 再试
       }
 
-      // 第一遍：记住元数据 + 能直接判断的分类（B站 / 黑话 / qq-chat）。
+      // 第一遍：记住元数据 + 能直接判断的分类（旧 B站会话 / 黑话 / qq-chat）。
       for (const item of items) {
         const id = String(item?.sessionId ?? '');
         if (!id) continue;
@@ -315,7 +317,7 @@ export function createTokenBudgetService({
           ensureSessionState(id).category = category;
         }
       }
-      // 第二遍：父会话分类已知后，把子会话继承过去（B站 子任务 / QQ 子任务）。
+      // 第二遍：父会话分类已知后，把子会话继承过去（旧 B站子任务 / QQ 子任务）。
       for (let round = 0; round < 4; round += 1) {
         let changed = false;
         for (const item of items) {
@@ -350,7 +352,7 @@ export function createTokenBudgetService({
         entry.lastSeenAt = Math.max(entry.lastSeenAt || 0, num(item?.updatedAt, now()));
         // 只有「之前真的采过这个会话」才能走同一天增量。空的 state（例如插件在
         // 没有 sessionController 的冒烟环境里写过一份 day=today 的空文件）不能把
-        // 累计投影当成今天的花费 —— 那样会把 10-20 就存在的 B站 会话整段算进今天。
+        // 累计投影当成今天的花费 —— 那样会把很久以前就存在的旧会话整段算进今天。
         const hadState = entry.lastSeq >= 0 || totalTokensOf(entry.seen) > 0 || entry.dayTokens > 0 || entry.dayCost > 0;
         if (entry.model && !model) model = entry.model;
         if (!entry.model) entry.model = model;
@@ -665,7 +667,7 @@ export function createTokenBudgetService({
     return buildStatus({ takeAlertFlag });
   }
 
-  async function block(scope = 'bili', { timeoutMs = 4000 } = {}) {
+  async function block(scope = 'other', { timeoutMs = 4000 } = {}) {
     await withTimeout(ensureReady(), timeoutMs);
     const rolled = ensureDay(now());
     if (rolled || persistTimer) persist(false);
@@ -718,7 +720,7 @@ export function createTokenBudgetService({
   }
 
   function addLimit(scope, unit, amount) {
-    if (!SCOPES.includes(scope)) throw new Error('scope 必须是 qq / bili / other / total');
+    if (!SCOPES.includes(scope)) throw new Error(`scope 必须是 ${SCOPES.join(' / ')}`);
     if (unit !== 'cny' && unit !== 'tokens') throw new Error('unit 必须是 cny / tokens');
     const delta = Number(amount);
     if (!Number.isFinite(delta) || delta <= 0) throw new Error('加额度必须是正数');
@@ -732,7 +734,6 @@ export function createTokenBudgetService({
   function resetLimits() {
     return saveLimits({
       qq: { cny: null, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: null, tokens: null },
       total: { cny: null, tokens: null },
     });

@@ -2,7 +2,7 @@
           rfcore —— 客户端半边：DSH 设置里的「SurfCore」窗口。
  *
  * 这是合体后唯一的设置入口。它按标签页装下：
- *   概览 / 角色 / QQ / 语音 / 桌宠 / B站 / Token 额度 / 观看历史 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断
+ *   概览 / 角色 / QQ / 语音 / 桌宠 / 抖音 / Token 额度 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断
  *
  * 数据流：本组件 ⇄ /dsh-surfcore/api/*（同源 fetch）⇄ 原生配置文件。
  * 不制造第二份配置：QQ 仍写 <surfcore>/config.json，B站仍写
@@ -3493,7 +3493,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
     // ── 每日 token 额度（2026-10-23 用户要求）─────────────────────────────
     // 一个页面管三件事：
-    //   · 分项额度：QQ / B站 / 其他（黑话学习等）；
+    //   · 分项额度：QQ / 其他（黑话学习等）；
     //   · 总额度：SurfCore 所有花费的天花板；
     //   · 今日用量 + 80% 提醒（提醒由主组件统一弹，服务端保证每天只给一次）。
     //
@@ -3656,7 +3656,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const totalPair = limits.total ?? { cny: null, tokens: null };
       const setScope = (scope, pair) => onChange({ ...limits, [scope]: pair });
       const sum = (unit) => {
-        const n = ["qq", "bili", "other"].reduce((acc, key) => acc + (Number(limits[key]?.[unit]) || 0), 0);
+        const n = ["qq", "other"].reduce((acc, key) => acc + (Number(limits[key]?.[unit]) || 0), 0);
         return n > 0 ? Math.round(n * 10000) / 10000 : null;
       };
       const totalRatio = Math.max(ratios.total?.cny ?? 0, ratios.total?.tokens ?? 0);
@@ -3669,12 +3669,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("b", null, fmtMoney(usage.total?.cost)),
               h("span", null, `${fmtTokenNum(usage.total?.tokens)} token`)),
             h("div", { className: "qbw-hint" },
-              "数据来源：DSH session/event 实时累计（QQ + B站 + 黑话学习等）。",
+              "数据来源：DSH session/event 实时累计（QQ + 黑话学习等后台任务）。",
               totalPair.cny != null || totalPair.tokens != null
                 ? ` 总额度已用 ${fmtPercent(totalRatio)}。`
                 : " 还没设总额度。")),
           h("div", { className: "qbw-budget-status" },
-            blocked.total ? h("span", { className: "qbw-badge bad" }, "总额已达上限：QQ 不再唤醒 / B站 不再叫醒") : null,
+            blocked.total ? h("span", { className: "qbw-badge bad" }, "总额已达上限：QQ 不再唤醒") : null,
             alertedToday ? h("span", { className: "qbw-badge warn" }, `今天已提醒过${alertedText ? `（${alertedText}）` : ""}`) : null,
             h("span", { className: "qbw-badge" }, `价目表 ${budget.priceTable?.version ?? "—"}`),
             budget.source ? h("span", { className: "qbw-badge" }, budget.source) : null)),
@@ -3687,17 +3687,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             limits,
             ratios: ratios.qq,
             blocked: blocked.qq,
-            onChange: setScope,
-            disabled,
-          }),
-          h(BudgetScopeCard, {
-            scope: "bili",
-            title: "B站",
-            subtitle: "生物钟叫醒、评论区倾听、私信、直播间、动态提醒；到上限后暂停叫醒。",
-            usage: usage.bili,
-            limits,
-            ratios: ratios.bili,
-            blocked: blocked.bili,
             onChange: setScope,
             disabled,
           }),
@@ -3715,7 +3704,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(BudgetScopeCard, {
             scope: "total",
             title: "SurfCore 总额度",
-            subtitle: "整个插件的天花板：QQ + B站 + 其他一起算；任一单位到 100% 就同时停两边。",
+            subtitle: "整个插件的天花板：QQ + 其他一起算；任一单位到 100% 就同时停两边。",
             usage: usage.total,
             limits,
             ratios: ratios.total,
@@ -3737,7 +3726,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 h("button", {
                   type: "button", className: "qbw-chip", disabled,
                   onClick: () => setScope("total", { cny: sum("cny"), tokens: sum("tokens") }),
-                }, "= QQ+B站+其他 之和"),
+                }, "= QQ+其他 之和"),
                 h("button", {
                   type: "button", className: "qbw-chip" + ((totalPair.cny != null || totalPair.tokens != null) ? " on" : ""), disabled,
                   onClick: () => {
@@ -3748,7 +3737,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                     onChange({
                       ...limits,
                       qq: { cny: null, tokens: null },
-                      bili: { cny: null, tokens: null },
                       other: { cny: null, tokens: null },
                     });
                   },
@@ -3758,13 +3746,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                   onClick: () => setScope("total", { cny: null, tokens: null }),
                 }, "清空总额")),
               h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
-                "总限额是额外天花板：QQ / B站 的分项额度仍然各自生效，两者谁先到就按谁停。"))}),
+                "总限额是额外天花板：QQ 的分项额度仍然各自生效，两者谁先到就按谁停。"))}),
         ),
         h("div", { className: "qbw-budget-note" },
           h("div", { className: "qbw-hint" },
             "· 金额与 token 是两套独立额度：可以只填一种，也可以两种都填；两种都填时先到的那条生效。",
             "· 80% 弹窗每天只弹第一次（分项或总额都算）；之后同一天其他项再到 80% 不再打扰，页面右上角会保留「今天已提醒过」。",
-            "· 保存后立即生效：QQ 下一次唤醒、B站 下一次叫醒开始按新额度判断。"),
+            "· 保存后立即生效：QQ 下一次唤醒开始按新额度判断。"),
           h(Btn, { onClick: onSave, disabled: !!busy }, busy === "save" ? "保存中…" : "保存额度")));
     }
 

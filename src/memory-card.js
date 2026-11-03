@@ -873,7 +873,9 @@ export function renderFullMemoryCard(records, { now = Date.now(), truncated = fa
     ['## 最初的日子（和主人）', groups.initial.sort(byDate)],
     ['## 和主人（管理员）', groups.owner.sort(byDate)],
     ['## 桌宠（私下相处）', groups.pet.sort(byDate)],
-    ['## B站（冲浪）', groups.bili.sort(byDate)],
+    // 数据键仍是 `bili`（存量记录的历史键，改名要写迁移）；标题只描述事实：
+    // 这些是「看过的视频」，来源平台已于 2026-11-03 下线，不会再新增。
+    ['## 看过的视频（历史）', groups.bili.sort(byDate)],
     ['## QQ 与群里的记忆', groups.qq.sort(byDate)],
     ['## 其他 / 手动', groups.other.sort(byDate)],
   ];
@@ -1474,7 +1476,13 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
   return { added, addedPet, touched };
 }
 
-/** 一批 B站 bili-memory.json entries → 记忆记录。sourceId 去重，重复刷新不重复写。 */
+/**
+ * 一批 bili-memory.json entries → 记忆记录。sourceId 去重，重复刷新不重复写。
+ *
+ * 历史接口：B站 于 2026-11-03 下线后不再有新 entries 产生，这条链路只负责把
+ * 存量记录读进记忆卡（旧文件还在，读不到就是空数组）。抖音的观看记忆**不走这里**——
+ * 它由 dsh-douyin-agent 自己维护，SurfCore 用 `douyin-memory.md` 单向注入 QQ 提示词。
+ */
 export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) {
   const cfg = normalizeMemoryCardConfig(config);
   let added = 0;
@@ -1820,7 +1828,7 @@ export function renderMemoryCard(card, options = {}) {
     { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 40, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
     { key: 'recent', title: '## 最近记得的', priority: 30, lines: sections.recent.slice(0, limits.recent).map((record) => recordLine(record, { platform, full })) },
     { key: 'pet', title: '## 桌宠（私下相处）', priority: 36, lines: (sections.petModule ?? []).slice(0, limits.pet).map((record) => recordLine(record, { platform, full })) },
-    { key: 'bili', title: '## B站（冲浪）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },
+    { key: 'bili', title: '## 看过的视频（历史）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },
     { key: 'qq', title: '## QQ 与群里的记忆', priority: 20, lines: sections.qqModule.slice(0, limits.qq).map((record) => recordLine(record, { platform, full })) },
     { key: 'fuzzy', title: '## 正在模糊的事', priority: 10, lines: sections.fuzzy.slice(0, limits.fuzzy).map((record) => recordLine(record, { platform, full })) },
   ].filter((section) => section.lines.length);

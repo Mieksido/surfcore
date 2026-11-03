@@ -19,7 +19,6 @@ const files = {
     updatedAt: now,
     limits: {
       qq: { cny: 8, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: null, tokens: null },
       total: { cny: null, tokens: null },
     },
@@ -29,7 +28,6 @@ const files = {
     at: now,
     source: 'surfcore-plugin',
     qq: { cost: 9, tokens: 9_000_000 },
-    bili: { cost: 0, tokens: 0 },
     other: { cost: 0, tokens: 0 },
     total: { cost: 9, tokens: 9_000_000 },
     sessions: {},
@@ -79,14 +77,15 @@ try {
   writeJson(dailyPath, {
     day, at: now, source: 'surfcore-plugin',
     qq: { cost: 6.4, tokens: 640_000 },
-    bili: { cost: 0, tokens: 0 },
     other: { cost: 0, tokens: 0 },
     total: { cost: 6.4, tokens: 640_000 },
     sessions: {},
   });
   assert.equal(h.tokenGuardWakeBlock('group:456', { wakeTimes: [] }), null, '80% 只提醒不拦唤醒');
 
-  // 3. 总额度：QQ ¥1 + B站 ¥5，总额上限 ¥5 → 拦；B站 的花费必须被 QQ 侧看见
+  // 3. 总额度：QQ ¥1 + 旧账本里的 B站 ¥5，总额上限 ¥5 → 拦。
+  //    这条同时钉住「B站 下线后，旧文件里的 bili 花费仍然算进总额」——
+  //    漏掉的话，升级当天的花费会凭空少一截。
   writeJson(dailyPath, {
     day, at: now, source: 'surfcore-plugin',
     qq: { cost: 1, tokens: 100_000 },
@@ -99,7 +98,6 @@ try {
     version: 1, updatedAt: now,
     limits: {
       qq: { cny: 8, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: null, tokens: null },
       total: { cny: 5, tokens: null },
     },
@@ -111,23 +109,22 @@ try {
   assert.match(totalBlocked.error, /¥6\.00/);
   assert.match(totalBlocked.error, /¥5\.00/);
 
-  // 4. B站 分项额度不拦 QQ（那是 B站 自己的闸）；桥接这里只看 QQ / 总额
+  // 4. 旧文件里残留的 bili 额度键被忽略（不再有 B站 分项），不会误拦 QQ 唤醒
   writeJson(budgetPath, {
     version: 1, updatedAt: now,
     limits: {
       qq: { cny: 8, tokens: null },
-      bili: { cny: 1, tokens: null },
+      bili: { cny: 1, tokens: null }, // 旧键：应被忽略
       other: { cny: null, tokens: null },
       total: { cny: null, tokens: null },
     },
   });
-  assert.equal(h.tokenGuardWakeBlock('group:456', { wakeTimes: [] }), null, 'B站 分项额度不应拦 QQ 唤醒');
+  assert.equal(h.tokenGuardWakeBlock('group:456', { wakeTimes: [] }), null, '旧 bili 额度键被忽略，不拦 QQ 唤醒');
 
   // 5. 黑话学习：其他 ¥2 / ¥1 → 拦；总额到顶也拦
   writeJson(dailyPath, {
     day, at: now, source: 'surfcore-plugin',
     qq: { cost: 0, tokens: 0 },
-    bili: { cost: 0, tokens: 0 },
     other: { cost: 2, tokens: 200_000 },
     total: { cost: 2, tokens: 200_000 },
     sessions: {},
@@ -136,7 +133,6 @@ try {
     version: 1, updatedAt: now,
     limits: {
       qq: { cny: 8, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: 1, tokens: null },
       total: { cny: null, tokens: null },
     },
@@ -146,7 +142,6 @@ try {
     version: 1, updatedAt: now,
     limits: {
       qq: { cny: 8, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: null, tokens: null },
       total: { cny: 2, tokens: null },
     },
@@ -157,7 +152,6 @@ try {
   writeJson(dailyPath, {
     day, at: now - 20 * 60 * 1000, source: 'surfcore-plugin',
     qq: { cost: 9, tokens: 9_000_000 },
-    bili: { cost: 0, tokens: 0 },
     other: { cost: 0, tokens: 0 },
     total: { cost: 9, tokens: 9_000_000 },
     sessions: {},
@@ -166,7 +160,6 @@ try {
     version: 1, updatedAt: now,
     limits: {
       qq: { cny: 8, tokens: null },
-      bili: { cny: null, tokens: null },
       other: { cny: null, tokens: null },
       total: { cny: null, tokens: null },
     },

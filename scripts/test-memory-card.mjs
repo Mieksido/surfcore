@@ -96,7 +96,7 @@ test('B站摄取出模块，且 sourceId 去重；时政/八卦只留在本地�
   assert.match(biliPrompt, /鲸鱼娘学黑话/);
   assert.doesNotMatch(biliPrompt, /某国大选新闻/);
   const full = renderMemoryCard(card, { config: CFG, full: true, now: NOW + 10 * DAY_MS });
-  assert.match(full, /B站（冲浪）/);
+  assert.match(full, /看过的视频（历史）/, '旧 B站 记录仍在，但标题不再自称「B站（冲浪）」');
 });
 
 test('隐私：QQ 私事默认不进 B站 提示词；密钥/手机号在入库前被隐藏', () => {

@@ -253,3 +253,43 @@ git reset --hard HEAD && git clean -fd
 
 §5 第 5 条的命名债原样留着：Token 页仍是「QQ / B站 / 其他 / 总额」四项（自洽、测试绿），
 记忆卡 `scope/platform` 仍是 `bili`（存量数据键名，改名要写迁移）。别半截动。
+
+---
+
+## 11. 命名债第一半：Token 分项从四项降到三项（2026-11-03 23:2x）
+
+§5 第 5 条只做了一半，另一半**故意没做**（原因见最后）。
+
+### 改成了什么
+
+| 层 | 改动 |
+| --- | --- |
+| `src/token-budget.js` | `SCOPES = ['qq','other','total']`、`CATEGORY_SCOPES = ['qq','other']`、`SCOPE_LABELS` 去掉 B站、`DEFAULT_LIMITS` 去掉 bili；新增 `LEGACY_SCOPES = ['bili']`，`normalizeUsage()` / `totalsOf()` 把旧 `bili` 桶**并进 `other`**，`writeDailyUsage()` 不再写 `bili` 键 |
+| `plugins/surfcore/lib/token-usage-pure.js` | `CATEGORY_KEYS = ['qq','other']`；`normalizeCategories()` 折叠旧 bili；`normalizeSession()` 把旧 `category:'bili'` 读成 `'other'` |
+| `plugins/surfcore/lib/token-budget.js` | `classify()` 的 `/^bili-whale/` 分支改成返回 `'other'`（旧会话仍计入，不漏账）；`block()` 默认 scope 改 `'other'`；`resetLimits()` / `budgetFallbackFromQqConfig()` 去掉 bili；默认值报错文案改成按 `SCOPES` 拼 |
+| `src/bridge.js` | `bridgeBudgetLimits()` / `bridgeDailyUsage()` 不再产出 `bili` 分项；总额 = QQ + 其他 |
+| `plugins/surfcore/lib/client.js` | Token 页删掉「B站」卡；`sum()`、总额提示、数据来源文案、页头注释同步 |
+| 测试 | `test-token-budget`（86 项）、`-bridge`、`-service`（39 项）、`test-token-economy`（38 项）全绿；审计仍 56/67 |
+
+### 为什么「并进 other」而不是直接丢掉
+
+丢掉的后果是：升级那一刻 `token-usage-daily.json` 里当天的 B站花费**凭空消失**，
+总额度突然变松 —— 这不是「清理命名」，是**改账**。并进 `other` 后总额一分不变，
+只是那部分钱不再单列（B站 本来也没额度闸了）。
+`normalizeSession` 同理：旧 `bili-whale*` 会话读回来算 `other`，不然后台任务的花费会漏。
+
+### 真实数据核对（本机）
+
+- `~/.dsh/surfcore/token-budget.json` 里还留着 `bili: {cny:5}` —— 读的时候被忽略，下次保存自然消失，**不用手工改**。
+- 当天 `token-usage-daily.json`：`qq ¥10.08`、`other ¥1.51`（含并进来的历史 B站）、`total ¥11.60`；
+  `sessions` 里 `bili-whale-char-mvs3a96g` 已经是 `other`。
+
+### 没做的那一半（记忆卡 / 对齐页的 `bili`）
+
+- `scope:'bili'`、`bili-memory.json`、`promptBili`、`ingestBiliEntries` / `readBiliEntries` 这些**存量数据键名全部保留**，
+  只在代码里标了「历史接口」。理由：抖音的观看记忆**不进记忆卡**（由插件自己落盘、SurfCore 单向读 `douyin-memory.md`），
+  改名成 `douyin` 会是**撒谎**（永远不会再有这类记录进来）；真要改得设计一个新语义 + 写迁移，不是改字符串。
+- 只改了**说给人/说给模型听的那一层**：记忆卡分节标题 `## B站（冲浪）` → `## 看过的视频（历史）`
+  （这条会进 QQ 提示词，不改的话她会以为自己在刷 B站）。
+- 对齐页仍留着「QQ ↔ B站 UID + 称呼」表单（`lib/client.js` AdminAlign 区）：跨平台身份对齐**现在没有对端**了，
+  但删它要连 `alignments.json` 的存量数据一起决定怎么处理 —— 属于**产品决策**，不是改名。

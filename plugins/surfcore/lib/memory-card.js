@@ -69,6 +69,8 @@ function todayKey(now = Date.now()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// 历史接口：B站 下线后这个文件不再增长，只用于把存量观看记录并进记忆卡。
+// （抖音的观看记忆归 dsh-douyin-agent 自己管，不走记忆卡，见 PITFALLS #85。）
 function readBiliEntries() {
   try {
     const raw = JSON.parse(fs.readFileSync(biliMemoryFile(), 'utf8'));
