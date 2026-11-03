@@ -8657,7 +8657,10 @@ async function main() {
         }
         // ── 记忆卡容量告警：只私聊管理员本人，不发群、不接受任意收件人 ──────────
         if (req.method === 'POST' && url.pathname === '/api/memory-card/notify') {
-          const body = JSON.parse(await readBody() || '{}');
+          // readBody() 自己已经 JSON.parse 过并保证返回对象（空体返回 {}），这里再 parse 一次
+          // 等于 JSON.parse({}) → 抛「"[object Object]" is not valid JSON」，
+          // 于是这条告警永远发不出去，只在 plugin.log 里每 10 分钟刷一行失败（PITFALLS #89）。
+          const body = await readBody();
           if (!cfg.ownerQQ) { sendJson({ ok: false, error: '未配置管理员 QQ（ownerQQ）' }, 400); return; }
           const level = Math.max(1, Math.min(3, Number(body.level) || 1));
           const now = Date.now();

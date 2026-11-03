@@ -2896,3 +2896,35 @@ SurfCore 只读它落盘的结果。B站 这一整套随之物理删除，不是
 **残留（已知、无害）**：`test-host-smoke.mjs` / `test-platform-start-host.mjs` 仍会写一次
 `state/alignment-brief.md`，内容是空串（真实 `state/` 下没有 `alignments.json`，空就是正确内容）。
 这两个测试是「照真实配置冒烟」的设计，没跟着改；要彻底隔离再单独做。
+
+## #89（2026-11-03）记忆卡容量告警从来没发出去过：`JSON.parse(await readBody())`
+
+**症状**：`~/.dsh/surfcore/plugin.log` 每 10 分钟固定一行 ——
+`记忆卡告警通知失败："[object Object]" is not valid JSON`。听着像偶发，其实**每一次都失败**。
+
+**影响面**：记忆卡已经 80.5%（48283 字）持续告警中，主人**一条通知都没收到**。
+这个告警是「记忆要爆了，该压缩」的唯一提醒，等于自动压缩的保险丝被拔了。
+
+**根因**：`src/bridge.js` 的 `readBody()` 自己就把请求体 `JSON.parse` 过、并保证返回对象
+（空体返回 `{}`，非法 JSON 直接 `fail(400)`）。但 `/api/memory-card/notify` 的处理器写成了
+`const body = JSON.parse(await readBody() || '{}')` —— 对象再 parse 一次，Node 22 抛
+`"[object Object]" is not valid JSON`，被外层 catch 成 500 返回给插件，插件打一行日志。
+
+只有这一处这么写（全仓 `grep "JSON.parse(await readBody"` 只命中它），其余 40+ 个调用点都是
+`const body = await readBody()`。属于手写时的想当然，不是 API 变更。
+
+**为什么半年没被发现**：这条链路**零测试覆盖**（`grep -r memory-card/notify scripts/` 空），
+失败只落在日志里，接口 500 也没人看。80% 告警本身是低频事件。
+
+**修法**
+1. `const body = await readBody();`（保留 `!cfg.ownerQQ` 拒绝、收件人锁 `cfg.ownerQQ`、`memoryCardNotifyAt` 10 分钟冷却）。
+2. 新增 `scripts/test-memory-card-notify.mjs` 并进审计清单：
+   - 静态守卫：全仓不许出现 `JSON.parse(await readBody(`；`readBody` 内部必须仍然是它做 parse；
+   - 处理器契约：`await readBody()`、`!cfg.ownerQQ` 拒绝、`sendPrivateMessage(Number(cfg.ownerQQ)`、
+     请求体里的 `qq/userId/target/to` **不得**被采纳（否则这个接口就成了任意人私聊发送器）；
+   - 冷却：`memoryCardNotifyAt` + `10 * 60 * 1000`。
+   反向验过：把旧代码贴回去，测试立刻红（`1 !== 0`）。
+3. 审计 56/67（新增 1 个脚本，红的仍是原来那 11 个）。
+
+**教训**：**「只写日志的失败」等于没失败**。低频告警链路至少要有一条契约测试；
+凡是 `readBody()` 这类「已经帮你解析好」的封装，重复加工的表现是**恒定失败**而不是偶发。
