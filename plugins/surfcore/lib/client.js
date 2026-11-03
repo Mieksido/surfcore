@@ -2000,7 +2000,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("span", null, `${share.poolSize ?? 0} 条可用 · 已发过 ${share.sharedCount ?? 0} 条`)),
           h("div", { className: "qbw-kv" }, h("span", null, "上次分享"),
             h("span", null, share.lastSharedAt ? fmtTime(share.lastSharedAt) : "还没发过")),
-          h(Row, { label: "启用定时分享", hint: "到点从她刷过的作品里挑一条：先把标题+链接发到群，再让她补两三句短评。同一条作品 6 天内不重复。" },
+          h(Row, { label: "启用定时分享", hint: "到点从她刷过的作品里挑一条：先把标题+链接发到群，再让她补两三句短评。同一条作品 6 天内不重复。开关/时间点/群号都在桥接启动时读取，**保存后要重启 QQ 桥接才生效**。" },
             h("input", {
               type: "checkbox",
               checked: shareCfg.enabled === true,

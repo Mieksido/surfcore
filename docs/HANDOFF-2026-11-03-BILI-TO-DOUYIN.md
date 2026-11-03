@@ -102,6 +102,9 @@ SurfCore（DSH 插件 + 本地桥接 :3100）
 3. ~~**重启后按 §6 验**~~ ✅ 已完成，四条实测全部符合（见 §6 期望那一段的实测结论）。
 4. **把抖音素材池填上**（只剩这件）：在抖音插件面板点「开始有限轮次」，跑一轮后 `douyin-memory.md` 才会从空变成有记录；
    然后到设置页 → 抖音 → 「分享到群」开开关、填时间点和群号。
+   ⚠️ **开完开关要重启一次 QQ 桥接**：`douyinBridge.share` 是桥接启动时读的（`src/bridge.js` 里
+   `shareCfg = douyinBridge.share` 那段，只有启动时构造 `douyinShare`），热改配置不会凭空长出调度器。
+   设置卡片上已经加了这句提示；控制台概览里就有「重启」按钮。
 5. **剩余命名债（下一轮）**：Token 分项、记忆卡 `scope`/`platform` 仍叫 `bili`。
    要动的话一起动这几处，否则会半截：
    - `src/token-budget.js`：`SCOPES` / `CATEGORY_SCOPES` / `SCOPE_LABELS` / `DEFAULT_LIMITS` / `totalsOf` / `writeDailyUsage`；
@@ -236,8 +239,10 @@ git reset --hard HEAD && git clean -fd
 已修（`const body = await readBody();`）+ 新增 `scripts/test-memory-card-notify.mjs` 进审计清单，
 把「不许再双重解析 / 收件人锁 `cfg.ownerQQ` / 10 分钟冷却」钉住。反向验过：贴回旧代码立刻红。
 
-> ⚠️ 这条修复**要等下一次桥接重启才生效**。现在跑的还是重启前进程里的旧代码，
-> 所以 `plugin.log` 里那行失败还会继续出现，属预期，不是没修好。
+**已实测**：`POST /api/restart` 重启桥接（23:04 起来，pid 19212，SnowLuma/DSH 都重连上了），
+然后拿真实容量数据打了一次 `/api/memory-card/notify` → `{ok:true}`，
+`bridge.log` 落 `已私聊管理员记忆卡容量告警（80%）`，主人 QQ 上真收到了那条私聊。
+改之前同一请求是 500 + `"[object Object]" is not valid JSON`。
 
 ### 现在卡在哪
 
