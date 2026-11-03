@@ -4,15 +4,16 @@
  * 分工：
  *   · QQ 桥接（独立进程）只做两件事：把「主人消息 / 直接对她说的话 / 有情绪的公开发言」
  *     追加到 `memory-inbox.jsonl`；把 `memory-card-prompt-qq.md` 注入 QQ 提示词。
- *   · 本插件（DSH 宿主进程）定时摄取 inbox + `state/bili-memory.json`，跑每日遗忘整理、
- *     容量压缩，写 memory-card.json / .md / 两份 prompt 文件，并在 80/90/100% 时告警。
- *   · B站调度器每次醒来读 `memory-card-prompt-bili.md`。
+ *   · 本插件（DSH 宿主进程）定时摄取 inbox + 抖音观看记录 + `state/bili-memory.json`（历史），
+ *     跑每日遗忘整理、容量压缩，写 memory-card.json / .md / 两份 prompt 文件，并在 80/90/100% 时告警。
+ *   · 抖音观看记录从 `dsh-douyin-agent` 落盘的 `persona/state.json` 只读摄取（2026-11-03 起）。
  *
  * 只有本模块写记忆卡（单进程内用 promise 链串行化）；桥接只 append 不写卡，避免并发覆盖。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { BACKUP_DIR, QQ_STATE_DIR, maskPath } from './paths.js';
+import { readRecentObservations, resolveDouyinPaths } from './douyin-status.js';
 import {
   activeMemoryPaths, activePlatformStateDir,
 } from '../../../src/character-persona.js';
@@ -67,6 +68,22 @@ export function memoryCardPaths() {
 function todayKey(now = Date.now()) {
   const d = new Date(now);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * 抖音观看记录（只读插件落盘）。
+ *
+ * 为什么直接读插件目录、而不是读桥接生成的 `douyin-memory.json`：
+ * 那份是「当前简报」的副产品，桥接没跑就没有；插件的 `persona/state.json` 是源头，
+ * 插件一跑就有了。摄取靠 sourceId 去重，两边读同一批也不会重复入库。
+ * limit 给大一点（200）：记忆卡是长期记忆，不该只记住最近 20 条。
+ */
+function readDouyinEntries() {
+  try {
+    return readRecentObservations(resolveDouyinPaths(), 200);
+  } catch {
+    return [];
+  }
 }
 
 // 历史接口：B站 下线后这个文件不再增长，只用于把存量观看记录并进记忆卡。
@@ -301,6 +318,7 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
     const result = maintainMemoryCard({
       paths: pathsNow(),
       config,
+      douyinEntries: readDouyinEntries(),
       biliEntries: readBiliEntries(),
       inboxLines: readInboxLines(),
       now,

@@ -312,3 +312,38 @@ activePlatformStateDir(legacyDir) → cur ? characterPaths(cur.id).biliDir : leg
 文件夹名还是 `bili`，里面装的是抖音的东西。这不是显示层文案，而是**磁盘布局，所有读写都经过它**：
 改名等于给每个角色搬一次目录（还要兼容老角色包、快照、回滚）。这轮**没动**，记在这里；
 真要改就单开一轮：`characterPaths().biliDir` → 新键名 + 建 `legacyBiliDir` 回退 + 一次性迁移 + 快照兼容。
+
+---
+
+## 12. 抖音的观看记忆进记忆卡了（2026-11-03 23:4x）
+
+### 之前是什么状态
+
+抖音的观看记录只走一条路：`dsh-douyin-agent` 落盘 → 桥接生成 `douyin-memory.md`（**当前简报**）→ 注入 QQ 提示词。
+简报每天重写、只留最近一小段，**没有长期记忆**：三个月前看过什么，提示词里查不到，记忆卡里也没有。
+
+### 现在两条路都走
+
+| 层 | 改动 |
+| --- | --- |
+| `src/memory-card.js` | 新增 `ingestDouyinEntries()`：`sourceId = douyin:<videoId>` 去重；只记标题 + 作者，**不存链接**（`redactForMemory` 统一抹 URL）；`scope/platform = 'douyin'`；`maintainMemoryCard({ douyinEntries })` 接上 |
+| 同上 | 平台白名单（`normalizeRecord`）、`scoreMemory` 的 scope 推断、`SOURCE_PLATFORM['douyin-watch']`、`fullSectionOf()`、全量卡分组都加了 `douyin` |
+| 同上 | 提示词分节：`## 看过的视频（抖音）`（priority 23，QQ 版最多 6 条）；原 B站 分节改名 `## 看过的视频（历史 · B站）` |
+| `plugins/surfcore/lib/memory-card.js` | `readDouyinEntries()` 直接读插件的 `memory/persona/state.json`（`readRecentObservations`，取 200 条），每 10 分钟的整理里一并入库 |
+| 测试 | `scripts/test-memory-card.mjs` 新增一条：去重 / 号码脱敏 / 链接不入库 / 分节渲染 / `maintainMemoryCard` 认这个参数（26 项全绿） |
+
+### 为什么读插件目录，而不是读桥接生成的 `douyin-memory.json`
+
+`douyin-memory.json` 是桥接那个进程的产物，桥接没跑就没有；插件的 `persona/state.json` 是**源头**，
+插件一刷视频就有。两边读同一批也不会重复入库 —— 靠 `sourceId` 去重。
+
+### 分工（别搞混）
+
+- `douyin-memory.md`：**当前简报**，每天重写，只讲最近看了什么，进提示词的「她最近在刷什么」。
+- 记忆卡：**长期记忆**，进来后走正常的重要度 / 模糊 / 遗忘流程。半年前看的会自然淡掉。
+- 两者都只含**公开作品**（标题 / 作者），私信根本不在数据源里。
+
+### 生效条件
+
+插件每次整理（10 分钟一次）都会读一次观察记录。**素材池空的时候等于没变化** ——
+得先在抖音插件面板跑一轮「开始有限轮次」，`observations` 才有东西，下一次整理就会进卡。

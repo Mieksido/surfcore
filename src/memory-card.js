@@ -92,6 +92,8 @@ const SOURCE_PLATFORM = {
   'bili-dynamic': 'bili',
   'bili-comment': 'bili',
   'bili-diary': 'bili',
+  // 2026-11-03 B站 下线后，刷视频的记忆来自 dsh-douyin-agent 的观看记录。
+  'douyin-watch': 'douyin',
   manual: 'shared',
   system: 'shared',
 };
@@ -360,8 +362,8 @@ function normalizeRecord(item) {
     id: String(raw.id ?? `mem_${hash(`${createdAt}|${title}|${text}`)}`),
     source: String(raw.source ?? 'system'),
     sourceId: String(raw.sourceId ?? ''),
-    platform: ['qq', 'bili', 'shared', 'pet'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
-    scope: ['qq', 'bili', 'shared', 'pet'].includes(raw.scope) ? raw.scope : 'qq',
+    platform: ['qq', 'bili', 'douyin', 'shared', 'pet'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
+    scope: ['qq', 'bili', 'douyin', 'shared', 'pet'].includes(raw.scope) ? raw.scope : 'qq',
     kind: String(raw.kind ?? 'event'),
     title: short(title, 80),
     text: String(text).slice(0, 1200),
@@ -701,6 +703,7 @@ function writeFullStats(paths, stats) {
 function fullSectionOf(record) {
   if (record.platform === 'pet') return 'pet';
   if (asArray(record.tags).includes('owner')) return 'owner';
+  if (record.platform === 'douyin') return 'douyin';
   if (record.platform === 'bili') return 'bili';
   if (record.platform === 'qq') return 'qq';
   return 'other';
@@ -861,7 +864,7 @@ export function renderFullMemoryCard(records, { now = Date.now(), truncated = fa
       '这张卡只存档、不参与日常提示词；日常加载的是 `memory-card.md` 的衰减版。',
     ].join('\n');
   }
-  const groups = { firstMet: [], initial: [], owner: [], pet: [], bili: [], qq: [], other: [] };
+  const groups = { firstMet: [], initial: [], owner: [], pet: [], douyin: [], bili: [], qq: [], other: [] };
   for (const record of list) {
     if (record.firstMet) groups.firstMet.push(record);
     else if (asArray(record.tags).includes('owner') && record.isInitial) groups.initial.push(record);
@@ -875,7 +878,8 @@ export function renderFullMemoryCard(records, { now = Date.now(), truncated = fa
     ['## 桌宠（私下相处）', groups.pet.sort(byDate)],
     // 数据键仍是 `bili`（存量记录的历史键，改名要写迁移）；标题只描述事实：
     // 这些是「看过的视频」，来源平台已于 2026-11-03 下线，不会再新增。
-    ['## 看过的视频（历史）', groups.bili.sort(byDate)],
+    ['## 看过的视频（抖音）', (groups.douyin ?? []).sort(byDate)],
+    ['## 看过的视频（历史 · B站）', groups.bili.sort(byDate)],
     ['## QQ 与群里的记忆', groups.qq.sort(byDate)],
     ['## 其他 / 手动', groups.other.sort(byDate)],
   ];
@@ -1163,7 +1167,7 @@ export function scoreMemory(input = {}, config = {}) {
     kind,
     pinned,
     tags: [...tags].slice(0, 12),
-    scope: input.scope ?? (source.startsWith('qq') ? 'qq' : (source.startsWith('bili') ? 'bili' : 'shared')),
+    scope: input.scope ?? (source.startsWith('qq') ? 'qq' : (source.startsWith('douyin') ? 'douyin' : (source.startsWith('bili') ? 'bili' : 'shared'))),
     platform: input.platform ?? SOURCE_PLATFORM[source] ?? 'shared',
   };
 }
@@ -1533,6 +1537,54 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
   return { added };
 }
 
+/**
+ * 一批抖音观看记录 → 记忆记录。sourceId 用 `douyin:<videoId>` 去重，重复刷新不重复写。
+ *
+ * 数据源是 dsh-douyin-agent 落盘的 `persona/state.json: observations`
+ * （SurfCore 只读，不往回写）。**只记「看过什么」**：标题 + 作者，
+ * 不存链接、不存私信内容 —— 链接由 `redactForMemory` 统一抹掉，私信根本不在这个数据源里。
+ *
+ * 和 `douyin-memory.md` 的分工：那份是「当前简报」，每天重写、注入提示词用；
+ * 记忆卡是**长期记忆**，进来之后走正常的重要度 / 模糊 / 遗忘流程，
+ * 所以半年前看过什么会自然淡掉，而不是一直躺在提示词里。
+ */
+export function ingestDouyinEntries(card, entries, config = {}, now = Date.now()) {
+  const cfg = normalizeMemoryCardConfig(config);
+  let added = 0;
+  const seen = new Set(card.meta.sourceSeen);
+  const list = asArray(entries);
+  for (const entry of list) {
+    if (added >= 300) break;
+    if (!entry || typeof entry !== 'object') continue;
+    const videoId = String(entry.videoId ?? '').trim();
+    const sourceId = String(entry.id ?? '').trim() || (videoId ? `douyin:${videoId}` : '');
+    if (!sourceId || seen.has(sourceId)) continue;
+    seen.add(sourceId);
+    const title = redactForMemory(entry.title ?? '', { scope: 'douyin', maxChars: 100 });
+    if (!title) continue;
+    const author = redactForMemory(entry.author ?? '', { scope: 'douyin', maxChars: 40 });
+    const at = timeOf(entry.observedAt, timeOf(entry.at, timeOf(entry.date, now)));
+    const result = addMemoryRecord(card, {
+      source: 'douyin-watch',
+      sourceId,
+      text: `在抖音看了《${title}》${author ? `（@${author}）` : ''}`,
+      title: `看过《${short(title, 40)}》`,
+      createdAt: at,
+      lastSeenAt: at,
+      tags: ['douyin', 'watch'],
+      scope: 'douyin',
+      platform: 'douyin',
+    }, cfg, now);
+    if (result.added) added += 1;
+  }
+  card.meta.sourceSeen = [...seen].slice(-5000);
+  if (added) {
+    card.stats.fromDouyin = (Number(card.stats.fromDouyin) || 0) + added;
+    card.stats.lastIngestAt = iso(now);
+  }
+  return { added };
+}
+
 function ownerImportant(record, cfg) {
   return record.tags.includes('owner') && record.importance >= cfg.minOwnerImportance;
 }
@@ -1720,6 +1772,7 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = 
   const initial = [];
   const owner = [];
   const recent = [];
+  const douyinModule = [];
   const biliModule = [];
   const qqModule = [];
   const petModule = [];
@@ -1746,6 +1799,7 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = 
       continue;
     }
     if (record.platform === 'pet' || record.scope === 'pet') push(petModule, record);
+    else if (record.platform === 'douyin' || record.scope === 'douyin') push(douyinModule, record);
     else if (record.platform === 'bili' || record.scope === 'bili' || record.scope === 'shared') push(biliModule, record);
     else push(qqModule, record);
   }
@@ -1762,6 +1816,7 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {} } = 
     initial: initial.sort((a, b) => timeOf(a.createdAt, 0) - timeOf(b.createdAt, 0)),
     owner: owner.sort(byImportance),
     recent: recent.sort(byRecent),
+    douyinModule: douyinModule.sort(byImportance),
     biliModule: biliModule.sort(byImportance),
     qqModule: qqModule.sort(byImportance),
     petModule: petModule.sort(byImportance),
@@ -1817,10 +1872,10 @@ export function renderMemoryCard(card, options = {}) {
   const scoped = full ? card : filterCardForConversation(card, options.conversationKey);
   const sections = sectionize(scoped, { platform, full, now, config: cfg });
   const limits = full
-    ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, recent: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
+    ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, recent: 9999, douyin: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
     : (platform === 'bili'
-      ? { firstMet: 0, anchors: 4, initial: 0, owner: 0, recent: 6, bili: 8, qq: 0, pet: 0, fuzzy: 3 }
-      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 8, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
+      ? { firstMet: 0, anchors: 4, initial: 0, owner: 0, recent: 6, douyin: 0, bili: 8, qq: 0, pet: 0, fuzzy: 3 }
+      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 8, douyin: 6, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
   const calls = [
     { key: 'firstMet', title: '## 初次相遇（和主人）', priority: 120, lines: sections.firstMet.slice(0, limits.firstMet).map((record) => recordLine(record, { platform, full })) },
     { key: 'anchors', title: '## 永远不会忘的', priority: 100, lines: sections.anchors.slice(0, limits.anchors).map((record) => recordLine(record, { platform, full })) },
@@ -1828,7 +1883,8 @@ export function renderMemoryCard(card, options = {}) {
     { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 40, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
     { key: 'recent', title: '## 最近记得的', priority: 30, lines: sections.recent.slice(0, limits.recent).map((record) => recordLine(record, { platform, full })) },
     { key: 'pet', title: '## 桌宠（私下相处）', priority: 36, lines: (sections.petModule ?? []).slice(0, limits.pet).map((record) => recordLine(record, { platform, full })) },
-    { key: 'bili', title: '## 看过的视频（历史）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },
+    { key: 'douyin', title: '## 看过的视频（抖音）', priority: 23, lines: (sections.douyinModule ?? []).slice(0, limits.douyin).map((record) => recordLine(record, { platform, full })) },
+    { key: 'bili', title: '## 看过的视频（历史 · B站）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },
     { key: 'qq', title: '## QQ 与群里的记忆', priority: 20, lines: sections.qqModule.slice(0, limits.qq).map((record) => recordLine(record, { platform, full })) },
     { key: 'fuzzy', title: '## 正在模糊的事', priority: 10, lines: sections.fuzzy.slice(0, limits.fuzzy).map((record) => recordLine(record, { platform, full })) },
   ].filter((section) => section.lines.length);
@@ -1983,6 +2039,7 @@ function writeTextAtomic(file, text) {
 export function maintainMemoryCard({
   paths,
   config = {},
+  douyinEntries = [],
   biliEntries = [],
   inboxLines = [],
   now = Date.now(),
@@ -1994,6 +2051,8 @@ export function maintainMemoryCard({
   const fullCfg = normalizeMemoryCardConfig(fullConfig ?? config);
   let card = loadMemoryCard(paths) || createEmptyCard(now);
   let changed = false;
+  const douyin = ingestDouyinEntries(card, douyinEntries, cfg, now);
+  if (douyin.added) changed = true;
   const bili = ingestBiliEntries(card, biliEntries, cfg, now);
   if (bili.added) changed = true;
   const qq = ingestInboxLines(card, inboxLines, cfg, now);

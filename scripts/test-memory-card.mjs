@@ -8,7 +8,7 @@ import { after, test } from 'node:test';
 import {
   DAY_MS, INITIAL_WINDOW_DAYS, addMemoryRecord, appendMemoryInboxEvent, applyDailyDecay,
   archiveDecayedToFull, clearFirstMeeting, compactMemoryCard, createEmptyCard, designateFirstMeeting,
-  fullMemoryCardStatus, ingestBiliEntries, ingestInboxLines, initialProbabilityForOffset, loadMemoryCard,
+  fullMemoryCardStatus, ingestBiliEntries, ingestDouyinEntries, ingestInboxLines, initialProbabilityForOffset, loadMemoryCard,
   maintainMemoryCard, memoryCardStatus, mergeMemories, normalizeMemoryCardConfig, readAllFullRecords,
   recallFullMemory, redactForMemory, refreshInitialState, renderFullMemoryCard, renderMemoryCard,
   resolveMemoryCardPaths, scoreMemory, shouldNotifyOwner, targetClarity,
@@ -96,7 +96,50 @@ test('B站摄取出模块，且 sourceId 去重；时政/八卦只留在本地�
   assert.match(biliPrompt, /鲸鱼娘学黑话/);
   assert.doesNotMatch(biliPrompt, /某国大选新闻/);
   const full = renderMemoryCard(card, { config: CFG, full: true, now: NOW + 10 * DAY_MS });
-  assert.match(full, /看过的视频（历史）/, '旧 B站 记录仍在，但标题不再自称「B站（冲浪）」');
+  assert.match(full, /看过的视频（历史 · B站）/, '旧 B站 记录仍在，但标题不再自称「B站（冲浪）」');
+});
+
+test('抖音观看记录入库：去重、脱敏、分节进提示词', () => {
+  const card = createEmptyCard(NOW);
+  const entries = [
+    { videoId: '7300000000000000001', title: '猫在键盘上睡着了，主人完全没法工作', author: '橘猫日记', url: 'https://www.douyin.com/video/7300000000000000001', observedAt: NOW - 60_000 },
+    { videoId: '7300000000000000002', title: '加我 12345678 一起玩', author: '号主', url: 'https://www.douyin.com/video/2', observedAt: NOW - 12 * DAY_MS },
+    { videoId: '', title: '没有 videoId 的条目', author: 'x', observedAt: NOW },
+  ];
+  const first = ingestDouyinEntries(card, entries, CFG, NOW);
+  assert.equal(first.added, 2, '有 videoId 的才入库');
+  assert.equal(card.stats.fromDouyin, 2);
+  const douyinRecords = card.records.filter((r) => r.platform === 'douyin');
+  assert.equal(douyinRecords.length, 2);
+  assert.ok(douyinRecords.every((r) => r.scope === 'douyin' && r.tags.includes('watch')));
+
+  // 同一个 videoId 反复刷新不重复写（插件每 10 分钟就会跑一次）
+  const again = ingestDouyinEntries(card, entries, CFG, NOW + 600_000);
+  assert.equal(again.added, 0, 'sourceId 去重');
+
+  // 链接不进记忆；5-12 位号码要被抹掉（和 B站 侧同一条隐私规则）
+  const allText = card.records.map((r) => `${r.title} ${r.text} ${r.detail}`).join('\n');
+  assert.doesNotMatch(allText, /https?:\/\//, '观看记录里不存链接');
+  assert.match(allText, /号码已隐藏/, '标题里的号码必须脱敏');
+  assert.doesNotMatch(allText, /12345678/);
+
+  // 最近的在「最近记得的」，超过 recentDays 的落进「看过的视频（抖音）」分节
+  const qqPrompt = renderMemoryCard(card, { config: CFG, platform: 'qq', maxChars: 2000, now: NOW });
+  assert.match(qqPrompt, /在抖音看了《猫在键盘上睡着了/);
+  assert.match(qqPrompt, /## 看过的视频（抖音）/);
+  // 抖音的私信内容不在数据源里，提示词里也就不该出现这类字眼
+  assert.doesNotMatch(qqPrompt, /私信/);
+
+  // maintainMemoryCard 也认这个参数（插件侧就是走这条路）
+  const dir = tempDir();
+  const paths = resolveMemoryCardPaths(dir);
+  const maintained = maintainMemoryCard({
+    paths,
+    config: CFG,
+    douyinEntries: entries,
+    now: NOW,
+  });
+  assert.ok(maintained.card.records.some((r) => r.platform === 'douyin'), '维护器要把抖音记录并进卡里');
 });
 
 test('隐私：QQ 私事默认不进 B站 提示词；密钥/手机号在入库前被隐藏', () => {
