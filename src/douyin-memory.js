@@ -63,15 +63,32 @@ export function createDouyinMemory({ stateDir, home = os.homedir(), log = () => 
   function collectEntries() {
     const pp = pluginPaths();
     const observations = readRecentObservations(pp, 240);
+    // 字段和 B站 时期 `bili-memory.json` 的条目结构对齐（type/bvid/text/quote/reason/
+    // anecdote/score/favorite/date/at/priority/shareable + 抖音自己的 author/videoId/duration）：
+    // 这样「一次观看」只有一种结构，记忆卡、简报、分享池都按同一套字段读，
+    // 换平台不用换脑子，也不用为抖音再写一份解析。
     const entries = observations.map((item) => ({
       id: `douyin:${item.videoId}`,
-      type: 'watch',
+      type: 'video',
       title: item.title,
-      author: item.author,
+      bvid: '',
       url: item.url,
-      videoId: item.videoId,
+      pic: '',
+      text: '',
+      quote: '',
+      reason: '',
+      anecdote: '',
+      score: 0,
+      favorite: false,
+      priority: 4,
+      // 公开作品可以拿去定时分享；和 B站 的 `shareable` 同一个含义，
+      // 分享池里显式写 false 的会被跳过（见 sharePool）。
+      shareable: true,
       date: dateOf(item.time),
       at: item.time,
+      // 抖音特有：作者与时长（B站 条目没有 author，靠 bvid 回查）。
+      author: item.author,
+      videoId: item.videoId,
       duration: item.durationSec,
     }));
     return { entries, report: readLatestReport(pp), paths: pp };
@@ -277,6 +294,8 @@ export function createDouyinMemory({ stateDir, home = os.homedir(), log = () => 
       const id = entry.videoId || entry.id;
       if (!id || seen.has(id)) continue;
       seen.add(id);
+      // 和 B站 一样的开关位：显式 shareable:false 的一律不进分享池。
+      if (entry.shareable === false) continue;
       const title = String(entry.title ?? '').trim();
       if (title.length < 6) continue;
       if (!String(entry.url ?? '').trim()) continue;

@@ -111,7 +111,9 @@ test('抖音观看记录入库：去重、脱敏、分节进提示词', () => {
   assert.equal(card.stats.fromDouyin, 2);
   const douyinRecords = card.records.filter((r) => r.platform === 'douyin');
   assert.equal(douyinRecords.length, 2);
-  assert.ok(douyinRecords.every((r) => r.scope === 'douyin' && r.tags.includes('watch')));
+  assert.ok(douyinRecords.every((r) => r.scope === 'douyin' && r.tags.includes('douyin')));
+  // 和 B站 走同一条链路：type 也统一成 video（不再有抖音专属的 'watch' 类型）
+  assert.ok(douyinRecords.every((r) => r.tags.includes('video')), '抖音条目类型与 B站 对齐为 video');
 
   // 同一个 videoId 反复刷新不重复写（插件每 10 分钟就会跑一次）
   const again = ingestDouyinEntries(card, entries, CFG, NOW + 600_000);

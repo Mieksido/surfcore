@@ -1481,13 +1481,23 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
 }
 
 /**
- * 一批 bili-memory.json entries → 记忆记录。sourceId 去重，重复刷新不重复写。
+ * 「看过的作品」条目 → 记忆记录（B站 / 抖音 共用这一条链路）。
  *
- * 历史接口：B站 于 2026-11-03 下线后不再有新 entries 产生，这条链路只负责把
- * 存量记录读进记忆卡（旧文件还在，读不到就是空数组）。抖音的观看记忆**不走这里**——
- * 它由 dsh-douyin-agent 自己维护，SurfCore 用 `douyin-memory.md` 单向注入 QQ 提示词。
+ * 条目字段沿用 B站 时期定下的结构（bili-memory.json 的形态），抖音只是换了个数据源：
+ *   { id, type: 'video'|'dynamic'|'comment', title, bvid?, videoId?, author?, url?,
+ *     text?, quote?, reason?, anecdote?, score?, favorite?, date?, at? }
+ *
+ * 两个平台只在标签 / 措辞 / 统计位上不同，去重、脱敏、评分、归档完全同一条路 ——
+ * 这样「记忆卡里怎么理解一次观看」只有一种解释，不会因为换了平台就换一套脑子。
  */
-export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) {
+function ingestWatchEntries(card, entries, opts, config, now) {
+  const {
+    scope = 'bili',
+    platform = 'bili',
+    label = ' B 站',
+    platformLabel = 'B站',
+    statsKey = 'fromBili',
+  } = opts;
   const cfg = normalizeMemoryCardConfig(config);
   let added = 0;
   const seen = new Set(card.meta.sourceSeen);
@@ -1495,94 +1505,90 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
   for (const entry of list) {
     if (added >= 300) break;
     if (!entry || typeof entry !== 'object') continue;
-    const sourceId = String(entry.id ?? '').trim();
+    const videoId = String(entry.videoId ?? entry.bvid ?? '').trim();
+    const sourceId = String(entry.id ?? '').trim() || (videoId ? `${platform}:${videoId}` : '');
     if (!sourceId || seen.has(sourceId)) continue;
     seen.add(sourceId);
     const type = String(entry.type ?? 'video');
-    const title = redactForMemory(entry.title ?? entry.text ?? '', { scope: 'bili', maxChars: 100 });
-    const reason = redactForMemory(entry.reason ?? entry.quote ?? '', { scope: 'bili', maxChars: 220 });
-    const anecdote = redactForMemory(entry.anecdote ?? '', { scope: 'bili', maxChars: 260 });
+    const title = redactForMemory(entry.title ?? entry.text ?? '', { scope, maxChars: 100 });
+    const author = redactForMemory(entry.author ?? '', { scope, maxChars: 40 });
+    const reason = redactForMemory(entry.reason ?? entry.quote ?? '', { scope, maxChars: 220 });
+    const anecdote = redactForMemory(entry.anecdote ?? '', { scope, maxChars: 260 });
     const body = type === 'dynamic'
-      ? redactForMemory(entry.text ?? entry.title ?? '', { scope: 'bili', maxChars: 400 })
+      ? redactForMemory(entry.text ?? entry.title ?? '', { scope, maxChars: 400 })
       : (type === 'comment'
-        ? `在 B 站评论：${redactForMemory(entry.note ?? entry.text ?? '', { scope: 'bili', maxChars: 300 })}`
-        : (reason || anecdote || redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 300 })));
+        ? `在${label}评论：${redactForMemory(entry.note ?? entry.text ?? '', { scope, maxChars: 300 })}`
+        : (reason || anecdote || redactForMemory(entry.text ?? '', { scope, maxChars: 300 })));
     if (!title && !body) continue;
     const displayTitle = /^《.*》$/.test(title) ? title : `《${title}》`;
+    const authorTag = author ? `（@${author}）` : '';
     const text = type === 'video'
-      ? `在 B 站看了${short(displayTitle, 60)}${body ? `：${short(body, 260)}` : ''}`
+      ? `在${label}看了${short(displayTitle, 60)}${authorTag}${body ? `：${short(body, 260)}` : ''}`
       : body;
     const result = addMemoryRecord(card, {
-      source: `bili-${type === 'dynamic' ? 'dynamic' : (type === 'comment' ? 'comment' : 'video')}`,
+      source: `${platform}-${type === 'dynamic' ? 'dynamic' : (type === 'comment' ? 'comment' : 'video')}`,
       sourceId,
       text,
-      title: type === 'dynamic' ? `B站动态：${short(body || title, 30)}` : (type === 'video' ? `看过《${short(title, 40)}》` : short(title || body, 40)),
+      title: type === 'dynamic'
+        ? `${platformLabel}动态：${short(body || title, 30)}`
+        : (type === 'video' ? `看过《${short(title, 40)}》` : short(title || body, 40)),
       detail: anecdote && body !== anecdote ? anecdote : '',
       score: entry.score,
       favorite: entry.favorite === true,
       anecdote: Boolean(anecdote),
       createdAt: timeOf(entry.at, timeOf(entry.date, now)),
       lastSeenAt: timeOf(entry.at, timeOf(entry.date, now)),
-      tags: ['bili', type],
-      scope: 'bili',
-      platform: 'bili',
+      tags: [platform, type],
+      scope,
+      platform,
     }, cfg, now);
     if (result.added) added += 1;
   }
   card.meta.sourceSeen = [...seen].slice(-5000);
   if (added) {
-    card.stats.fromBili = (Number(card.stats.fromBili) || 0) + added;
+    card.stats[statsKey] = (Number(card.stats[statsKey]) || 0) + added;
     card.stats.lastIngestAt = iso(now);
   }
   return { added };
 }
 
 /**
- * 一批抖音观看记录 → 记忆记录。sourceId 用 `douyin:<videoId>` 去重，重复刷新不重复写。
+ * 一批 bili-memory.json entries → 记忆记录。sourceId 去重，重复刷新不重复写。
  *
- * 数据源是 dsh-douyin-agent 落盘的 `persona/state.json: observations`
- * （SurfCore 只读，不往回写）。**只记「看过什么」**：标题 + 作者，
- * 不存链接、不存私信内容 —— 链接由 `redactForMemory` 统一抹掉，私信根本不在这个数据源里。
+ * 历史接口：B站 于 2026-11-03 下线后不再有新 entries 产生，这条链路只负责把
+ * 存量记录读进记忆卡（旧文件还在，读不到就是空数组）。
+ */
+export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) {
+  return ingestWatchEntries(card, entries, {
+    scope: 'bili', platform: 'bili', label: ' B 站', platformLabel: 'B站', statsKey: 'fromBili',
+  }, config, now);
+}
+
+/**
+ * 一批抖音观看记录 → 记忆记录。**和 B站 走同一条链路**（`ingestWatchEntries`），
+ * 只是数据源换成 dsh-douyin-agent 落盘的 `persona/state.json: observations`。
  *
- * 和 `douyin-memory.md` 的分工：那份是「当前简报」，每天重写、注入提示词用；
- * 记忆卡是**长期记忆**，进来之后走正常的重要度 / 模糊 / 遗忘流程，
- * 所以半年前看过什么会自然淡掉，而不是一直躺在提示词里。
+ * 条目可以是「观察记录」（videoId / author / observedAt）也可以直接是
+ * 作品条目形态（id / type / title / at）；这里统一成 B站 那套字段再入库，
+ * 所以去重、脱敏、评分、遗忘的行为和 B站 完全一致。
+ *
+ * 只记「看过什么」：标题 + 作者。链接由 `redactForMemory` 统一抹掉，
+ * 私信内容根本不在这个数据源里。
  */
 export function ingestDouyinEntries(card, entries, config = {}, now = Date.now()) {
-  const cfg = normalizeMemoryCardConfig(config);
-  let added = 0;
-  const seen = new Set(card.meta.sourceSeen);
-  const list = asArray(entries);
-  for (const entry of list) {
-    if (added >= 300) break;
-    if (!entry || typeof entry !== 'object') continue;
+  const list = asArray(entries).map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
     const videoId = String(entry.videoId ?? '').trim();
-    const sourceId = String(entry.id ?? '').trim() || (videoId ? `douyin:${videoId}` : '');
-    if (!sourceId || seen.has(sourceId)) continue;
-    seen.add(sourceId);
-    const title = redactForMemory(entry.title ?? '', { scope: 'douyin', maxChars: 100 });
-    if (!title) continue;
-    const author = redactForMemory(entry.author ?? '', { scope: 'douyin', maxChars: 40 });
-    const at = timeOf(entry.observedAt, timeOf(entry.at, timeOf(entry.date, now)));
-    const result = addMemoryRecord(card, {
-      source: 'douyin-watch',
-      sourceId,
-      text: `在抖音看了《${title}》${author ? `（@${author}）` : ''}`,
-      title: `看过《${short(title, 40)}》`,
-      createdAt: at,
-      lastSeenAt: at,
-      tags: ['douyin', 'watch'],
-      scope: 'douyin',
-      platform: 'douyin',
-    }, cfg, now);
-    if (result.added) added += 1;
-  }
-  card.meta.sourceSeen = [...seen].slice(-5000);
-  if (added) {
-    card.stats.fromDouyin = (Number(card.stats.fromDouyin) || 0) + added;
-    card.stats.lastIngestAt = iso(now);
-  }
-  return { added };
+    return {
+      ...entry,
+      id: String(entry.id ?? '').trim() || (videoId ? `douyin:${videoId}` : ''),
+      type: entry.type ?? 'video',
+      at: entry.observedAt ?? entry.at,
+    };
+  });
+  return ingestWatchEntries(card, list, {
+    scope: 'douyin', platform: 'douyin', label: '抖音', platformLabel: '抖音', statsKey: 'fromDouyin',
+  }, config, now);
 }
 
 function ownerImportant(record, cfg) {

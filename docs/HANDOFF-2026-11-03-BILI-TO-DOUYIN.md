@@ -347,3 +347,28 @@ activePlatformStateDir(legacyDir) → cur ? characterPaths(cur.id).biliDir : leg
 
 插件每次整理（10 分钟一次）都会读一次观察记录。**素材池空的时候等于没变化** ——
 得先在抖音插件面板跑一轮「开始有限轮次」，`observations` 才有东西，下一次整理就会进卡。
+
+### 追加（23:40）：「抖音也用 B站 那一套」落实成了同一条链路
+
+一开始我给了抖音一套自己的字段（`videoId / author / observedAt / type:'watch'`），
+那是**两套脑子**：同一件事（看了一个作品）在记忆卡里有两种解释，评分、去重、措辞都可能漂。
+现在收敛成一条：
+
+```
+作品条目（B站 时期定的结构：id/type/title/bvid/text/quote/reason/anecdote/score/favorite/date/at/priority/shareable）
+        │
+        ├─ bili-memory.json   → ingestBiliEntries()   ┐
+        └─ 抖音 observations   → ingestDouyinEntries() ├→ ingestWatchEntries() → 记忆卡
+                                                       ┘
+```
+
+| 点 | 现在 |
+| --- | --- |
+| 条目结构 | 抖音条目**补齐 B站 那套字段**（`type:'video'`、`score`、`favorite`、`priority:4`、`shareable`、`text/quote/reason/anecdote` 空串），另加 `author/videoId/duration` 两个抖音特有的 |
+| 记忆卡入库 | 两个导出函数都是 `ingestWatchEntries()` 的薄包装，只有 `scope / platform / 措辞 / 统计位` 不同 |
+| 标签 | 统一 `[platform, type]`（B站 `bili,dynamic`；抖音 `douyin,video`）。原来的 `douyin,watch` 没了，`watch` 这个类型名作废 |
+| 分享池 | 和 B站 同一个开关位：条目 `shareable === false` 一律不进池（不写默认可分享，向后兼容） |
+| 措辞 | B站 输出**一字不变**（`在 B 站看了《…》：理由`）；抖音多一个作者尾巴（`在抖音看了《…》（@作者）`） |
+
+验证：B站 旧条目跑出来仍是 `在 B 站看了《鲸鱼娘学黑话》：AI 运营号自己学黑话`（一字不差）；
+抖音观察记录按同一入口进卡，`tags` 为 `douyin,video`；`test-memory-card` 26 项、插件链、审计 56/67 全过。
