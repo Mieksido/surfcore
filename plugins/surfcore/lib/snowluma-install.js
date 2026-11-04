@@ -24,12 +24,22 @@ function statOf(p) {
 /**
  * 把一个路径归一到 SnowLuma 安装根目录。
  * 接受：根目录（里面有 app）、app 目录、app\launcher.bat、launcher.bat、SnowLuma.exe。
+ * macOS：接受 .app 包本身（运行时是 NapCat 挂载的官方 QQ.app）。
  * 返回 { root, launcher }；认不出返回 null。
  */
 export function normalizeSnowLumaInstall(raw) {
   const text = String(raw ?? '').trim().replace(/^"(.*)"$/, '$1');
   if (!text) return null;
   const abs = path.resolve(text);
+
+  // ⓪ macOS 移植：NapCat 挂在官方 QQ.app 上，「安装位置」就是这个 .app。
+  // 判据用包结构（Contents/Info.plist）而不是扩展名，避免把普通目录当 app。
+  if (process.platform === 'darwin') {
+    const isAppBundle = (p) => {
+      try { return fs.statSync(path.join(p, 'Contents', 'Info.plist')).isFile(); } catch { return false; }
+    };
+    if (isAppBundle(abs)) return { root: abs, launcher: abs };
+  }
 
   // ① 直接选了启动文件：launcher.bat 或 SnowLuma.exe
   const st = statOf(abs);
@@ -83,6 +93,12 @@ export function snowLumaCandidates({ snowluma = {}, extraPaths = [] } = {}) {
   add(process.env.SNOWLUMA_DIR);
 
   const home = os.homedir();
+  // macOS 移植：NapCat 装在官方 QQ.app 上，优先探测 QQ 的常见位置；
+  // 下面 Windows 的 SnowLuma 候选一并保留（同一份代码也能被别的平台/迁移场景复用）。
+  if (process.platform === 'darwin') {
+    add('/Applications/QQ.app');
+    add(path.join(home, 'Applications', 'QQ.app'));
+  }
   const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
   const programFiles = process.env.ProgramFiles || 'C:/Program Files';
   const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:/Program Files (x86)';
@@ -115,20 +131,27 @@ function explicitList(list) {
  */
 export function snowLumaMissingReport({ picked = '', tried = [] } = {}) {
   const target = String(picked || '').trim();
+  const darwin = process.platform === 'darwin';
   if (target) {
     return {
       code: 'snowluma_path_invalid',
-      title: '这个路径里没有 SnowLuma',
-      error: `没认出 SnowLuma：${target}`,
-      hint: '要能在这里找到 app\\launcher.bat、launcher.bat 或 SnowLuma.exe。请选解压出来的 SnowLuma2 根目录（里面有 app），或直接选 app\\launcher.bat。',
+      title: darwin ? '这个路径里没有 QQ.app' : '这个路径里没有 SnowLuma',
+      error: `没认出运行时：${target}`,
+      hint: darwin
+        ? 'macOS 上的 QQ 运行时是 NapCat 挂载的官方 QQ.app：请选 /Applications/QQ.app。还没装 NapCat 就先运行 NapCat-Mac-Installer。'
+        : '要能在这里找到 app\\launcher.bat、launcher.bat 或 SnowLuma.exe。请选解压出来的 SnowLuma2 根目录（里面有 app），或直接选 app\\launcher.bat。',
       tried,
     };
   }
   return {
     code: 'snowluma_not_found',
-    title: '没找到 SnowLuma',
-    error: '常见位置里都没有 SnowLuma（可能还没解压，或装在了别的目录）。',
-    hint: '点「浏览…」选 SnowLuma2 解压出来的根目录（里面有 app）；还没装就点「打开官方下载页」。',
+    title: darwin ? '没找到 QQ.app' : '没找到 SnowLuma',
+    error: darwin
+      ? '常见位置里都没有 QQ.app（mac 上 NapCat 需要官方 QQ 客户端）。'
+      : '常见位置里都没有 SnowLuma（可能还没解压，或装在了别的目录）。',
+    hint: darwin
+      ? '先安装官方 QQ 到 /Applications/QQ.app，再运行 NapCat-Mac-Installer 把 NapCat 装进去、切换 QQ 入口。'
+      : '点「浏览…」选 SnowLuma2 解压出来的根目录（里面有 app）；还没装就点「打开官方下载页」。',
     tried,
   };
 }

@@ -10,7 +10,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
@@ -22,6 +22,44 @@ import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import { atInfo } from './qq-at.js';
+
+/**
+ * QQ 内置「小黄脸」表情的 id → 中文名（OneBot face 段的 id）。
+ *
+ * 为什么要它（2026-11-03）：原来入站 face 段只渲染成 `[表情14]`，模型看不懂数字；
+ * 而这类表情**没有图片 URL 可喂给视觉**（是字体/精灵图渲染的），只能靠这张表把语义补回去。
+ * 表里是 QQ 官方表情商店的经典 id（0~104，与 CQ 码 / OneBot 历史一致）；
+ * 没收录的新 id 仍回退成 `[表情#id]`，不影响主链路。
+ */
+const QQ_FACE_NAMES = {
+  0: '惊讶', 1: '撇嘴', 2: '色', 3: '发呆', 4: '得意', 5: '流泪', 6: '害羞', 7: '闭嘴',
+  8: '睡', 9: '大哭', 10: '尴尬', 11: '发怒', 12: '调皮', 13: '呲牙', 14: '微笑',
+  15: '难过', 16: '酷', 17: '抓狂', 18: '吐', 19: '偷笑', 20: '可爱', 21: '白眼',
+  22: '傲慢', 23: '饥饿', 24: '困', 25: '惊恐', 26: '流汗', 27: '憨笑', 28: '大兵',
+  29: '奋斗', 30: '咒骂', 31: '疑问', 32: '嘘', 33: '晕', 34: '折磨', 35: '衰',
+  36: '骷髅', 37: '敲打', 38: '再见', 39: '擦汗', 40: '抠鼻', 41: '鼓掌', 42: '糗大了',
+  43: '坏笑', 44: '左哼哼', 45: '右哼哼', 46: '哈欠', 47: '鄙视', 48: '委屈', 49: '快哭了',
+  50: '阴险', 51: '亲亲', 52: '吓', 53: '可怜', 54: '菜刀', 55: '西瓜', 56: '啤酒',
+  57: '篮球', 58: '乒乓', 59: '咖啡', 60: '饭', 61: '猪头', 62: '玫瑰', 63: '凋谢',
+  64: '示爱', 65: '爱心', 66: '心碎', 67: '蛋糕', 68: '闪电', 69: '炸弹', 70: '刀',
+  71: '足球', 72: '瓢虫', 73: '便便', 74: '月亮', 75: '太阳', 76: '礼物', 77: '拥抱',
+  78: '强', 79: '弱', 80: '握手', 81: '胜利', 82: '抱拳', 83: '勾引', 84: '拳头',
+  85: '差劲', 86: '爱你', 87: 'NO', 88: 'OK', 89: '爱情', 90: '飞吻', 91: '跳跳',
+  92: '发抖', 93: '怄火', 94: '转圈', 95: '磕头', 96: '回头', 97: '跳绳', 98: '挥手',
+  99: '激动', 100: '街舞', 101: '献吻', 102: '左太极', 103: '右太极', 104: '开心',
+  105: '双喜临门', 106: '鞭炮', 107: '灯笼', 108: 'K歌', 109: '购物', 110: '邮件',
+  111: '帅', 112: '喝彩', 113: '祈祷', 114: '爆筋', 115: '棒棒糖', 116: '喝奶',
+  117: '下面', 118: '香蕉', 119: '飞机', 120: '开车', 121: '高铁', 122: '火车',
+  123: '小汽车', 124: '结芬', 125: '默认', 126: '裂开', 127: '愉快', 128: '不情愿',
+  129: '语无伦次', 130: '难受', 131: '流泪笑哭', 132: '偷笑', 133: '翻白眼',
+};
+
+/** face 段的可读名；未知 id 返回 null（调用方回退成 `[表情#id]`）。 */
+function qqFaceName(id) {
+  const key = Number(id);
+  if (!Number.isInteger(key) || key < 0) return null;
+  return QQ_FACE_NAMES[key] ?? null;
+}
 import {
   historyWatermark, normalizeHistoryConfig,
   selectMissedHistory, summarizeHistoryCatchup,
@@ -1648,7 +1686,13 @@ async function segmentsToText(segments, options = {}) {
         }
         break;
       }
-      case 'face': out.push(`[表情${d.id ?? ''}]`); break;
+      // 小黄脸：能查到名字就写名字（`[表情:微笑]`），查不到才退化成 id。
+      // 纯文本场景（日志/摘要）也能看懂，不必依赖图片输入。
+      case 'face': {
+        const faceName = qqFaceName(d.id);
+        out.push(faceName ? `[表情:${faceName}]` : `[表情#${d.id ?? '?'}]`);
+        break;
+      }
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
       case 'image': out.push('[图片]'); break;
@@ -2012,7 +2056,16 @@ async function main() {
         throw new Error('fetch_custom_face_detail 返回 data 不是数组，已放弃同步');
       }
       const fetched = response.data;
-      stickerEntries = mergeStickerLibrary(stickerEntries, fetched, { complete: fetched.length < count });
+      // macOS 移植（2026-11-03）：换账号后**不要整库覆盖**。
+      // 上游用 `complete: fetched.length < count` 表示「这个账号的收藏全拿到了」，
+      // 于是 merge 会按「QQ 端为准」删掉本地多出来的条目；但 SurfCore 允许中途换号
+      // （本次从主号切换到小号），小号收藏表情为 0 时
+      // 会把上一账号同步来的 100 张表情**全部清空**，表现为「表情库突然空了」。
+      // 这里改成并集合并：只增不删；真要删某张表情用控制台/工具手动删。
+      stickerEntries = mergeStickerLibrary(stickerEntries, fetched, { complete: false });
+      if (fetched.length === 0 && stickerEntries.length > 0) {
+        log(`[sticker] 当前账号没有收藏表情，保留本地库 ${stickerEntries.length} 条（不因换号清空）`);
+      }
       // 新收藏的表情在这里拿到编号和情绪/内容兜底标注（QQ 端新增的表情本地一条都没有）
       stickerEntries = ensureStickerIndex(stickerEntries).entries;
       stickerSyncedAt = Date.now();
@@ -2581,6 +2634,25 @@ async function main() {
   }
 
   // 发送一个收藏表情（按 emoji_id/url/md5 解析，发图片段）。
+  /**
+   * 这个会话里「最后一条别人说的话」是不是主人说的。
+   *
+   * 用途：表情包权限闸门（socialV2.sticker.ownerOnly）——只有主人点名要表情包时才允许发，
+   * 群里其他人要的时候模型即便调了工具也会被挡下，改回文字 emoji。
+   * 注意：只看「别人的话」（跳过 isSelf），否则她刚发完一条就会把自己当成最后发言人。
+   * 拍一拍等无文字事件也带 isOwner，同样参与判定。
+   */
+  function lastRequesterIsOwner(key) {
+    const st = getSocialV2State(key);
+    const arr = Array.isArray(st.recentMessages) ? st.recentMessages : [];
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+      const m = arr[i];
+      if (!m || m.isSelf === true) continue;
+      return m.isOwner === true;
+    }
+    return false;
+  }
+
   async function sendStickerV2(key, stickerRef, options = {}) {
     const assertSendAllowed = captureSendGuard(key);
     // 发送前强制同步一次，确保“刚新增的表情能立即用、刚删除的表情不会继续发”。
@@ -7859,6 +7931,18 @@ async function main() {
             sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
             return;
           }
+          // 表情包权限闸门（ownerOnly）：**只有主人点名要，才允许发表情包**。
+          // 判定依据是「这个会话里最后一条别人说的话是不是主人」——群里其他人 @ 她要表情时，
+          // 模型即便调用 qq_send_sticker 也会在这里被 403 挡下，改为文字 emoji。
+          if (cfg.socialV2?.sticker?.ownerOnly === true && !lastRequesterIsOwner(key)) {
+            sendJson({
+              ok: false,
+              code: 'STICKER_OWNER_ONLY',
+              error: '表情包只有主人能要；当前会话最后发言的不是主人',
+              hint: '用文字 emoji 表达情绪即可，不要发表情包；只有主人明确要求时才发表情。',
+            }, 403);
+            return;
+          }
           if (kind === 'private' && atUserId) { sendJson({ ok: false, error: '私聊不需要 @' }, 400); return; }
           if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
           if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
@@ -9413,7 +9497,9 @@ async function main() {
         }
         // ── 重启桥接（守护模式下 5 秒后自动拉起） ──────────────────────────────
         if (req.method === 'POST' && url.pathname === '/api/restart') {
-          sendJson({ ok: true, message: '正在重启桥接（若由守护窗口启动，5 秒后自动恢复）…' });
+          sendJson({ ok: true, message: process.platform === 'win32'
+            ? '正在重启桥接（若由守护窗口启动，5 秒后自动恢复）…'
+            : '正在重启桥接…' });
           setTimeout(() => {
             log('控制台：重启桥接');
             // 退出前落盘：SIGINT/SIGTERM 的收尾路径会 saveState()/saveSocialV2State()，
@@ -9421,6 +9507,29 @@ async function main() {
             try { saveState(); } catch (error) { log('重启前保存会话映射失败:', error?.message ?? error); }
             try { saveSocialV2State(); } catch (error) { log('重启前保存二代会话状态失败:', error?.message ?? error); }
             releaseLock();
+            // macOS/Linux 移植（2026-11-03）：Windows 上重启靠 start.bat 那个守护窗口识别
+            // 「进程退出 → 5 秒后拉起来」；mac 上没有守护窗口，光 exit 就等于**关掉桥接**，
+            // 用户点「重启」会看到控制台再也起不来。这里自己拉起继任进程再退。
+            // 只在本机显式重启时发生，不会形成自重启循环。
+            if (process.platform !== 'win32') {
+              try {
+                // 用 `sh -c 'sleep 2; exec node …'` 而不是直接 spawn node：
+                // 继任进程如果立刻绑定 3100，会撞上**本进程还没释放**的端口
+                // （console server 的 EADDRINUSE 分支是 exit 2），结果是「重启=关掉」。
+                // 延迟 2 秒是确定的、不依赖插件 30 秒看门狗兜底。
+                const script = `sleep 2; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(ROOT, 'src', 'bridge.js'))}`;
+                const successor = spawn('sh', ['-c', script], {
+                  cwd: ROOT,
+                  env: process.env,
+                  detached: true,
+                  stdio: 'ignore',
+                });
+                successor.unref();
+                log(`已拉起继任桥接进程（pid ${successor.pid ?? '?'}，延迟 2s 等端口释放）`);
+              } catch (error) {
+                log(`拉起继任桥接进程失败：${error?.message ?? error}`);
+              }
+            }
             process.exit(0);
           }, 500);
           return;
@@ -10125,10 +10234,62 @@ async function main() {
     return null;
   }
 
+  /**
+   * 入站语音转文字（QQ 侧 ASR）。
+   *
+   * 链路：对方发语音条 → 事件里是 `record` 段 → 用 message_id 问网关 `fetch_ptt_text`
+   * （NapCat/QQ 对**收到的**语音通常有转写；自己发出去的没有，retcode=100「消息中不包含语音」）。
+   * 拿到文字后由调用方并进消息文本，模型就能"听懂"语音条；拿不到就保留 `[语音]` 不阻塞。
+   *
+   * 开关：socialV2.voice.inboundAsr === false 可关（默认开）。
+   * 失败/超时都不抛：语音转写在 QQ 侧本来就可能没有。
+   */
+  const voiceAsrSkipAt = new Map();
+  async function transcribeInboundVoice(messageId) {
+    if (cfg.socialV2?.voice?.inboundAsr === false) return '';
+    const id = String(messageId ?? '').trim();
+    if (!id) return '';
+    try {
+      const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+      const res = await fetch(`${httpUrl}/fetch_ptt_text`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
+        },
+        body: JSON.stringify({ message_id: id }),
+        signal: AbortSignal.timeout(8000)
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.status === 'ok' && body.retcode === 0) {
+        const text = String(body.data?.text ?? body.data?.result ?? '').trim();
+        if (text) {
+          log(`[asr] 语音转文字成功（${id}）：${truncateText(text, 60)}`);
+          return text;
+        }
+        return '';
+      }
+      // 网关明确说「这条没有转写」是常态（对方没触发/转写被关），只在首次/每 10 分钟记一次，避免刷屏。
+      const reason = String(body?.wording || body?.message || body?.retcode || res.status || '');
+      const now = Date.now();
+      if (now - (voiceAsrSkipAt.get('last') || 0) > 10 * 60_000) {
+        voiceAsrSkipAt.set('last', now);
+        log(`[asr] 语音转文字不可用（${id}）：${reason || '未知原因'}；将保留 [语音] 占位`);
+      }
+      return '';
+    } catch (error) {
+      logThrottled('asr-fail', 10 * 60_000, `[asr] 语音转文字失败：${error?.message ?? error}`);
+      return '';
+    }
+  }
+
   async function fetchFaceMedia(media) {
     const faceId = Number(media.faceId);
-    // 系统小表情（face 段）：只有数字 id 才有对应实体；拿不到时至少保留 summary 文案。
-    const fallbackText = media.summary ? `[表情:${media.summary}]` : `[表情#${media.faceId}]`;
+    // 系统小表情（face 段）：只有数字 id 才有对应实体；拿不到时至少保留 summary 文案，
+    // 再不行用内置 id→名字表（`[表情:微笑]`），最后才是裸 id。
+    const fallbackText = media.summary
+      ? `[表情:${media.summary}]`
+      : (qqFaceName(media.faceId) ? `[表情:${qqFaceName(media.faceId)}]` : `[表情#${media.faceId}]`);
     if (!Number.isInteger(faceId)) return { text: fallbackText };
     try {
       const face = await bot.fetchFaceEntity(faceId);
@@ -11616,6 +11777,26 @@ async function main() {
     };
   }
 
+  /**
+   * 和主人对话时豁免「Token 防爆破」（用户 2026-11-03 明确要求：跟主人聊天不要被限流）。
+   *
+   * 判定：
+   *   · 私聊主人（key = private:<ownerQQ>）→ 豁免；
+   *   · 群里「最后一条别人说的话」是主人（正在回主人）→ 豁免。
+   * 只豁免 tokenGuard（每日唤醒次数 / 最小间隔 / 每次醒来条数），
+   * **不豁免「Token 额度」**（每日花费上限，那是钱的安全阀，单独一套）。
+   * 开关：socialV2.tokenGuard.ownerUnlimited === true
+   */
+  function tokenGuardOwnerExempt(key) {
+    const g = tokenGuardCfg();
+    if (g.ownerUnlimited !== true) return false;
+    const owner = String(cfg.ownerQQ ?? '').trim();
+    if (!owner) return false;
+    const m = /^private:(\d+)$/.exec(String(key ?? ''));
+    if (m && m[1] === owner) return true;
+    try { return lastRequesterIsOwner(key); } catch { return false; }
+  }
+
   function tokenGuardWakeBlock(key, st, { direct = false, reason = '' } = {}) {
     const g = tokenGuardCfg();
     // 额度是独立的（设置页「Token 额度」），不随「Token 防爆破」总开关一起关掉。
@@ -11632,6 +11813,8 @@ async function main() {
       };
     }
     if (g.enabled === false) return null;
+    // 和主人聊天：跳过「防爆破」的次数/间隔限制（额度仍然生效，见上）。
+    if (tokenGuardOwnerExempt(key)) return null;
     const r = evaluateWakeBudget({
       key,
       wakeTimes: st?.wakeTimes,
@@ -11713,6 +11896,8 @@ async function main() {
   function tokenGuardSendBlock(key, st, count = 1) {
     const g = tokenGuardCfg();
     if (g.enabled === false) return null;
+    // 和主人聊天：不受「每次醒来最多发几条」限制（否则一句文字+一个表情就吃掉 2 条额度）。
+    if (tokenGuardOwnerExempt(key)) return null;
     const r = evaluateOutbound({ used: Number(st?.tokenTurnSent) || 0, count, guard: g });
     if (r.blocked) {
       const block = { error: r.error, reason: 'outbound', code: 'TOKEN_GUARD_SEND_LIMIT', setting: 'socialV2.tokenGuard.maxOutboundPerTurn', hint: '去 QQ → 高级设置 → Token 防爆破 → 调整每次醒来最多发送条数。' };
@@ -15584,10 +15769,19 @@ async function main() {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
-    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
+    let textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
+    let plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
+    // 入站语音条：把 QQ 侧转写并进正文（`[语音]` → `[语音:文字]`），让模型能听懂。
+    // 只处理实时消息（历史补课不逐条打网关），失败保持 `[语音]`，不阻塞主链路。
+    if (Array.isArray(event.message) && event.message.some((seg) => seg?.type === 'record') && messageRef) {
+      const spoken = await transcribeInboundVoice(messageRef);
+      if (spoken) {
+        textContent = textContent.split('[语音]').join(`[语音:${spoken}]`);
+        plainContent = plainContent.split('[语音]').join(`[语音:${spoken}]`);
+      }
+    }
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
     const refsToStore = [...new Set([messageRef, seqRef].filter(Boolean))];
     if (refsToStore.length > 0 && mediaList.length > 0) {

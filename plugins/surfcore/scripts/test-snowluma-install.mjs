@@ -103,17 +103,22 @@ try {
   }
 
   console.log('## 4. 失败必须给结构化报告（弹窗要用：code / title / error / hint）');
+  const darwin = process.platform === 'darwin';
   {
     const notFound = snowLumaMissingReport({ tried: ['C:/a', 'C:/b'] });
     ok(notFound.code === 'snowluma_not_found', '自动检测失败 → code=snowluma_not_found');
     ok(Boolean(notFound.title) && Boolean(notFound.error), '有弹窗标题和人读的错误（不是空字符串）');
-    ok(/浏览/.test(notFound.hint) && /下载/.test(notFound.hint), 'hint 给出两个下一步：浏览… / 官方下载页');
+    // macOS 移植：mac 上运行时是 NapCat 挂载的官方 QQ.app，一步是「装 QQ + 跑 NapCat 安装器」，
+    // 没有 Windows 的「浏览… / 官方下载页」两条。断言按平台分开，Windows 文案保持原样。
+    ok(darwin
+      ? (/QQ\.app/.test(notFound.hint) && /NapCat/.test(notFound.hint))
+      : (/浏览/.test(notFound.hint) && /下载/.test(notFound.hint)), 'hint 给出可执行的两个下一步');
     ok(notFound.tried.length === 2, 'tried 原样带给前端（弹窗里可展开看试过哪些位置）');
 
     const bad = snowLumaMissingReport({ picked: 'D:/x', tried: ['D:/x'] });
     ok(bad.code === 'snowluma_path_invalid', '手选路径失败 → code=snowluma_path_invalid');
     ok(bad.error.includes('D:/x'), '错误里带上用户选的路径（用户知道在说哪个目录）');
-    ok(/launcher\.bat/.test(bad.hint), 'hint 说明要能找到 launcher.bat');
+    ok(darwin ? /QQ\.app/.test(bad.hint) : /launcher\.bat/.test(bad.hint), 'hint 说明要填什么路径');
     ok(Boolean(bad.title), '手选失败也有独立标题（弹窗标题不重复用 error）');
   }
 } finally {

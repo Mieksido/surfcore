@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
+import zlib from 'node:zlib';
 
 const EMPTY_CONFIG = { source: '', electronPath: '', appDir: '', mirror: '', installedAt: null };
 
@@ -132,22 +133,54 @@ function dirSize(dir) {
 export const ELECTRON_VERSION = '45.0.0';
 export const ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron';
 
+/**
+ * macOS 移植（2026-11-03）：Electron 的可执行文件名/压缩包名都是按平台的。
+ *  - win32：electron.exe / electron-v<ver>-win32-x64.zip
+ *  - darwin：Electron.app/Contents/MacOS/Electron / electron-v<ver>-darwin-<arch>.zip
+ *  - linux：electron / electron-v<ver>-linux-<arch>.zip
+ * 之前的写死值导致 mac 上一键下载 Electron 永远 404、检测永远找不到运行时。
+ */
+export function electronPlatform() {
+  if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+  if (process.platform === 'linux') return process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
+  return 'win32-x64';
+}
+
+/** 解压到 <dir> 后，Electron 可执行文件在 <dir>/<返回值>。 */
+export function electronBinaryRelativePath() {
+  if (process.platform === 'darwin') return path.join('Electron.app', 'Contents', 'MacOS', 'Electron');
+  if (process.platform === 'linux') return 'electron';
+  return 'electron.exe';
+}
+
 export function electronDownloadUrl(version = ELECTRON_VERSION) {
-  return `${ELECTRON_MIRROR}/${version}/electron-v${version}-win32-x64.zip`;
+  return `${ELECTRON_MIRROR}/${version}/electron-v${version}-${electronPlatform()}.zip`;
 }
 
 /** GitHub 官方源（镜像挂掉时的备选；国内可能慢）。 */
 export function electronGitHubUrl(version = ELECTRON_VERSION) {
-  return `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-win32-x64.zip`;
+  return `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-${electronPlatform()}.zip`;
 }
 
 /** 常见 Electron 位置（按可信度排）。cfgPath / appDir 传进来就优先用。 */
 export function electronCandidates({ cfgPath = '', appDir = '', stateDir = '' } = {}) {
   const out = [];
   const push = (p) => { const t = String(p || '').trim(); if (t && !out.includes(t)) out.push(t); };
+  const binRel = electronBinaryRelativePath();
   push(cfgPath);
-  if (stateDir) push(path.join(stateDir, 'runtime', `electron-v${ELECTRON_VERSION}`, 'electron.exe'));
-  if (appDir) push(path.join(path.dirname(appDir), 'node_modules', 'electron', 'dist', 'electron.exe'));
+  if (stateDir) push(path.join(stateDir, 'runtime', `electron-v${ELECTRON_VERSION}`, binRel));
+  if (appDir) push(path.join(path.dirname(appDir), 'node_modules', 'electron', 'dist', binRel));
+  if (process.platform === 'darwin') {
+    // 本仓库旁的便携 Electron（npm i electron 装下来的样子）
+    push(path.join(os.homedir(), 'Desktop', '鲸鱼', 'pet', 'runtime', 'node_modules', 'electron', 'dist', binRel));
+    // 全局 npm 安装
+    push(path.join('/usr/local/lib/node_modules', 'electron', 'dist', binRel));
+    push(path.join('/opt/homebrew/lib/node_modules', 'electron', 'dist', binRel));
+    push(path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', 'electron', 'dist', binRel));
+    // /Applications 里的 Electron.app
+    push(path.join('/Applications', 'Electron.app', 'Contents', 'MacOS', 'Electron'));
+    return out;
+  }
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   push(path.join(local, 'Programs', 'electron', 'electron.exe'));
   push(path.join(process.env.PROGRAMFILES || 'C:/Program Files', 'Electron', 'electron.exe'));
@@ -165,7 +198,7 @@ export function detectElectronPath(options = {}) {
 export async function installElectronRuntime({ stateDir, log = () => {}, version = ELECTRON_VERSION, source = 'auto', onProgress = () => {} } = {}) {
   if (!stateDir) throw new Error('缺少 stateDir');
   const dest = path.join(stateDir, 'runtime', `electron-v${version}`);
-  const exe = path.join(dest, 'electron.exe');
+  const exe = path.join(dest, electronBinaryRelativePath());
   if (fs.existsSync(exe)) return { ok: true, already: true, electronPath: exe, dir: dest };
 
   // auto：先镜像再官方；也允许调用方强制指定（镜像挂了 / 官方更快）
@@ -195,13 +228,20 @@ export async function installElectronRuntime({ stateDir, log = () => {}, version
       onProgress(95, '解压 Electron');
       fs.mkdirSync(dest, { recursive: true });
       await new Promise((resolve, reject) => {
+        // macOS/Linux 没有 Expand-Archive，用系统自带 unzip（macOS 默认有）。
+        if (process.platform === 'darwin' || process.platform === 'linux') {
+          const child = spawn('unzip', ['-o', '-q', zip, '-d', dest], { stdio: 'ignore' });
+          child.on('error', reject);
+          child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`解压失败（exit ${code}）`))));
+          return;
+        }
         const child = spawn('powershell', ['-NoProfile', '-Command',
           `Expand-Archive -LiteralPath '${zip}' -DestinationPath '${dest}' -Force`],
         { windowsHide: true, stdio: 'ignore' });
         child.on('error', reject);
         child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`解压失败（exit ${code}）`))));
       });
-      if (!fs.existsSync(exe)) throw new Error('解压后没找到 electron.exe');
+      if (!fs.existsSync(exe)) throw new Error(`解压后没找到 Electron 可执行文件（${electronBinaryRelativePath()}）`);
       return { ok: true, electronPath: exe, dir: dest, version, source: url };
     } catch (error) {
       lastError = error;
@@ -215,6 +255,70 @@ export async function installElectronRuntime({ stateDir, log = () => {}, version
   throw new Error(`下载 Electron 失败（镜像和官方源都试过了）：${String(lastError?.message ?? lastError ?? '未知错误')}`);
 }
 
+
+/**
+ * 纯 Node 的 zip 解压（macOS/Linux 用），替代 `unzip`/`ditto`。
+ *
+ * 为什么需要（2026-11-03 实测）：
+ *   surfpet 的 pet-pack.zip 里文件名是 **Windows 风格反斜杠 + GBK 编码**（如 `skins\feiyu-01\...`、
+ *   `启动说明.txt`）。macOS 的 `unzip` 会警告 "appears to use backslashes as path separators"，
+ *   遇到中文名还会写出乱码文件名、甚至卡在 "write error (disk full?). Continue? (y/n)" 直到被杀；
+ *   `ditto -x -k` 则把反斜杠当普通字符，解出 `assets\icon.png` 这种整名字文件。
+ *   两者都会让"一键安装"在 mac 上失败。
+ *
+ * 这里直接读 zip 中央目录：按需 inflateRaw，UTF-8 标志位没置时用 GBK 解码文件名，
+ * 再把 `\` 统一成 `/`。不依赖外部命令。
+ */
+export function unzipWithNode(zipPath, dest) {
+  const buf = fs.readFileSync(zipPath);
+  // 找 EOCD（End Of Central Directory）：0x06054b50，可能带注释，从尾部往前扫
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i -= 1) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd === -1) throw new Error('不是有效的 zip（找不到 EOCD）');
+  const entryCount = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+  const decodeName = (raw, utf8Flag) => {
+    if (utf8Flag) return raw.toString('utf8');
+    for (const enc of ['gbk', 'gb18030', 'utf8']) {
+      try { return new TextDecoder(enc, { fatal: false }).decode(raw); } catch {}
+    }
+    return raw.toString('latin1');
+  };
+  let wrote = 0;
+  for (let n = 0; n < entryCount; n += 1) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) throw new Error('zip 中央目录损坏');
+    const flags = buf.readUInt16LE(off + 8);
+    const method = buf.readUInt16LE(off + 10);
+    const compSize = buf.readUInt32LE(off + 20);
+    const uncompSize = buf.readUInt32LE(off + 24);
+    const nameLen = buf.readUInt16LE(off + 28);
+    const extraLen = buf.readUInt16LE(off + 30);
+    const commentLen = buf.readUInt16LE(off + 32);
+    const localOff = buf.readUInt32LE(off + 42);
+    const rawName = buf.subarray(off + 46, off + 46 + nameLen);
+    let name = decodeName(rawName, (flags & 0x800) !== 0).replace(/\\/g, '/');
+    off += 46 + nameLen + extraLen + commentLen;
+    if (!name || name.includes('..') || path.isAbsolute(name)) continue;
+    const target = path.join(dest, name);
+    if (name.endsWith('/')) { fs.mkdirSync(target, { recursive: true }); continue; }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    // 读本地文件头，跳过它自己的 name/extra（长度可能和中央目录不同）
+    const lNameLen = buf.readUInt16LE(localOff + 26);
+    const lExtraLen = buf.readUInt16LE(localOff + 28);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const raw = buf.subarray(dataStart, dataStart + compSize);
+    let data;
+    if (method === 0) data = raw;
+    else if (method === 8) data = zlib.inflateRawSync(raw);
+    else throw new Error(`不支持的 zip 压缩方式：${method}（${name}）`);
+    if (uncompSize && data.length !== uncompSize) throw new Error(`解压大小不符：${name}`);
+    fs.writeFileSync(target, data);
+    wrote += 1;
+  }
+  return { ok: true, files: wrote };
+}
 
 /** 单层目录拍平：GitHub 源码 zip 解压后是 `<repo>-main/…`，把里面的内容提上来。 */
 export function flattenSingleTopDir(dest) {
@@ -475,8 +579,13 @@ export function createPetService({ stateDir, pluginLog = () => {}, subprocess = 
       ]);
       if (error) throw new Error(`解压失败：${stderr || error.message}`);
     } else {
-      const { error, stderr } = await run('unzip', ['-o', '-q', zipPath, '-d', dest]);
-      if (error) throw new Error(`解压失败：${stderr || error.message}`);
+      // macOS/Linux 用内置解压：surfpet 包是反斜杠 + GBK 文件名，系统 unzip 会卡住/写出乱码，
+      // ditto 也会把反斜杠保留成文件名的一部分（见 unzipWithNode 注释）。
+      try {
+        unzipWithNode(zipPath, dest);
+      } catch (error) {
+        throw new Error(`解压失败：${error?.message ?? error}`);
+      }
     }
   }
 

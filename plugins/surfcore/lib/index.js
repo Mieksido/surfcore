@@ -663,11 +663,60 @@ export function apply(ctx) {
     return '';
   }
 
+  /**
+   * DSH 宿主围栏自查（macOS，2026-11-04）：
+   * 在 DSH 里改设置/装插件会重写 profile，把 desktop-shell.openBrowser 改回 false，
+   * 宿主围栏于是拒绝桥接的全部请求（403、dshReady=false、QQ 不回消息）。
+   * 这里在插件启动和每 60 秒兜底检查一次：发现 false/缺失就改回 true（带备份）。
+   * 第一层防线是 LaunchAgent（scripts/install-fence-guard.sh），这层防 DSH 自身写回。
+   */
+  const DSH_FENCE_PROFILE = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'profiles', 'desktop', 'cordis.patch.yml');
+  let lastFenceFixAt = 0;
+  function enforceDshFence(reason = '') {
+    if (process.platform !== 'darwin') return;
+    if (!platformStartEnabled('qq')) return;
+    try {
+      if (!fs.existsSync(DSH_FENCE_PROFILE)) return;
+      const text = fs.readFileSync(DSH_FENCE_PROFILE, 'utf8');
+      if (/openBrowser:[ \t]*true/.test(text)) return;
+      const stamp = Date.now();
+      if (stamp - lastFenceFixAt < 30_000) return;
+      lastFenceFixAt = stamp;
+      fs.copyFileSync(DSH_FENCE_PROFILE, `${DSH_FENCE_PROFILE}.plugin-bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+      let next = text.replace(/(openBrowser:[ \t]*)false/, '$1true');
+      if (next === text) next = `${text}\n- id: desktop-shell\n  config:\n    openBrowser: true\n    networkExposure: loopback\n`;
+      fs.writeFileSync(DSH_FENCE_PROFILE, next);
+      pluginLog(`[围栏] desktop-shell.openBrowser 被改坏，已自动修回 true${reason ? `（${reason}）` : ''}`);
+    } catch (error) {
+      pluginLog('[围栏] 自动修复失败：', error?.message ?? error);
+    }
+  }
+
   // 自动拉起桥接（默认关；用户可在设置里开）。
   // 2026-10-22：除了启动时检查一次，再加一个 2 分钟自愈轮询 ——
   // DSH 重启后端口会变，桥接如果还连着旧端口，下一次轮询会自动重启它（而不是等用户发现）。
   let bridgeRepairBusy = false;
   let bridgeRepairTimer = null;
+  /**
+   * DSH 启动/自愈轮询时顺带把 QQ 拉起来（2026-11-04，用户要求「每次打开 DSH 自动启动」）：
+   *   · 只在 macOS 做：Windows 上 QQ 由 SnowLuma 自己管；
+   *   · 3000/6099 任一在听 = QQ 进程已在（可能停在登录页），不重复拉起、不弹浏览器；
+   *   · 拉起后 NapCat 若要求扫码，用户仍需扫一次（登录态没法代扫）。
+   */
+  async function ensureQqForAutoStart() {
+    if (process.platform !== 'darwin') return { skipped: true };
+    try {
+      if (await portOpen(3000) || await portOpen(6099)) return { skipped: true, reason: 'qq-running' };
+      pluginLog('autoStartBridge：QQ 未运行，按「自动启动」拉起 QQ（macOS）');
+      const result = await launchSnowLuma({ silent: true });
+      pluginLog('autoStartBridge：拉起 QQ 结果：', result?.message || result?.error || result?.skipped ? '已处理' : '未知');
+      return result;
+    } catch (error) {
+      pluginLog('autoStartBridge：拉起 QQ 失败：', error?.message ?? error);
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
   const maybeAutoStartBridge = async () => {
     if (bridgeRepairBusy) return;
     bridgeRepairBusy = true;
@@ -683,11 +732,13 @@ export function apply(ctx) {
           const restarted = await restartBridge({ dshWebUrl: currentDshUrl() });
           pluginLog('autoStartBridge 重启结果：', restarted.message || restarted.error || '');
         }
+        void ensureQqForAutoStart();
         return;
       }
       pluginLog('autoStartBridge：桥接未运行，尝试启动');
       const result = await startBridge({ dshWebUrl: currentDshUrl() });
       pluginLog('autoStartBridge 结果：', result.message || result.error || '');
+      void ensureQqForAutoStart();
     } catch (error) {
       pluginLog('autoStartBridge 失败：', error?.message ?? error);
     } finally {
@@ -1914,6 +1965,14 @@ ${body}`;
     const explicit = String(cfg.launchScript ?? '').trim();
     if (explicit) return path.isAbsolute(explicit) ? explicit : path.resolve(QQBOT_ROOT, explicit);
     const base = String(cfg.launcherPath ?? '').trim();
+    // macOS 移植：mac 上没有 launcher.bat/SnowLuma.exe。运行时是 NapCat 挂载的
+    // 官方 QQ.app —— 「启动 QQ」就是打开这个 .app（NapCat 入口由安装器写进 QQ 的
+    // package.json，打开同一个 app 即可）。允许配置 launcherPath 指向任意 .app。
+    if (process.platform === 'darwin') {
+      if (base) return path.isAbsolute(base) ? base : path.resolve(QQBOT_ROOT, base);
+      const fallback = '/Applications/QQ.app';
+      try { return fs.existsSync(fallback) ? fallback : ''; } catch { return ''; }
+    }
     if (!base) return '';
     const root = path.isAbsolute(base) ? base : path.resolve(QQBOT_ROOT, base);
     const candidates = [
@@ -1935,6 +1994,12 @@ ${body}`;
   // 端口从 SnowLuma 自己的 runtime.json 读，读不到就回退 5100。
   function snowLumaWebui() {
     const cfg = readQqConfig().config?.snowluma ?? {};
+    // macOS 移植（2026-11-03）：mac 上的 QQ 运行时是 NapCat（挂载官方 QQ.app），
+    // 它没有 SnowLuma 的 runtime.json，WebUI 用 NapCat 自己的 6099 端口。
+    if (process.platform === 'darwin') {
+      const port = Number(cfg.napcatWebuiPort) > 0 ? Number(cfg.napcatWebuiPort) : 6099;
+      return { port, url: `http://127.0.0.1:${port}` };
+    }
     let port = 5100;
     try {
       const root = String(cfg.launcherPath ?? '').trim();
@@ -1951,6 +2016,11 @@ ${body}`;
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return false;
     if (!/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(String(url))) return false;
     try {
+      // macOS 移植：mac 没有 cmd/start，用 open 交给系统默认浏览器。
+      if (process.platform === 'darwin') {
+        spawn('open', [String(url)], { detached: true, stdio: 'ignore' }).unref();
+        return true;
+      }
       spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${url}"`], {
         detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
       }).unref();
@@ -2001,7 +2071,8 @@ ${body}`;
     return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
   }
 
-  async function launchSnowLuma() {
+  async function launchSnowLuma(opts = {}) {
+    const silent = opts.silent === true;
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
     }
@@ -2035,7 +2106,12 @@ ${body}`;
     try {
       const cwd = path.dirname(launcher);
       const lower = launcher.toLowerCase();
-      if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
+      if (process.platform === 'darwin') {
+        // macOS 移植：.app 必须交给 open 启动（直接 spawn 会报权限/找不到可执行）。
+        // 用参数数组而不是拼 shell 串，路径里有空格/中文也不需要转义。
+        // 2026-11-04：必须带 --no-sandbox，否则 NapCat 不注入（表现为 3000/3001 不开）。
+        spawn('open', ['-a', launcher, '--args', '--no-sandbox'], { detached: true, stdio: 'ignore' }).unref();
+      } else if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
         // 现在整条路径作为「verbatim 参数」交给 cmd，并且拒绝含引号/换行的路径。
         if (/["\r\n]/.test(launcher)) return { ok: false, error: '启动脚本路径含引号或换行，拒绝执行' };
@@ -2050,7 +2126,7 @@ ${body}`;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (await portOpen(webui.port)) {
-          const opened = openLocalUrl(webui.url);
+          const opened = silent ? false : openLocalUrl(webui.url);
           return {
             ok: true,
             started: true,
@@ -3698,6 +3774,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 启动后异步做的事（不阻塞插件激活）
   void activateExtensions();
+  enforceDshFence('插件激活');
   void maybeAutoStartBridge();
   // 组件更新检查（2026-10-26）：DSH 起来后延迟 20 秒查一次，之后每 6 小时一次。
   // 结果缓存在 updates.json；设置页概览打开时若 showPrompt 就自动弹窗。
@@ -3712,7 +3789,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     pluginLog('[updates] 启动检查失败：', String(error?.message ?? error));
   }
   // 端口漂移自愈：每 2 分钟检查一次（内部会判断 autoStart 是否开启、是否有并发）。
-  bridgeRepairTimer = setInterval(() => { void maybeAutoStartBridge(); }, 120_000);
+  bridgeRepairTimer = setInterval(() => { enforceDshFence('定时检查'); void maybeAutoStartBridge(); }, 120_000);
   bridgeRepairTimer.unref?.();
   startSyncTimer();
 

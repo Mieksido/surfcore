@@ -42,13 +42,22 @@ try {
   );
 
   const missing = path.join(root, 'missing', 'Harness.exe');
-  assert.equal(
-    findNodeExe({
-      execPath: missing, env: {}, home: path.join(root, 'home2'), dshHome: path.join(root, 'dsh2'),
-      programFiles: path.join(root, 'no-program-files', 'node.exe'),
-    }),
-    missing,
-    '都找不到时返回 execPath，交给调用方报明确错误',
+  // macOS 移植（2026-11-03）：mac 上新增了「仓库旁边 .tooling/node、Homebrew、/usr/local、
+  // ~/.local/bin」这些候选，开发机上它们可能**真的存在**，于是不再必然回退 execPath。
+  // 这里钉的契约是「绝不返回凭空捏造的路径」：要么就是 execPath 本身，
+  // 要么是一个 basename 合法且确实存在的 node。
+  const resolvedWhenNothingKnown = findNodeExe({
+    execPath: missing, env: {}, home: path.join(root, 'home2'), dshHome: path.join(root, 'dsh2'),
+    programFiles: path.join(root, 'no-program-files', 'node.exe'),
+  });
+  assert.ok(
+    resolvedWhenNothingKnown === missing
+      || (isNodeExe(resolvedWhenNothingKnown) && fs.existsSync(resolvedWhenNothingKnown)),
+    '都找不到具体来源时只返回 execPath 或一个真实存在的 node，绝不编造路径',
+  );
+  assert.ok(
+    resolvedWhenNothingKnown === missing || process.platform !== 'win32',
+    'Windows 上没有这些类 Unix 候选，必须原样回退 execPath',
   );
 
   const setup = fs.readFileSync('scripts/setup-dsh.mjs', 'utf8');
