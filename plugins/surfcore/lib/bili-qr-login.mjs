@@ -34,6 +34,9 @@ const sessions = new Map();
 function findEdge() {
   const candidates = [
     process.env.SURFCORE_EDGE,
+    // macOS（2026-11-04 移植）：Edge 在 /Applications 里，二进制名是 "Microsoft Edge"
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    path.join(os.homedir(), 'Applications', 'Microsoft Edge.app', 'Contents', 'MacOS', 'Microsoft Edge'),
     path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
