@@ -9518,7 +9518,7 @@ async function main() {
           outbox.markSent(kind, id, part);
         })
         .catch((error) => {
-          lastSendFailed.set(key, true);
+          lastSendFailed.set(key, Date.now());
           noteSendFailure(key, error);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
           if (isConnectionSendError(error) && outbox.push(kind, id, part)) {
@@ -9530,9 +9530,13 @@ async function main() {
     return sendChain;
   }
 
-  /** 上一批发往该会话的消息是否全部成功。 */
+  /** 上一批发往该会话的消息是否全部成功（失败记录 10 分钟后视为过期）。 */
+  const SEND_FAILED_STALE_MS = 10 * 60 * 1000;
   function lastSendSucceeded(key) {
-    return lastSendFailed.get(key) !== true;
+    const v = lastSendFailed.get(key);
+    if (v === true) return false;
+    if (typeof v === 'number' && v > 0) return Date.now() - v >= SEND_FAILED_STALE_MS;
+    return true;
   }
 
   // ── 真人式分条发送 ──────────────────────────────────────────────────────
@@ -9719,7 +9723,7 @@ async function main() {
           // 与 sendToQQ 同样的失败记账。少了这一步，调用方 `lastSendSucceeded(key)`
           // 会把「一条都没发出去」当成「我已经说过话了」：刷新 lastActiveMessageAt /
           // lastAiReplyAt 并抑制后续接话，而群里什么都没收到 —— 静默丢回复。
-          lastSendFailed.set(key, true);
+          lastSendFailed.set(key, Date.now());
         });
       if (!isLast) {
         const useLong = longProb > 0 && Math.random() < longProb;
@@ -10421,6 +10425,10 @@ async function main() {
         })
         .catch((error) => {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          // 2026-11-04：以前只有 sendToQQ 记账，工具通道（sendMessagesV2）失败/成功都不更新
+          // `lastSendFailed` → 一次旧失败会把 qq_close_conversation 永久挡死。
+          lastSendFailed.set(key, Date.now());
+          noteSendFailure(key, error);
           failed.push(error);
         });
       if (i < delays.length) {
@@ -10434,6 +10442,9 @@ async function main() {
         err.sent = sent.slice();
         throw err;
       }
+      // 工具通道发送成功 = 通道恢复：清掉失败标记（close 才能真正放行）并复位连败计数。
+      lastSendFailed.delete(key);
+      noteSendSuccess(key);
       if (sent.length) recordSelfMemoryEvent(key, sent.join('\n'));
       return sent;
     });
@@ -11870,7 +11881,15 @@ async function main() {
       throw error;
     }
     const st = getSocialV2State(key);
-    const plan = planClose({ st, sendFailed: lastSendFailed.get(key) === true });
+    const failAt = lastSendFailed.get(key);
+    const sendFailed = failAt === true || (typeof failAt === 'number' && failAt > 0);
+    const sendFailedAgeMs = typeof failAt === 'number' ? Date.now() - failAt : 0;
+    const plan = planClose({
+      st,
+      sendFailed,
+      sendFailedAgeMs,
+      allowAbandon: body.abandon === true,
+    });
     if (plan.blocked) {
       if (plan.code === 'CLOSE_AFTER_SEND_FAILED') {
         const error = new Error(plan.error);
@@ -11881,6 +11900,8 @@ async function main() {
       }
       return { ok: true, key, ...plan };
     }
+    // 模型明确放弃 / 失败已过期：收尾成功后清掉失败标记，别让下一条消息继续被它挡。
+    if (plan.abandonedSendFailure || plan.staleSendFailure) lastSendFailed.delete(key);
     const assessment = assessClosureV2(key, st);
     const gate = closeGate(assessment, config);
     if (gate.blocked) {

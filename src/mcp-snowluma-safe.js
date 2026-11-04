@@ -681,6 +681,7 @@ server.tool(
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('可同时确认已读水位：使用已查看结果中的 readThroughSeq；不传则只确认已经展示给你的那部分'),
     reason: z.enum(['natural', 'topic-done', 'explicit-end', 'busy', 'tired', 'other']).optional().describe('收尾原因：natural=自然收尾 / topic-done=话题聊完 / explicit-end=对方道别 / busy=各自去忙 / tired=聊累了 / other=其它'),
+    abandon: z.boolean().optional().describe('明确放弃本轮：最近一次发送失败、重试也发不出去时置 true，允许直接收尾（summary 里要写清「没发出去」）'),
     summary: z.string().max(200).optional().describe('这次收在哪（一句话，给下次的自己看）'),
     nextOpening: z.string().max(120).optional().describe('下次可以怎么自然接（一句话，可选）')
   },
