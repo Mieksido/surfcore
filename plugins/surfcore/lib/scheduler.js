@@ -89,8 +89,22 @@ function personaCardBlock() {
     return bits.length ? `［身份］${bits.join('，')}。（以此为准，别用别的称呼 ✓）` : ''
   }
   const max = Math.max(600, Math.min(6000, Number(unified.persona?.compactChars) || 2200))
+  // 分层独立预算（2026-11-04）：B站 以前只有一个 compactChars 总预算，核心先占满就把语气/场景/日常挤掉，
+  // 评论里反馈的「B站没有分层」就是这个。这里给每层各自的上限；仍可用 unified.persona.layerMaxChars 覆盖。
+  const layerCaps = (() => {
+    const src = unified.persona?.layerMaxChars && typeof unified.persona.layerMaxChars === 'object'
+      ? unified.persona.layerMaxChars : {}
+    const out = { identity: 400, tone: 800, scene: 600, daily: 400 }
+    for (const key of Object.keys(out)) {
+      if (src[key] === undefined) continue
+      const n = Math.round(Number(src[key]))
+      if (Number.isFinite(n) && n >= 0) out[key] = n
+    }
+    return out
+  })()
   const composed = composePersonaLayers({
     core: card,
+    layerMaxChars: layerCaps,
     // 身份底座：B站 也必须知道“我是谁、主人是谁”，不能只靠日常层里的那一行。
     identity: buildPersonaIdentity({
       name: personaNameFromCard(card),

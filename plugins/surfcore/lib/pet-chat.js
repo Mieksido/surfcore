@@ -273,6 +273,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       daily: readPersonaLayerText('daily'),
       mode: 'v2',
       maxChars: 4200,
+      // 桌宠与 QQ/B站 同一套分层预算：核心之外，语气/场景/日常各自注入（2026-11-04）
+      layerMaxChars: { identity: 500, tone: 900, scene: 600, daily: 500 },
       sceneId: 'pet',
     }).text || personaCore;
     let name = String(cur?.name || '').trim();
