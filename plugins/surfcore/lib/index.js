@@ -1914,6 +1914,14 @@ ${body}`;
     const explicit = String(cfg.launchScript ?? '').trim();
     if (explicit) return path.isAbsolute(explicit) ? explicit : path.resolve(QQBOT_ROOT, explicit);
     const base = String(cfg.launcherPath ?? '').trim();
+    // macOS 移植：mac 上没有 launcher.bat/SnowLuma.exe。运行时是 NapCat 挂载的
+    // 官方 QQ.app —— 「启动 QQ」就是打开这个 .app（NapCat 入口由安装器写进 QQ 的
+    // package.json，打开同一个 app 即可）。允许配置 launcherPath 指向任意 .app。
+    if (process.platform === 'darwin') {
+      if (base) return path.isAbsolute(base) ? base : path.resolve(QQBOT_ROOT, base);
+      const fallback = '/Applications/QQ.app';
+      try { return fs.existsSync(fallback) ? fallback : ''; } catch { return ''; }
+    }
     if (!base) return '';
     const root = path.isAbsolute(base) ? base : path.resolve(QQBOT_ROOT, base);
     const candidates = [
@@ -1935,6 +1943,12 @@ ${body}`;
   // 端口从 SnowLuma 自己的 runtime.json 读，读不到就回退 5100。
   function snowLumaWebui() {
     const cfg = readQqConfig().config?.snowluma ?? {};
+    // macOS 移植（2026-11-03）：mac 上的 QQ 运行时是 NapCat（挂载官方 QQ.app），
+    // 它没有 SnowLuma 的 runtime.json，WebUI 用 NapCat 自己的 6099 端口。
+    if (process.platform === 'darwin') {
+      const port = Number(cfg.napcatWebuiPort) > 0 ? Number(cfg.napcatWebuiPort) : 6099;
+      return { port, url: `http://127.0.0.1:${port}` };
+    }
     let port = 5100;
     try {
       const root = String(cfg.launcherPath ?? '').trim();
@@ -1951,6 +1965,11 @@ ${body}`;
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return false;
     if (!/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(String(url))) return false;
     try {
+      // macOS 移植：mac 没有 cmd/start，用 open 交给系统默认浏览器。
+      if (process.platform === 'darwin') {
+        spawn('open', [String(url)], { detached: true, stdio: 'ignore' }).unref();
+        return true;
+      }
       spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${url}"`], {
         detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
       }).unref();
@@ -2035,7 +2054,11 @@ ${body}`;
     try {
       const cwd = path.dirname(launcher);
       const lower = launcher.toLowerCase();
-      if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
+      if (process.platform === 'darwin') {
+        // macOS 移植：.app 必须交给 open 启动（直接 spawn 会报权限/找不到可执行）。
+        // 用参数数组而不是拼 shell 串，路径里有空格/中文也不需要转义。
+        spawn('open', [launcher], { detached: true, stdio: 'ignore' }).unref();
+      } else if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
         // 现在整条路径作为「verbatim 参数」交给 cmd，并且拒绝含引号/换行的路径。
         if (/["\r\n]/.test(launcher)) return { ok: false, error: '启动脚本路径含引号或换行，拒绝执行' };

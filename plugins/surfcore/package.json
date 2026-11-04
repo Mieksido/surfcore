@@ -11,7 +11,8 @@
     "./qq-mode": "./lib/qq-mode.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
-    "./qq-tool-restrict.mjs": "./qq-tool-restrict.mjs"
+    "./qq-tool-restrict.mjs": "./qq-tool-restrict.mjs",
+    "./package.json": "./package.json"
   },
   "scripts": {
     "test": "node scripts/test-snowluma-install.mjs && node scripts/test-ui-contrast.mjs && node scripts/test-voice-health.mjs && node scripts/test-voice-flatten.mjs && node scripts/test-voice-progress-instance.mjs && node scripts/test-doctor.mjs && node scripts/test-http-guard.mjs && node scripts/test-pet-api.mjs && node scripts/test-pet-dir-guard.mjs && node scripts/test-updates.mjs && node scripts/test-updates-version.mjs && node scripts/test-updates-pending.mjs && node scripts/test-updates-voice.mjs && node scripts/test-update-helper-env.mjs && node scripts/test-pet-update.mjs && node scripts/test-pet-install-guards.mjs && node scripts/test-pet-install-form.mjs && node scripts/test-pet-uninstall-keep.mjs && node scripts/test-bridge-status.mjs && node scripts/test-privacy.mjs && node scripts/test-align.mjs && node scripts/test-align-label-api.mjs && node scripts/test-store.mjs && node scripts/test-persona.mjs && node scripts/test-character-api.mjs && node scripts/test-admin-config-api.mjs && node scripts/test-admin-bili-prompt.mjs && node scripts/test-memory-card-api.mjs && node scripts/test-msgfeed-oid.mjs && node scripts/test-bili-automation.mjs && node scripts/test-automation-config-api.mjs && node scripts/test-kind-signals.mjs && node scripts/test-client-contract.mjs && node scripts/test-host-smoke.mjs && node scripts/test-platform-start-host.mjs && node scripts/test-pet-chat.mjs && node ../../scripts/test-platform-start.mjs && node ../../scripts/test-token-budget-service.mjs",
