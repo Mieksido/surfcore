@@ -15,13 +15,27 @@ export const ACTION_PLANNER_VERSION = 1;
  * @param {object} opts.st socialV2 state
  * @param {number} [opts.now]
  */
-export function planClose({ st, now = Date.now(), sendFailed = false } = {}) {
+export const CLOSE_SEND_FAILED_STALE_MS = 10 * 60 * 1000;
+
+export function planClose({ st, now = Date.now(), sendFailed = false, sendFailedAgeMs = 0, allowAbandon = false } = {}) {
   if (sendFailed) {
+    // 模型明确放弃本轮：允许收尾，但要求把「没发出去」写进 summary，而不是假装说过。
+    if (allowAbandon) {
+      return {
+        blocked: false,
+        abandonedSendFailure: true,
+        hint: '已按「放弃本轮」收尾：发送失败不再阻止；summary 里要写清没发出去，别当成说过。',
+      };
+    }
+    // 失败记录过期（默认 10 分钟）：通道早恢复了，不要永远挡着收尾。
+    if (Number(sendFailedAgeMs) >= CLOSE_SEND_FAILED_STALE_MS) {
+      return { blocked: false, staleSendFailure: true };
+    }
     return {
       blocked: true,
       code: 'CLOSE_AFTER_SEND_FAILED',
       error: '最近一次 QQ 发送失败，不能假装发送成功后收尾；先重试发送，或明确放弃本轮。',
-      hint: '先重试 qq_send_message；发送成功后再 close。',
+      hint: '先重试 qq_send_message；发送成功后再 close；确实发不出去（对方离线/通道故障）时用 abandon:true 明确放弃本轮。',
       nextStep: 'send',
     };
   }

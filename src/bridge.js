@@ -3964,7 +3964,7 @@ async function main() {
   // ── QQ 发送通道健康 / 跨回合失败抑制 ─────────────────────────────────────
   // 主动唤醒是「先生成、后发送」：通道断着时，模型已经烧完 token 才发现发不出去。
   // 所以门槛必须在 sendWakePromptV2 之前（不创建 DSH 会话），不在工具层。
-  const SEND_CHANNEL_SUSPEND_MS = 30 * 60 * 1000;
+  const SEND_CHANNEL_SUSPEND_MS = 10 * 60 * 1000;
 
   function qqSendChannelStatus() {
     if (snowlumaHealth.connected !== true) {
@@ -4196,9 +4196,32 @@ async function main() {
     } catch {}
   }
 
+  /** QQ 侧发送限制（腾讯风控/频控）：NapCat 返回 result 120（EventChecker Failed）。 */
+  function isQqSendLimitedError(error) {
+    const msg = String(error?.message ?? error ?? '');
+    return /"result"\s*:\s*120|result:\s*120/.test(msg);
+  }
+
+  /** 被 QQ 限流时该会话的冷却时长（不触发整体 30 分钟暂停，避免连累其它会话）。 */
+  const QQ_SEND_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
+
   function noteSendFailure(key, error) {
     // 发送守卫/审计拒绝不是通道故障，不能拿它们去暂停唤醒。
     if (/白名单|不在允许|审计|会话令牌|replyToMessageId|atUserId/.test(String(error?.message ?? error))) return;
+    // 2026-11-04：QQ 侧 result 120（风控/频控）只冷却这个会话 5 分钟，
+    // 不写全局 lastSendError（否则 channel-gate 会把其它会话（尤其私聊）一起拦掉）。
+    if (isQqSendLimitedError(error)) {
+      try {
+        const st = getSocialV2State(key);
+        st.sendCooldownUntil = Date.now() + QQ_SEND_LIMIT_COOLDOWN_MS;
+        st.sendFailureStreak = 0;
+        st.lastSendFailureAt = Date.now();
+        st.lastQqLimitAt = Date.now();
+        saveSocialV2State();
+      } catch {}
+      log(`⏳ ${key} 被 QQ 限制发送（result 120）；本会话冷却 5 分钟，其它会话不受影响。`);
+      return;
+    }
     snowlumaHealth.lastSendFailAt = Date.now();
     snowlumaHealth.lastSendError = String(error?.message ?? error ?? '发送失败').slice(0, 200);
     try {
@@ -9501,6 +9524,22 @@ async function main() {
   const fishGroupNames = new Map(); // groupId -> group_name（'' = 查不到）
   const fishChatWindows = new Map(); // groupId -> [{sender,userId,time,isSelf,isOwner,fish}]
 
+  /** QQ 限流冷却期内直接拒绝发送（带可读错误），避免反复撞墙、也避免把失败写进全局健康度。 */
+  function assertSendCooldown(key) {
+    try {
+      const st = getSocialV2State(key);
+      const until = Number(st?.sendCooldownUntil) || 0;
+      if (until > Date.now()) {
+        const wait = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
+        const error = new Error(`QQ 暂时限制发送（result 120），还需等待约 ${wait} 分钟`);
+        error.code = 'SEND_COOLDOWN';
+        throw error;
+      }
+    } catch (error) {
+      if (error?.code === 'SEND_COOLDOWN') throw error;
+    }
+  }
+
   function sendToQQ(key, msg) {
     const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
@@ -9512,13 +9551,15 @@ async function main() {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
+          assertSendCooldown(key);
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           noteSendSuccess(key);
           outbox.markSent(kind, id, part);
         })
         .catch((error) => {
-          lastSendFailed.set(key, true);
+          if (error?.code === 'SEND_COOLDOWN') { log(`QQ 发送跳过 (${key}):`, error.message); return; }
+          lastSendFailed.set(key, Date.now());
           noteSendFailure(key, error);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
           if (isConnectionSendError(error) && outbox.push(kind, id, part)) {
@@ -9530,9 +9571,13 @@ async function main() {
     return sendChain;
   }
 
-  /** 上一批发往该会话的消息是否全部成功。 */
+  /** 上一批发往该会话的消息是否全部成功（失败记录 10 分钟后视为过期）。 */
+  const SEND_FAILED_STALE_MS = 10 * 60 * 1000;
   function lastSendSucceeded(key) {
-    return lastSendFailed.get(key) !== true;
+    const v = lastSendFailed.get(key);
+    if (v === true) return false;
+    if (typeof v === 'number' && v > 0) return Date.now() - v >= SEND_FAILED_STALE_MS;
+    return true;
   }
 
   // ── 真人式分条发送 ──────────────────────────────────────────────────────
@@ -9719,7 +9764,7 @@ async function main() {
           // 与 sendToQQ 同样的失败记账。少了这一步，调用方 `lastSendSucceeded(key)`
           // 会把「一条都没发出去」当成「我已经说过话了」：刷新 lastActiveMessageAt /
           // lastAiReplyAt 并抑制后续接话，而群里什么都没收到 —— 静默丢回复。
-          lastSendFailed.set(key, true);
+          lastSendFailed.set(key, Date.now());
         });
       if (!isLast) {
         const useLong = longProb > 0 && Math.random() < longProb;
@@ -10416,11 +10461,17 @@ async function main() {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
+          assertSendCooldown(key);
           await onebotSend(kind, id, msg, useReply, useAt);
           sent.push(msg);
         })
         .catch((error) => {
+          if (error?.code === 'SEND_COOLDOWN') { log(`QQ 发送跳过 (${key}):`, error.message); failed.push(error); return; }
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          // 2026-11-04：以前只有 sendToQQ 记账，工具通道（sendMessagesV2）失败/成功都不更新
+          // `lastSendFailed` → 一次旧失败会把 qq_close_conversation 永久挡死。
+          lastSendFailed.set(key, Date.now());
+          noteSendFailure(key, error);
           failed.push(error);
         });
       if (i < delays.length) {
@@ -10434,6 +10485,9 @@ async function main() {
         err.sent = sent.slice();
         throw err;
       }
+      // 工具通道发送成功 = 通道恢复：清掉失败标记（close 才能真正放行）并复位连败计数。
+      lastSendFailed.delete(key);
+      noteSendSuccess(key);
       if (sent.length) recordSelfMemoryEvent(key, sent.join('\n'));
       return sent;
     });
@@ -11870,7 +11924,15 @@ async function main() {
       throw error;
     }
     const st = getSocialV2State(key);
-    const plan = planClose({ st, sendFailed: lastSendFailed.get(key) === true });
+    const failAt = lastSendFailed.get(key);
+    const sendFailed = failAt === true || (typeof failAt === 'number' && failAt > 0);
+    const sendFailedAgeMs = typeof failAt === 'number' ? Date.now() - failAt : 0;
+    const plan = planClose({
+      st,
+      sendFailed,
+      sendFailedAgeMs,
+      allowAbandon: body.abandon === true,
+    });
     if (plan.blocked) {
       if (plan.code === 'CLOSE_AFTER_SEND_FAILED') {
         const error = new Error(plan.error);
@@ -11881,6 +11943,8 @@ async function main() {
       }
       return { ok: true, key, ...plan };
     }
+    // 模型明确放弃 / 失败已过期：收尾成功后清掉失败标记，别让下一条消息继续被它挡。
+    if (plan.abandonedSendFailure || plan.staleSendFailure) lastSendFailed.delete(key);
     const assessment = assessClosureV2(key, st);
     const gate = closeGate(assessment, config);
     if (gate.blocked) {
