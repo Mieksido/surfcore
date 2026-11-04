@@ -663,6 +663,35 @@ export function apply(ctx) {
     return '';
   }
 
+  /**
+   * DSH 宿主围栏自查（macOS，2026-11-04）：
+   * 在 DSH 里改设置/装插件会重写 profile，把 desktop-shell.openBrowser 改回 false，
+   * 宿主围栏于是拒绝桥接的全部请求（403、dshReady=false、QQ 不回消息）。
+   * 这里在插件启动和每 60 秒兜底检查一次：发现 false/缺失就改回 true（带备份）。
+   * 第一层防线是 LaunchAgent（scripts/install-fence-guard.sh），这层防 DSH 自身写回。
+   */
+  const DSH_FENCE_PROFILE = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'profiles', 'desktop', 'cordis.patch.yml');
+  let lastFenceFixAt = 0;
+  function enforceDshFence(reason = '') {
+    if (process.platform !== 'darwin') return;
+    if (!platformStartEnabled('qq')) return;
+    try {
+      if (!fs.existsSync(DSH_FENCE_PROFILE)) return;
+      const text = fs.readFileSync(DSH_FENCE_PROFILE, 'utf8');
+      if (/openBrowser:[ \t]*true/.test(text)) return;
+      const stamp = Date.now();
+      if (stamp - lastFenceFixAt < 30_000) return;
+      lastFenceFixAt = stamp;
+      fs.copyFileSync(DSH_FENCE_PROFILE, `${DSH_FENCE_PROFILE}.plugin-bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+      let next = text.replace(/(openBrowser:[ \t]*)false/, '$1true');
+      if (next === text) next = `${text}\n- id: desktop-shell\n  config:\n    openBrowser: true\n    networkExposure: loopback\n`;
+      fs.writeFileSync(DSH_FENCE_PROFILE, next);
+      pluginLog(`[围栏] desktop-shell.openBrowser 被改坏，已自动修回 true${reason ? `（${reason}）` : ''}`);
+    } catch (error) {
+      pluginLog('[围栏] 自动修复失败：', error?.message ?? error);
+    }
+  }
+
   // 自动拉起桥接（默认关；用户可在设置里开）。
   // 2026-10-22：除了启动时检查一次，再加一个 2 分钟自愈轮询 ——
   // DSH 重启后端口会变，桥接如果还连着旧端口，下一次轮询会自动重启它（而不是等用户发现）。
@@ -3745,6 +3774,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 启动后异步做的事（不阻塞插件激活）
   void activateExtensions();
+  enforceDshFence('插件激活');
   void maybeAutoStartBridge();
   // 组件更新检查（2026-10-26）：DSH 起来后延迟 20 秒查一次，之后每 6 小时一次。
   // 结果缓存在 updates.json；设置页概览打开时若 showPrompt 就自动弹窗。
@@ -3759,7 +3789,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     pluginLog('[updates] 启动检查失败：', String(error?.message ?? error));
   }
   // 端口漂移自愈：每 2 分钟检查一次（内部会判断 autoStart 是否开启、是否有并发）。
-  bridgeRepairTimer = setInterval(() => { void maybeAutoStartBridge(); }, 120_000);
+  bridgeRepairTimer = setInterval(() => { enforceDshFence('定时检查'); void maybeAutoStartBridge(); }, 120_000);
   bridgeRepairTimer.unref?.();
   startSyncTimer();
 
