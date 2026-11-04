@@ -668,6 +668,26 @@ export function apply(ctx) {
   // DSH 重启后端口会变，桥接如果还连着旧端口，下一次轮询会自动重启它（而不是等用户发现）。
   let bridgeRepairBusy = false;
   let bridgeRepairTimer = null;
+  /**
+   * DSH 启动/自愈轮询时顺带把 QQ 拉起来（2026-11-04，用户要求「每次打开 DSH 自动启动」）：
+   *   · 只在 macOS 做：Windows 上 QQ 由 SnowLuma 自己管；
+   *   · 3000/6099 任一在听 = QQ 进程已在（可能停在登录页），不重复拉起、不弹浏览器；
+   *   · 拉起后 NapCat 若要求扫码，用户仍需扫一次（登录态没法代扫）。
+   */
+  async function ensureQqForAutoStart() {
+    if (process.platform !== 'darwin') return { skipped: true };
+    try {
+      if (await portOpen(3000) || await portOpen(6099)) return { skipped: true, reason: 'qq-running' };
+      pluginLog('autoStartBridge：QQ 未运行，按「自动启动」拉起 QQ（macOS）');
+      const result = await launchSnowLuma({ silent: true });
+      pluginLog('autoStartBridge：拉起 QQ 结果：', result?.message || result?.error || result?.skipped ? '已处理' : '未知');
+      return result;
+    } catch (error) {
+      pluginLog('autoStartBridge：拉起 QQ 失败：', error?.message ?? error);
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
   const maybeAutoStartBridge = async () => {
     if (bridgeRepairBusy) return;
     bridgeRepairBusy = true;
@@ -683,11 +703,13 @@ export function apply(ctx) {
           const restarted = await restartBridge({ dshWebUrl: currentDshUrl() });
           pluginLog('autoStartBridge 重启结果：', restarted.message || restarted.error || '');
         }
+        void ensureQqForAutoStart();
         return;
       }
       pluginLog('autoStartBridge：桥接未运行，尝试启动');
       const result = await startBridge({ dshWebUrl: currentDshUrl() });
       pluginLog('autoStartBridge 结果：', result.message || result.error || '');
+      void ensureQqForAutoStart();
     } catch (error) {
       pluginLog('autoStartBridge 失败：', error?.message ?? error);
     } finally {
@@ -2020,7 +2042,8 @@ ${body}`;
     return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
   }
 
-  async function launchSnowLuma() {
+  async function launchSnowLuma(opts = {}) {
+    const silent = opts.silent === true;
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
     }
@@ -2057,7 +2080,8 @@ ${body}`;
       if (process.platform === 'darwin') {
         // macOS 移植：.app 必须交给 open 启动（直接 spawn 会报权限/找不到可执行）。
         // 用参数数组而不是拼 shell 串，路径里有空格/中文也不需要转义。
-        spawn('open', [launcher], { detached: true, stdio: 'ignore' }).unref();
+        // 2026-11-04：必须带 --no-sandbox，否则 NapCat 不注入（表现为 3000/3001 不开）。
+        spawn('open', ['-a', launcher, '--args', '--no-sandbox'], { detached: true, stdio: 'ignore' }).unref();
       } else if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
         // 现在整条路径作为「verbatim 参数」交给 cmd，并且拒绝含引号/换行的路径。
@@ -2073,7 +2097,7 @@ ${body}`;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (await portOpen(webui.port)) {
-          const opened = openLocalUrl(webui.url);
+          const opened = silent ? false : openLocalUrl(webui.url);
           return {
             ok: true,
             started: true,
