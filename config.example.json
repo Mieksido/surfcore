@@ -11,7 +11,13 @@
     "allowRemote": false
   },
   "role": {
-    "maxInjectChars": 6000
+    "maxInjectChars": 6000,
+    "layerMaxChars": {
+      "identity": 600,
+      "tone": 1200,
+      "scene": 800,
+      "daily": 600
+    }
   },
   "biliBridge": {
     "enabled": true,
@@ -372,6 +378,10 @@
       "maxBytes": 8388608,
       "maxPixels": 64000000,
       "maxCount": 5
+    },
+    "prompt": {
+      "antiAi": "",
+      "proactive": ""
     }
   },
   "webSearch": {

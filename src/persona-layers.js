@@ -21,6 +21,27 @@ import { selectRoleText } from './role-card.js';
 
 export const PERSONA_SCENES = Object.freeze(['qq-group', 'qq-private', 'bili', 'pet']);
 
+/**
+ * 分层独立预算（2026-11-04，修「分层不生效」）：
+ * 以前只有一个总预算 maxChars，核心卡先占满，语气/场景/日常被挤掉，表现为「只有核心主人格」。
+ * 现在每层各自有上限、互不挤占；核心上限仍由 maxChars 控制。
+ * 0 = 该层不注入。
+ */
+export const PERSONA_LAYER_DEFAULT_CAPS = Object.freeze({
+  identity: 600, tone: 1200, scene: 800, daily: 600,
+});
+
+function normalizeLayerCaps(input) {
+  if (!input || typeof input !== 'object') return null;
+  const out = { ...PERSONA_LAYER_DEFAULT_CAPS };
+  for (const key of Object.keys(out)) {
+    if (input[key] === undefined) continue;
+    const n = Math.round(Number(input[key]));
+    if (Number.isFinite(n) && n >= 0) out[key] = n;
+  }
+  return out;
+}
+
 export const PERSONA_SCENE_LABELS = Object.freeze({
   'qq-group': 'QQ 群聊',
   'qq-private': 'QQ 私聊',
@@ -55,7 +76,7 @@ function section(id, label, text) {
  * @param {string} [opts.sceneId] 场景 ID（用于标题）
  */
 export function composePersonaLayers({
-  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '',
+  core = '', scene = '', daily = '', tone = '', identity = '', personaMode = 'full', mode = 'v2', maxChars = 6000, sceneId = '', layerMaxChars = null,
 } = {}) {
   const budget = Math.max(0, Math.round(Number(maxChars) || 0));
   const coreText = selectRoleText(core, mode);
@@ -63,7 +84,9 @@ export function composePersonaLayers({
   const sceneText = selectRoleText(scene, mode);
   const dailyText = selectRoleText(daily, mode);
   // tone 模式不加载核心；只有旧角色既没有语气也没有场景/日常时，才回退核心，避免“没卡”。
-  const identityText = String(identity ?? '').trim();
+  let identityText = String(identity ?? '').trim();
+  // 去重：很多角色卡开头已经写了「你是 X；你的主人是 Y」，再拼一层身份底座 = 同一段话进两遍。
+  if (identityText && /你的主人是/.test(coreText)) identityText = '';
   const identitySection = identityText ? [section('identity', '身份底座', identityText)] : [];
   // tone 模式只在「确实写了语气层」时才省掉核心：
   //   · 未拆分（只有 persona.md）→ 必须注入核心，否则只剩身份底座、人设正文全丢；
@@ -86,14 +109,43 @@ export function composePersonaLayers({
   if (!selected.length && personaMode === 'tone' && coreText) {
     const fallback = coreText;
     counts.core = fallback.length;
-    return { text: fallback, chars: fallback.length, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+    return { text: fallback, chars: fallback.length, layers: counts, omitted, truncated: false, budgetMode: 'total', sceneId: sceneId || '' };
   }
-  if (!selected.length) return { text: '', chars: 0, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+  if (!selected.length) return { text: '', chars: 0, layers: counts, omitted, truncated: false, budgetMode: 'total', sceneId: sceneId || '' };
+
+  // ── 分层独立预算（新）：每层各自上限，互不挤占；核心上限 = maxChars ──
+  const caps = normalizeLayerCaps(layerMaxChars);
+  if (caps) {
+    if (budget > 0) caps.core = budget;
+    let truncatedLayered = false;
+    const countsLayered = { identity: 0, core: 0, tone: 0, scene: 0, daily: 0 };
+    const omittedLayered = [];
+    const partsLayered = [];
+    for (const item of selected) {
+      const cap = caps[item.id];
+      if (cap === 0) { omittedLayered.push(item.id); countsLayered[item.id] = 0; continue; }
+      const limit = Number.isFinite(cap) ? cap : Number.POSITIVE_INFINITY;
+      const header = selected.length > 1 ? `【${item.label}】\n` : '';
+      const allowed = limit - header.length;
+      if (allowed <= 0) { omittedLayered.push(item.id); countsLayered[item.id] = 0; continue; }
+      let text = item.text;
+      if (text.length > allowed) { text = text.slice(0, allowed).trimEnd(); truncatedLayered = true; }
+      if (!text) { omittedLayered.push(item.id); continue; }
+      const block = `${header}${text}`;
+      partsLayered.push(block);
+      countsLayered[item.id] = block.length;
+    }
+    const textLayered = partsLayered.join('\n\n').trim();
+    return {
+      text: textLayered, chars: textLayered.length, layers: countsLayered,
+      omitted: omittedLayered, truncated: truncatedLayered, budgetMode: 'layers', sceneId: sceneId || '',
+    };
+  }
 
   // 只有核心时保持旧行为：不额外加标题，避免旧角色卡注入内容发生变化。
   if (selected.length === 1 && selected[0].id === 'core' && budget <= 0) {
     counts.core = selected[0].text.length;
-    return { text: selected[0].text, chars: counts.core, layers: counts, omitted, truncated: false, sceneId: sceneId || '' };
+    return { text: selected[0].text, chars: counts.core, layers: counts, omitted, truncated: false, budgetMode: 'total', sceneId: sceneId || '' };
   }
 
   let remaining = budget > 0 ? budget : Number.POSITIVE_INFINITY;
@@ -123,5 +175,5 @@ export function composePersonaLayers({
   }
 
   const text = parts.join('\n\n').trim();
-  return { text, chars: text.length, layers: counts, omitted, truncated, sceneId: sceneId || '' };
+  return { text, chars: text.length, layers: counts, omitted, truncated, budgetMode: 'total', sceneId: sceneId || '' };
 }

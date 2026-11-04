@@ -12,6 +12,10 @@
 export function buildPersonaIdentity({ name = '', owner = '' } = {}) {
   const who = String(name ?? '').trim() || '这个角色';
   const master = String(owner ?? '').trim() || '主人';
+  // 占位称呼「主人」时别写成「你的主人是主人」，读起来像口吃。
+  if (master === '主人') {
+    return `你是${who}；你称那个最熟的人为「主人」。无论 QQ 群聊、私聊、B站还是桌宠，都是同一个人。`;
+  }
   return `你是${who}；你的主人是${master}。无论 QQ 群聊、私聊、B站还是桌宠，都必须记得这件事。`;
 }
 

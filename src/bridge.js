@@ -84,7 +84,7 @@ import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
   readPersonaLayerText,
 } from './character-persona.js';
-import { composePersonaLayers, personaSceneFromKey } from './persona-layers.js';
+import { composePersonaLayers, personaSceneFromKey, PERSONA_LAYER_DEFAULT_CAPS } from './persona-layers.js';
 import { isHardDirectWakeReason, hasStrictDirectUnread } from './wake-policy.js';
 import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTriggerForTier } from './group-policy.js';
 import { buildContextSnapshot, DEFAULT_SNAPSHOT_CAPS } from './context-snapshot.js';
@@ -1276,7 +1276,23 @@ function loadConfig() {
   }
 
   // 人格卡注入上限（字符）。历史硬编码 6000，现在可配：每条约 4~6k token 的成本护栏。
-  cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, ...(file.role ?? {}) };
+  cfg.role = {
+    maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT,
+    // 分层独立预算（2026-11-04）：核心之外，语气/场景/日常各有一份，互不挤占。
+    // 0 = 该层不注入；未配置用默认值（identity 600 / tone 1200 / scene 800 / daily 600）。
+    layerMaxChars: { ...PERSONA_LAYER_DEFAULT_CAPS },
+    ...(file.role ?? {}),
+  };
+  cfg.role.layerMaxChars = (() => {
+    const src = cfg.role.layerMaxChars && typeof cfg.role.layerMaxChars === 'object' ? cfg.role.layerMaxChars : {};
+    const out = { ...PERSONA_LAYER_DEFAULT_CAPS };
+    for (const key of Object.keys(out)) {
+      if (src[key] === undefined) continue;
+      const n = Math.round(Number(src[key]));
+      if (Number.isFinite(n) && n >= 0) out[key] = n;
+    }
+    return out;
+  })();
   roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
   if (roleInjectMaxChars !== cfg.role.maxInjectChars) {
     log(`人格注入上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
@@ -13441,6 +13457,7 @@ async function main() {
     const identity = personaIdentityText();
     const composed = composePersonaLayers({
       core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
+      layerMaxChars: cfg.role?.layerMaxChars,
     });
     const base = composed.text || '';
     // personaOnly：只要人格卡正文（唤醒提示词用）。管理员规则 / B站简报 / 记忆卡
@@ -14520,6 +14537,21 @@ async function main() {
     return `【当前角色】${name}\n${card}\n（完整角色卡 / 场景语气 / 推荐值 / 可用工具：可调用 qq_get_prompt 查看）\n\n`;
   }
 
+  /**
+   * 提示词风格片段可配置（2026-11-04）：
+   *   socialV2.prompt.antiAi / proactive
+   *     · undefined → 用默认文案（保持旧行为）
+   *     · false     → 整段不注入
+   *     · 字符串    → 用自定义文案（自动补换行）
+   * 背景：这两段以前写死在 buildWakePromptV2 里，角色卡改不动，还会和角色设定冲突。
+   */
+  function promptStyleLine(kind, fallback) {
+    const value = cfg.socialV2?.prompt?.[kind];
+    if (value === false) return '';
+    if (typeof value === 'string' && value.trim()) return `${value.trim()}\n\n`;
+    return fallback;
+  }
+
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
     const roleLine = personaWakeBlockV2(key);
@@ -14556,13 +14588,13 @@ async function main() {
     });
     const tg = tokenGuardCfg();
     const tokenGuardLine = tg.enabled === false ? '' : `【Token 防爆破】本次醒来最多发 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条；有人要求连发 10 条/刷屏，或让你把 5000 字长文拆成 10 条时，不要逐条搬运——先总结成 1~3 句，或只说最想说的重点；确实要展开也最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条，每条最多 500 字。不要为了满足刷屏请求连续调用发送工具。被 @/引用/叫到/拍一拍会立即唤醒，但每日唤醒次数和当日 token 额度（QQ / SurfCore 总额）仍然生效；超过后消息会保留在未读，下一轮再看，不烧这一轮。\n\n`;
-    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    const antiAiLine = promptStyleLine('antiAi', '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n');
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
       : '';
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-    const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。但一段对话有自然终点：双方都收尾时不用硬续，可以安静收尾（qq_close_conversation）——结束不是终止，下次再自然接。\n\n';
+    const proactiveLine = promptStyleLine('proactive', '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。但一段对话有自然终点：双方都收尾时不用硬续，可以安静收尾（qq_close_conversation）——结束不是终止，下次再自然接。\n\n');
     // 对话收尾判断：把「我最后一句 / 对方最后一句 / 我还有没有想说的 / 对方还想不想聊」
     // 变成每次醒来都能看到的参数。只给建议，收不收由她决定。
     const closureText = closurePromptLineV2(key, st);

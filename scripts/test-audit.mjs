@@ -254,6 +254,8 @@ const tests = [
   'test-launch-components.mjs',
   // 人格卡分层：核心/场景/日常、QQ群聊/私聊、预算裁剪、v1/v2 小节过滤。
   'test-persona-layers.mjs',
+  // 分层独立预算 / 身份去重 / 旧总预算兼容（2026-11-04 评论区反馈「分层不生效」的回归）。
+  'test-persona-layer-budget.mjs',
   // Phase 0A：遥测只读、模型调用去重、工具结果大小、报告聚合。
   'test-context-telemetry.mjs',
   // Phase 1A：按 wakeId 归属、bridge/plugin 去重、路径/交付/成本聚合。
