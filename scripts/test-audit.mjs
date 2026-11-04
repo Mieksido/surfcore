@@ -8,6 +8,10 @@ const tests = [
   'test-audit-bridge.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
+  // QQ scoped 工具：晚注册的全局危险工具也要补装 Schema 限制。
+  'test-qq-tool-restrict-events.mjs',
+  // DSH Desktop 安装目录里的 node 解析；bridge/scheduler/setup 共用同一个入口。
+  'test-node-path.mjs',
   // DSH 会话队列（inbox 投影）解析：0.2.0 把队列从 control baseline 的
   // `value.queues[<id>]` 挪进了 `value.projections[<id>].values.inbox`。
   // 认错形状的后果不是"少清几条"，而是**每一次退役会话都抛错**、旧任务继续跑，
@@ -17,6 +21,8 @@ const tests = [
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
   // DSH 端口漂移兜底：401/200+SERVER 才算 DSH、别的 Web 服务不算、回环之外不覆盖。
   'test-dsh-port.mjs',
+  // 老/内嵌宿主只给 /api/events 快照：remote.mux 404 才降级，正常用户仍走推送。
+  'test-events-fallback.mjs',
   // 鱼群保护：QQ 的鱼名/密度/连续刷屏判定 + B站的鱼楼层/聚拢/点赞纯逻辑（不发真请求）。
   'test-fish-guard.mjs',
   // QQ 鱼群触发记录：social-v2 的 fishGuardLog/当前冷却/lastFishGuard → 设置页表格。
@@ -29,6 +35,10 @@ const tests = [
   'test-self-identity.mjs',
   // 早安问候：08:00 重启丢枪的补发/重试逻辑 + reserved2 必须真调发送工具的提示词。
   'test-greeting.mjs',
+  // 孤立代理项：截断劈开 emoji → 提示词进模型 API 就 400（桌宠对话一直 400 的根因）。
+  'test-safe-text.mjs',
+  // 出站 outbox：连接失败入队、上线补发、去重、策略失败不反复重试。
+  'test-outbox.mjs',
   // 出站身份闸：B站 评论/私信/动态/分享发送前拦主人/别人的账号标识（只许自己互认）。
   'test-identity-guard.mjs',
   // 观看历史：追加/去重/轮转/旧记忆回填/评分合并，以及 debrief·watch·角色迁移的接线契约。
@@ -65,6 +75,12 @@ const tests = [
   'test-platform-start.mjs',
   // B站 会话权限：workspace-write 在 C:\Users\Mieksido 起不了命令 → 自动切 danger-full-access。
   'test-scheduler-permission.mjs',
+  // B站生物钟会话归组：新会话 workspaceId，旧版无工作区服务才退回专用 cwd。
+  'test-bili-workspace.mjs',
+  // B站评论/@监听的 TDZ 回归：程序错误不能被 catch 吞成网络错误。
+  'test-bili-listen-error.mjs',
+  // B站收件箱坐标：@ 一级评论补 root=source；resolveLatestReply 按 source rpid 找。
+  'test-bili-reply-coordinates.mjs',
   'test-token-economy.mjs', 'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
   'test-reply-wait.mjs', 'test-preset-prompt.mjs', 'test-role-card.mjs',
   // 管理员身份（QQ ⇄ B站 同一个人）+「对管理员温柔 / 绝不回嘴」提示词：
@@ -95,12 +111,18 @@ const tests = [
   'test-time-window.mjs',
   // QQ @：@我 + @别人不能一票否决；self_id 缺失回退 selfUserId。
   'test-qq-at.mjs',
+  // 模型设置：客户端 → 宿主代理 → 桥接；保存不是已应用，selectModel 回执才是。
+  'test-model-settings.mjs',
+  // QQ 工作区跟随 DSH 默认模型 + 不认 reasoningEffort 的模型回退。
+  'test-dsh-model-follow.mjs',
+  // 跟随开关的宿主代理路由（2026-11-03：前端有、宿主漏注册 → 404）。
+  'test-dsh-follow-route.mjs',
   // 设置页连续保存：成功必须回传/同步 stamps，warning 不能当 error。
   'test-config-save-stamps.mjs',
   // B站沉默逛 + 评论年龄闸：工具硬拦、带 code/hint。
   'test-bili-interact.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。
-  'test-memory-card.mjs', 'test-memory-card-wiring.mjs',
+  'test-memory-card.mjs', 'test-memory-card-wiring.mjs', 'test-memory-sharing.mjs',
   // 角色人格：多角色目录隔离 / 切换 epoch / 快照回档 / 旧数据迁移（含凭证不进角色包）。
   'test-character-store.mjs',
   // B站 工具链路径：有角色时行为账本进角色包，cookie/表情包仍在账号目录。
@@ -117,6 +139,8 @@ const tests = [
   // （DSH 同一路 DeepSeek 搜索、Bing RSS 兜底、凭据优先级与端点安全；
   //  本轮新增：空结果 note 必须在写缓存之前生成，否则缓存命中丢掉提示）。
   'test-media-search.mjs',
+  // web_search 凭据：DSH 0.2 records、账号凭据 endpoint 钉死官方域名。
+  'test-web-search-credentials.mjs',
   // GitHub issue 回归：#22 模式 user 层优先 / #11/#19 回合判忙租约 / #29 机器人身份注入。
   'test-issue-regressions.mjs',
   // 二代「会话初始提示词」：只在首次唤醒注入、管理面隔离、损坏文件只读降级、
@@ -142,6 +166,8 @@ const tests = [
   'test-voice-route.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）
   'test-snowluma-conn.mjs',
+  // 体检 SnowLuma 必须读 bridge.snowluma（运行态），不能拿 config.snowluma 冒充。
+  'test-doctor-snow-state.mjs',
   // 启动器与编码（乱码根因：.cmd 里的非 ASCII 会被 cmd 按 ANSI 解码）
   'test-encoding.mjs',
   // 控制台乱码机制（UTF-8 字节被按 GBK 解码）+ chcp 修复
@@ -155,6 +181,8 @@ const tests = [
   // 命名空间改为由 loader entry id + 导出的 Config 推导。断言三点前提都在，
   // 并且那条已删除的 API 不会被照旧注释加回来。
   'test-qq-mode-plugin.mjs',
+  // schemastery 3.18.3+ volatile 包装：settings/测试边界必须拆成纯值。
+  'test-schema-volatile.mjs',
   // SnowLuma 上游健康（被误诊成「qq-bridge 注入失败」的那个失败形态）：
   //   · good 必须取自心跳 status.good / get_status —— 取自 get_login_info 会**静默失效**
   //     （SDK 不校验 data 载荷，good 会永远停在 null，整条权威信号变成死分支）；
@@ -175,6 +203,8 @@ const tests = [
   // 隐私扫描的判据本身（2026-10-26）：编译出的正则必须带 g —— 否则每条规则每个文件
   // 只看到第一个命中（fail-open），还会空转成"扫描不完整"。PITFALLS #74。
   'test-privacy-scan.mjs',
+  // 群刷屏短指令：#sl 等非主人纯指令不唤醒；中文话题标签不误伤。
+  'test-command-spam.mjs',
   // 语音包默认安装源（2026-10-26）：必须从仓库位置解析、不许硬编码盘符，
   // 且 8765/8767 两个端口与启停脚本名不能漂移（语音路由全靠它们）。
   'test-voice-packs-default.mjs',
@@ -214,6 +244,8 @@ const tests = [
   'test-version.mjs',
   // 插件冲突体检：已知第三方工具是否被 QQ 策略拒绝、压缩接管冲突、未知插件必须标 unknown。
   'test-plugin-compat.mjs',
+  // 管理员输入框：border-box + max-width，避免 width:100% 加 padding 后超框。
+  'test-admin-input-css.mjs',
   // 闸门事件中心 + 单轮止血：L0-L3 分级、去重/确认、步数/重复错误/预算熔断。
   'test-gate-events.mjs',
   // SnowLuma 断线/发送失败暂停：主动唤醒不得创建 DSH 会话（零 token）。

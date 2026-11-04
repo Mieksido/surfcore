@@ -14,6 +14,8 @@ const index = read('plugins/surfcore/lib/index.js');
 const client = read('plugins/surfcore/lib/client.js');
 const paths = read('plugins/surfcore/lib/paths.js');
 const store = read('plugins/surfcore/lib/store.js');
+const memoryCore = read('src/memory-card.js');
+const memoryPlugin = read('plugins/surfcore/lib/memory-card.js');
 
 // 1) 桥接：消息进来写 inbox；QQ 提示词两条路径都注入记忆卡；有容量告警私聊端点。
 assert.match(bridge, /appendMemoryInboxEvent\(MEMORY_CARD_PATHS/, '桥接没有把消息写入记忆卡 inbox');
@@ -21,10 +23,10 @@ assert.match(bridge, /recordMemoryInboxEvent\(\{ key, kind, event, plainContent,
 assert.match(bridge, /recordSelfMemoryEvent\(key, sent\.join\('\\n'\)\)/, 'v2 发送没有记录她自己的发言');
 assert.match(bridge, /recordSelfMemoryEvent\(key, text\)/, 'v1 发送没有记录她自己的发言');
 assert.match(bridge, /isSelf: true/, '桥接 inbox 自发言没有 isSelf 标记');
-assert.match(bridge, /const memoryBlock = memoryCardPromptBlock\(\)/, 'v1/chat 角色提示没有注入记忆卡');
-assert.match(bridge, /const memoryCardText = memoryCardPromptBlock\(\)/, 'v2 唤醒提示没有注入记忆卡');
+assert.match(bridge, /const memoryBlock = memoryCardPromptBlock\(/, 'v1/chat 角色提示没有注入记忆卡');
+assert.match(bridge, /const memoryCardText = memoryCardPromptBlock\(/, 'v2 唤醒提示没有注入记忆卡');
 assert.match(bridge, /\/api\/memory-card\/notify/, '桥接缺少记忆卡容量告警端点');
-assert.match(bridge, /memoryCard: memoryCardPromptBlock\(\)/, 'qq_get_prompt 没有返回记忆卡');
+assert.match(bridge, /memoryCard: memoryCardPromptBlock\(/, 'qq_get_prompt 没有返回记忆卡');
 
 // 2) B站 调度器：每次醒来的统一上下文里有记忆卡（仅 B站 公开 scope）。
 assert.match(scheduler, /memoryCardPromptBlock\('bili'\)/, 'B站调度器没有注入记忆卡');
@@ -42,6 +44,19 @@ assert.match(client, /function MemoryCardPanel/, '控制台缺少记忆卡面板
 assert.match(client, /qbw-modal-backdrop/, '控制台缺少容量弹窗');
 assert.match(client, /记忆卡快满了/, '弹窗文案缺失');
 assert.match(client, /压缩到 80%/, '控制台缺少压缩按钮');
+
+// 4b) 主人私聊读白名单群：核心过滤、运行时白名单、设置页开关必须同源。
+assert.match(memoryCore, /privateReadsGroups/, '核心模块缺少主人私聊读群记忆开关');
+assert.match(memoryCore, /群里的近况/, '核心模块缺少群近况小节');
+assert.match(memoryCore, /ownerPrivateKey/, '核心模块缺少主人私聊身份边界');
+assert.match(memoryCore, /privateDeniedGroups/, '核心模块缺少黑名单群排除');
+assert.match(memoryPlugin, /memoryCardRuntimeSharing/, '插件缺少 QQ 白名单运行时注入');
+assert.match(memoryPlugin, /ownerPrivateKey/, '插件缺少主人私聊 key');
+assert.match(memoryPlugin, /privateAllowedGroups/, '插件缺少白名单群注入');
+assert.match(client, /主人私聊可读群记忆/, '设置页缺少主人私聊读群记忆开关');
+assert.match(client, /privateGroupLimit/, '设置页缺少群记忆条数上限');
+assert.match(client, /privateGroupChars/, '设置页缺少群记忆字数上限');
+assert.match(client, /privateGroupIds/, '设置页缺少可读群号过滤');
 
 // 5) 路径与默认配置：QQ/B站 注入块是文件契约，默认值与核心模块同源。
 assert.match(paths, /MEMORY_CARD_PROMPT_QQ/, 'paths.js 缺少 QQ 注入块路径');

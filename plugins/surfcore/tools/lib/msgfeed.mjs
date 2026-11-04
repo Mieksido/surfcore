@@ -38,6 +38,28 @@ function exactId(value) {
   return String(value ?? '')
 }
 
+/**
+ * 把收件箱坐标规范成 POST /x/v2/reply/add 需要的 { root, parent }。
+ *
+ * 字段语义（bilibili-API-collect）：
+ *   source_id  来消息的这条评论（直接回复）
+ *   target_id  被回复的那条评论
+ *   root_id    线程根评论；一级评论为 0
+ *
+ * 关键：@ 消息可能挂在一条一级评论上（root_id=0）。要回到这条评论下面，
+ * 必须把 root 补成 source_id；否则 root=0 + parent=source_id 会被 B站 当成新楼层。
+ */
+export function replyCoordinates({ root, sourceId, targetId } = {}) {
+  const threadRoot = exactId(root)
+  const source = exactId(sourceId)
+  const target = exactId(targetId)
+  const parent = source || target
+  const rootId = (threadRoot && threadRoot !== '0')
+    ? threadRoot
+    : (target && target !== '0' ? target : parent)
+  return { root: rootId, parent, sourceId: source, targetId: target }
+}
+
 export async function pullFeed(kind, { headers, pages = 1 }) {
   const out = []
   let cursor = ''
@@ -50,6 +72,11 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
     const items = j.data?.items ?? []
     for (const it of items) {
       const uri = String(it.item?.uri ?? '')
+      const coords = replyCoordinates({
+        root: it.item?.root_id,
+        sourceId: it.item?.source_id,
+        targetId: it.item?.target_id,
+      })
       out.push({
         kind,
         id: String(it.id),
@@ -62,8 +89,11 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
         target: String(it.item?.target_reply_content ?? ''),
         business: Number(it.item?.business_id ?? 1),
         oid: idFromUri(uri) || exactId(it.item?.subject_id),
-        root: exactId(it.item?.root_id ?? ''),
-        parent: exactId(it.item?.source_id ?? ''),
+        root: coords.root,
+        parent: coords.parent,
+        // 保留 source/target 的原始 id：调用方需要区分“来消息那条”和“被回复那条”。
+        sourceId: coords.sourceId,
+        targetId: coords.targetId,
         uri,
       })
     }
@@ -76,9 +106,11 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
   return { items: uniq, lastView }
 }
 
-// 回读楼层，取"这个人在这个楼里、挂在指定父评论下的那条回复" —— 这才是他真正说的话
-// parentRpid 是关键：同一个人在一个楼里可能有好几条评论，只有 parent 对上号的那条才是"新回复"
-export async function resolveLatestReply({ business, oid, root, mid, parentRpid, headers }) {
+// 回读楼层，取“这个人在这个楼里、rpid 等于来消息那条”的评论 —— 这才是他真正说的话。
+// rpid 是关键：同一个人在一个楼里可能有好几条评论，只有 rpid 对上号的那条才是“新回复”。
+// 注意：传进来的应该是 source_id（来消息那条），不是它的 parent。
+export async function resolveLatestReply({ business, oid, root, mid, rpid, parentRpid, headers }) {
+  const wanted = String(rpid ?? parentRpid ?? '')
   // business 11=图文动态；17=转发/新版动态。以前 17 被当成视频（type=1）→ 读不到楼层。
   const type = business === 11 || business === 17 ? business : 1
   const reps = []
@@ -93,9 +125,9 @@ export async function resolveLatestReply({ business, oid, root, mid, parentRpid,
   const mine = reps.filter((r) => String(r.mid) === String(mid))
   if (!mine.length) return null
   let pick = null
-  if (parentRpid) {
+  if (wanted) {
     // ① 优先：父评论对得上（这就是"他回的那条"）
-    pick = [...mine].reverse().find((r) => String(r.parent) === String(parentRpid)) ?? null
+    pick = [...mine].reverse().find((r) => String(r.rpid) === wanted) ?? null
   }
   // ② 退路：他最后一条（可能不是最新的那条，所以输出里会标注）
   const exact = Boolean(pick)

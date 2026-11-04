@@ -23,6 +23,8 @@ try {
   const mod = await import('../src/character-persona.js');
   assert.equal(mod.readPersonaLayerText('core'), 'CORE_MARK\n');
   assert.equal(mod.readPersonaLayerText('tone'), 'TONE_MARK\n', 'tone 必须读 persona.tone.md');
+  fs.rmSync(path.join(charDir, 'persona.tone.md'));
+  assert.equal(mod.readPersonaLayerText('tone'), '', '没有 tone 文件时不能回退 core，否则 full 模式会重复核心');
   assert.equal(mod.readPersonaLayerText('daily'), 'DAILY_MARK\n');
   assert.equal(mod.readPersonaLayerText('scene', 'qq-group'), 'SCENE_MARK\n');
   assert.equal(mod.readPersonaLayerText('unknown'), 'CORE_MARK\n', '未知层才允许回落核心');

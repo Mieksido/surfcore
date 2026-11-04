@@ -2,7 +2,7 @@
 
 > **本表由“协调/发布会话”维护。任何会话开工、收工、换分支、准备合并，都必须更新自己那一行。**
 > 规则见 [`docs/guides/MULTI-SESSION-WORKFLOW.md`](guides/MULTI-SESSION-WORKFLOW.md) 与 `AGENTS.md §1.9`。
-> 更新时间：2026-11-02 15:12（Asia/Shanghai）
+> 更新时间：2026-11-02 16:08（Asia/Shanghai）
 
 ## 0. 当前协调人
 
@@ -19,9 +19,15 @@
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
 | **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |
-| **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/release-0.8.7` @ `e20a464` | 3c99c54..e20a464 的修复 | ✅ 已在 dev 历史内；等新交接 |
+| **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/persona-tone-dedup` @ `672fef0` | 0.8.7 前的 5 个批次 | ✅ 已随 0.8.7/0.8.8 发布 |
+| **优化 · 唯一会话** | `D:\deepseekwork\surfcore-optimize` | `feat/optimize` @ `c75654a` | 用户优化建议按批处理；已产出基线表 | 🕒 进行中 |
 | **Minecraft 拓展** | `D:\deepseekwork\surfcore-mc` | `feat/minecraft` @ `f3bd46f` | MC 平台适配器/工具集/卡片/记忆 scope | ⏸ 已从 dev 撤回，分支保留；等完成 |
 | **向量记忆** | `D:\deepseekwork\surfcore-memory` | `feat/vector-memory` @ `9e7e737` | 向量记忆交接书 + docs 索引 | ⏸ 已从 dev 撤回，分支保留；等完成 |
+| **更新本地改动修复**（协调代做） | `D:\deepseekwork\surfcore-updatefix` | `fix/update-local-modifications` @ `3a7aaa9` | 本地改动「备份并覆盖」出口 + deterministic + 诊断 | ✅ 已合并 `d75dea8`；**未发布**，等 bug 修复交接 |
+| **小红书平台**（待启动） | 计划 `D:\deepseekwork\surfcore-xhs` | 计划 `feat/platform-xiaohongshu` | 只读 adapter/身份/记忆/prompt/卡片 | 🕒 交接已写，待启动 |
+| **贴吧平台**（待启动） | 计划 `D:\deepseekwork\surfcore-tieba` | 计划 `feat/platform-tieba` | 先解决内置 `tieba` 占位；只读 adapter | 🕒 交接已写，待启动 |
+| **抖音平台**（待启动） | 计划 `D:\deepseekwork\surfcore-douyin` | 计划 `feat/platform-douyin` | 只读 adapter/短链解析/记忆/prompt | 🕒 交接已写，待启动 |
+| **微信平台**（待启动） | 计划 `D:\deepseekwork\surfcore-wechat` | 计划 `feat/platform-wechat` | 先确认公众号/个人微信；个人微信不做自动化 | 🕒 交接已写，待启动 |
 
 ### 本轮“合并后又撤回”记录（用户要求：未完成，不进下一版）
 
@@ -33,6 +39,14 @@
 
 另：MC 的 UI 原本混在 `4d2d7c3`，本轮用一个单独提交从 `dev` 移除（不 rewrite 历史）。
 **MC 完成后再合并时，需要把 UI 作为新提交重新加回**（因为 dev 已删除，分支本身没有新增这段）。
+
+### 本轮已合并、未发布
+
+| 内容 | 合并提交 | 状态 |
+| --- | --- | --- |
+| 本地改动「备份并覆盖」修复 | `d75dea8` | 已进 dev；`b1e8e7d` 清单/验证；**未发 dev.11**，等 bug 修复会话下次交接 |
+
+当前 `dev`：`b1e8e7d`（干净，126/126，625 files）；最新已发布仍是 **dev.10**；稳定版 `0.8.6`。
 
 ## 2. 当前遗留
 
@@ -92,3 +106,6 @@ commit：<hash>
 | 2026-11-02 14:40 | 本对话成为唯一协调/发布会话；各会话通过本表 + 合并请求交接 |
 | 2026-11-02 15:05 | 曾合并 vector（a52c03a）与 MC（961c21a）；后按用户“未完成，先不发”撤回 |
 | 2026-11-02 15:10 | 撤回两个合并（9c31d7b / 02ca250），并从 dev 移除 4d2d7c3 带来的 MC UI；分支保留，等完成再合 |
+| 2026-11-02 15:55 | 修复 dev.10 本地改动卡更新：加「备份并覆盖」出口 + deterministic + 诊断，合并 d75dea8 |
+| 2026-11-02 16:08 | 用户要求“先不发”，等 bug 修复会话下次交接再决定 dev.11 |
+| 2026-11-03 04:05 | 发布 v0.8.7（0.8.6 以来全部 dev，74 commits / 105 files）；远端 main 90872a7，镜像 f849cc4；归档 678/0；main 已合回 dev |

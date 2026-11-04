@@ -42,7 +42,7 @@ assert.equal(bad.warnings.length, 1, '非法窗口必须给 warning，不能静�
 
 const scheduler = fs.readFileSync(path.resolve('plugins/surfcore/lib/scheduler.js'), 'utf8');
 const listen = scheduler.slice(scheduler.indexOf('async function listenTick'), scheduler.indexOf('async function liveTick'));
-assert.ok(listen.includes('const LIM = limitsNow()'), 'listenTick 内层额度变量必须改名，避免与外层 L 冲突');
+assert.ok(listen.includes('const limits = limitsNow()'), 'listenTick 内层额度变量必须与配置区分');
 assert.ok(!listen.includes('const L = limitsNow()'), 'listenTick 不能再声明同名 L');
-assert.ok(listen.includes("String(L.scope"), '外层 listen 配置仍应使用 L');
+assert.ok(listen.includes('String(listenerCfg.scope'), '外层 listen 配置应使用 listenerCfg');
 console.log('✅ 作息时间窗/监听变量测试通过');

@@ -53,7 +53,7 @@ function messageItem(m, caps) {
  * @param {number} [opts.afterSeq]
  * @param {number} [opts.now]
  */
-export function buildContextSnapshot({ key = '', st = {}, include = null, caps = {}, afterSeq = 0, now = Date.now() } = {}) {
+export function buildContextSnapshot({ key = '', st = {}, include = null, caps = {}, afterSeq = 0, now = Date.now(), groupName = '' } = {}) {
   const c = {
     unread: clampInt(caps.unread, DEFAULT_SNAPSHOT_CAPS.unread, 1, 100),
     recent: clampInt(caps.recent, DEFAULT_SNAPSHOT_CAPS.recent, 1, 100),
@@ -126,6 +126,7 @@ export function buildContextSnapshot({ key = '', st = {}, include = null, caps =
     version: SNAPSHOT_VERSION,
     snapshotId,
     key,
+    groupName,
     fetchedAt: now,
     caps: c,
     counts: {

@@ -154,9 +154,9 @@ function parseDiaryBlocks(text, fallbackDate) {
 }
 
 /**
- * @param {{stateDir:string, home?:string, log?:(...args:any[])=>void}} options
+ * @param {{stateDir:string, home?:string, biliDir?:string|null, log?:(...args:any[])=>void}} options
  */
-export function createBiliMemory({ stateDir, home = os.homedir(), log = () => {} }) {
+export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null, log = () => {} }) {
   const paths = {
     ...resolveBiliPaths(home),
     doc: path.join(stateDir, 'bili-memory.md'),
@@ -165,6 +165,17 @@ export function createBiliMemory({ stateDir, home = os.homedir(), log = () => {}
     titles: path.join(stateDir, 'bili-video-titles.json'),
     dynamics: path.join(stateDir, 'bili-dynamics-cache.json'),
     history: path.join(stateDir, 'bili-share-history.json'),
+  };
+  // 行为账本（日记/评分/额度/收藏）优先角色级；角色级缺文件时只读回退账号级，
+  // 兼容角色系统上线前的旧布局，避免旧用户升级后“历史突然消失”。
+  const accountBili = paths.bili;
+  if (biliDir) paths.bili = biliDir;
+  const ledgerFile = (name) => {
+    for (const dir of [paths.bili, accountBili]) {
+      const file = path.join(dir, name);
+      try { if (fs.existsSync(file)) return file; } catch {}
+    }
+    return path.join(paths.bili, name);
   };
   let briefCache = { mtime: -1, text: '' };
   let indexCache = { mtime: -1, data: null };
@@ -257,15 +268,15 @@ export function createBiliMemory({ stateDir, home = os.homedir(), log = () => {}
   async function collect({ force = false } = {}) {
     const config = cfg();
     const diaryRaw = (() => {
-      try { return fs.readFileSync(path.join(paths.bili, 'whale-diary.md'), 'utf8'); } catch { return ''; }
+      try { return fs.readFileSync(ledgerFile('whale-diary.md'), 'utf8'); } catch { return ''; }
     })();
     const fallbackDate = (() => {
-      try { return fs.statSync(path.join(paths.bili, 'whale-diary.md')).mtime.toLocaleDateString('sv-SE'); } catch { return new Date().toLocaleDateString('sv-SE'); }
+      try { return fs.statSync(ledgerFile('whale-diary.md')).mtime.toLocaleDateString('sv-SE'); } catch { return new Date().toLocaleDateString('sv-SE'); }
     })();
 
-    const scoresRaw = readJson(path.join(paths.bili, 'scores.json'), {}) ?? {};
-    const favoritesRaw = readJson(path.join(paths.bili, 'favorites.json'), {}) ?? {};
-    const quotaRaw = readJson(path.join(paths.bili, 'quota.json'), {}) ?? {};
+    const scoresRaw = readJson(ledgerFile('scores.json'), {}) ?? {};
+    const favoritesRaw = readJson(ledgerFile('favorites.json'), {}) ?? {};
+    const quotaRaw = readJson(ledgerFile('quota.json'), {}) ?? {};
 
     const scoreItems = [];
     for (const [date, arr] of Object.entries(scoresRaw)) {

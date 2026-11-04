@@ -26,4 +26,19 @@ assert.equal(isPublicGroupMessage({ key: 'group:767098733', groupIds: ['76709873
 assert.equal(isPublicGroupMessage({ key: 'group:999999999', groupIds: ['767098733'], text: 'hi' }).ok, false);
 assert.equal(isPublicGroupMessage({ key: 'group:767098733', groupIds: ['767098733'], text: '/reset' }).ok, false);
 
+// 住址规则：枚举不是赋值。人格卡模板里的“住址、联系方式”不能被当成地址。
+const addressCases = [
+  ['私信、密码、令牌、住址、联系方式，绝不跨平台搬运。', false],
+  ['- 私信、密码、令牌、住址、联系方式绝不跨平台搬运。', false],
+  ['收货地址：北京市朝阳区建国路88号', true],
+  ['我家住在海淀区中关村大街1号院3号楼', true],
+  ['地址是上海市浦东新区世纪大道100号', true],
+  ['家庭地址: 广州市天河区体育西路 12 号', true],
+  ['不要告诉别人我的住址在哪儿', false],
+];
+for (const [text, expectSevere] of addressCases) {
+  const hits = scanText(text).pii.filter((hit) => hit.severe);
+  assert.equal(hits.length > 0, expectSevere, `住址误判: ${JSON.stringify(text)} → ${JSON.stringify(hits)}`);
+}
+
 console.log('privacy tests OK');

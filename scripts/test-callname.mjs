@@ -58,7 +58,7 @@ ok(pickPeerAlias([{ label: '小零', identities: { bili: { id: '37634003' } } }]
   ok(bridge.includes("if (kind !== 'private') return ''"), '只在私聊注入');
   ok(bridge.includes('pickPeerAlias'), '按 QQ 取称呼');
   const memory = fs.readFileSync(path.resolve('src/memory-card.js'), 'utf8');
-  ok(memory.includes('（${record.private ? \'私聊\' : \'群聊\'}）：'), '记忆行带（私聊/群聊）归属');
+  ok(memory.includes('memorySourceLabel(record)'), '记忆行带来源（私聊/群聊/群名）归属');
 }
 
 if (failures) { console.error(`\n${failures} 项失败`); process.exit(1); }

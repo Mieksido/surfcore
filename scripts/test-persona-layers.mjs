@@ -71,6 +71,18 @@ assert.ok(fullCompose.text.includes('核心XYZ') && fullCompose.text.includes('�
 const fallbackCompose = composePersonaLayers({ core: '旧角色核心', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
 assert.ok(fallbackCompose.text.includes('旧角色核心'), '旧角色没有语气时回退核心，避免没卡');
 
+// tone 与 core 内容相同时，full 模式不能重复拼两段（旧角色/误复制）。
+const duplicateTone = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'full', mode: 'v2', maxChars: 6000 });
+assert.equal((duplicateTone.text.match(/同一段正文/g) || []).length, 1, 'identical tone/core 只能出现一次');
+assert.ok(!duplicateTone.text.includes('人格语气'), 'identical tone 不应生成语气段');
+const duplicateToneMode = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+assert.equal((duplicateToneMode.text.match(/同一段正文/g) || []).length, 1, 'tone 模式 identical 也只能出现一次');
+assert.ok(duplicateToneMode.text.includes('同一段正文'), 'tone 模式仍要保留正文');
+
+// 目的/主动搭话路径也必须带 tone，不能只读 core。
+const bridgeSource = fs.readFileSync('src/bridge.js', 'utf8');
+assert.match(bridgeSource, /function purposePersonaText\(\)[\s\S]*?readPersonaLayerText\('tone'\)/, 'purposePersonaText 没接语气层');
+
 // 回归（2026-10-31）：没拆分的旧角色 + 身份底座 → tone 模式也必须带上核心人设。
 const unsplitCompose = composePersonaLayers({
   core: '旧角色核心正文', identity: '你是小咪；你的主人是雨雨。', personaMode: 'tone', mode: 'v2', maxChars: 6000,

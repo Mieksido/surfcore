@@ -30,6 +30,8 @@ import * as tokenGuard from '../src/token-guard.js';
 import * as tokenBudget from '../src/token-budget.js';
 import * as turnGuard from '../src/turn-guard.js';
 import * as gateEvents from '../src/gate-events.js';
+import * as dshModelFollow from '../src/dsh-model-follow.js';
+import * as commandSpam from '../src/command-spam.js';
 import * as adminIdentity from '../src/admin-identity.js';
 import * as questionAnswers from '../src/question-answers.js';
 import * as ownerAudit from '../src/owner-audit.js';
@@ -52,6 +54,7 @@ import * as stateAcl from '../src/state-acl.mjs';
 import * as qqAt from '../src/qq-at.js';
 import * as modelOptions from '../src/model-options.js';
 import { createBiliMemory } from '../src/bili-memory.js';
+import { createOutbox } from '../src/outbox.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
@@ -257,6 +260,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     ...qqAt,
     ...modelOptions,
+    ...dshModelFollow,
+    ...commandSpam,
+    createOutbox,
     ...voiceDiagnostics,
     ...allowlist,
     ...callname,

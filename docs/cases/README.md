@@ -6,6 +6,31 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-03 | [主人私聊可读白名单群记忆](2026-11-03-private-reads-group-memory.md) | 只给主人私聊；独立预算；私聊仍不进群；无 key 旧私聊不再串号 | 待发布 |
+| 2026-11-03 | [优化基线（第一张表）](2026-11-03-optimization-baseline.md) | audit 75.9s / 插件 70.2s / 738 blob / 提示词 tone≈10.7k / state 300.3MB | 0.8.8 |
+| 2026-11-03 | [人格语气层重复/未进目的提示词](2026-11-03-persona-tone-dedup.md) | tone 不再回退 core；相同内容去重；purpose 接语气层 | 待发布 |
+| 2026-11-03 | [群里的 #sl 刷屏指令不唤醒 SurfCore](2026-11-03-ignore-hash-commands.md) | 非主人纯 # 短指令过滤；主人/@/引用放行 | 待发布 |
+| 2026-11-03 | [B站 @ 鱼不在“我那一层”回复](2026-11-03-bili-at-floor-reply.md) | @ 一级评论补 root=source；digest 给 @ 打坐标；修 resolveLatestReply | 待发布 |
+| 2026-11-03 | [晚注册的全局危险工具没有补装 QQ Schema 限制](2026-11-03-qq-guard-late-tools.md) | 监听 tools/change 补 restrict；幂等 + 防重入 | 待发布 |
+| 2026-11-03 | [QQ 工作区不跟随 DSH 默认模型](2026-11-03-follow-default-model.md) | 跟随 modelCatalog.default；不认 effort 时去掉重试；两套 UI 都有提示 | 待发布 |
+| 2026-11-03 | [私聊「不回我」：回访吃掉额度且用尽不可见](2026-11-03-wake-quota-visible.md) | 回访不计次；wakeGuard 上界面/体检；体检用桥接状态 | 待发布 |
+| 2026-11-03 | [桌宠对话一直 400：孤立代理项](2026-11-03-lone-surrogate-400.md) | 截断不劈 emoji + 发送前 wellFormed 兜底 | 待发布 |
+| 2026-11-03 | [DSH 0.2.x 凭据结构变化导致 web_search 回退 Bing](2026-11-03-web-search-credentials.md) | 认 records + 账号凭据；token 只发 api.deepseek.com | 待发布 |
+| 2026-11-03 | [DSH Desktop 下找不到真正的 node.exe](2026-11-03-dsh-desktop-node-path.md) | 加安装目录候选；scheduler/setup 共用解析 | 待发布 |
+| 2026-11-03 | [人格卡住址规则误报](2026-11-03-persona-address-false-positive.md) | 住址只在赋值语境命中；枚举“住址、联系方式”放行 | 待发布 |
+| 2026-11-03 | [SnowLuma 掉线期间回复被丢 + 早安假成功](2026-11-03-outbox-greeting-probe.md) | 出站 outbox 上线补发；早安先探活再记已发 | 待发布 |
+| 2026-11-03 | [B站记忆旧数据回退 + 管理员输入框超框](2026-11-03-bili-memory-fallback-admin-css.md) | 角色级优先、账号级只读回退；输入框 border-box + max-width | 待发布 |
+| 2026-11-03 | [同一客户端包被两条 Loader 行解析：DSH 启动 fatal](2026-11-03-client-multi-source.md) | qq-mode 拆成 host-only 嵌套包；体检加 COMPAT_CLIENT_MULTI_SOURCE | 待发布 |
+| 2026-11-03 | [语音页找不到总闸 /「发语音」工具](2026-11-03-voice-switch-location.md) | 语音页顶部直接放两个开关；提示改到真实位置 | 待发布 |
+| 2026-11-03 | [DSH 0.2.1-rc.5 上 B站生物钟的兼容问题（6 条）](2026-11-03-bili-rc5-compat.md) | 补 agentPreset；provider 目录 fallback；日记/记忆改角色级 | 待发布 |
+| 2026-11-03 | [体检把 SnowLuma 配置当运行状态，固定误报 onebot-rejected](2026-11-03-doctor-snow-state.md) | 体检改读 bridge.snowluma；未运行显示 bridge-not-running | 待发布 |
+| 2026-11-03 | [B站生物钟会话永远落在「未分组」](2026-11-03-bili-workspace-grouping.md) | 新会话走 workspaceId；旧会话保留不强行迁移；cwd 改专用目录 | 待发布 |
+| 2026-11-02 | [zip 安装首次自动更新被 evidence-insufficient 卡死](2026-11-02-zip-update-bootstrap.md) | 清单已按 git blob；首次 zip 更新显式确认+先备份 | 待发布 |
+| 2026-11-02 | [schemastery 3.18.3+ volatile 包装：测试红 / 配置值静默丢失](2026-11-02-schemastery-volatile.md) | 统一 unwrapSchemaValue；mode/ownerQQ 不再变成 [object Object] | 待发布 |
+| 2026-11-02 | [B站监听 TDZ 已修，但程序错误仍被一行日志吞掉](2026-11-02-listen-error-visibility.md) | listenerCfg/limits 改名；ReferenceError/TypeError 带类型+stack；回归测试 | 待发布 |
+| 2026-11-02 | [宿主只有 /api/events 快照：桥接 0 帧](2026-11-02-events-snapshot-fallback.md) | remote.mux 404 才降级轮询；正常宿主推送不变；端口探测看 /api/status | 待发布 |
+| 2026-11-02 | [模型设置选不了 / 选了无法证明真的加载](2026-11-02-model-settings-trust.md) | 宿主补 /dsh/model 代理；selectModel 回执入状态；UI 区分保存/接受/使用 | 待发布 |
+| 2026-11-02 | [多群记忆串：A 群的事被记成 B 群](2026-11-02-memory-sharing-circles.md) | 默认隔离；封闭互通圈；每条记忆带群名/ID；私聊永不进群 | 待发布 |
 | 2026-11-02 | [群聊 @ 机器人不唤醒](2026-11-02-qq-group-at-detection.md) | 原始 at 段判断；@我+@别人仍唤醒；self_id 回退 | 待发布 |
 | 2026-11-02 | [B站监听变量重名/跨午夜/全角冒号](2026-11-02-bili-listen-time-window.md) | 修复监听 TDZ；共享时间窗；群错误只私聊 | 待发布 |
 | 2026-11-02 | [B站视频缓存无限增长](2026-11-02-bili-shots-cache-retention.md) | 默认删原片；shots 按天/总量清理；目录可配 | 待发布 |

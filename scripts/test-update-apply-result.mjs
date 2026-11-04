@@ -386,6 +386,23 @@ try {
     } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
   }
 
+  // 4.5b) 首次 zip 更新：用户显式确认后才允许，且必须先备份
+  {
+    const dir = makeTarget('first-install');
+    const svc = mkService(dir);
+    const restore = stubFetch();
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const r = await svc.apply(['surfcore'], { firstInstall: true });
+      const row = r.results[0];
+      ok(row.ok === true, '首次 zip 更新：显式确认后允许', JSON.stringify(row));
+      ok(row.status === 'pending_restart', '首次 zip 更新：进入待重启', String(row.status));
+      const backups = path.join(dir, '.state', 'backups');
+      ok(fs.existsSync(backups) && fs.readdirSync(backups).length > 0, '首次 zip 更新：先备份');
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
   // 4.5) 没有任何安装证据 → 阻止自动覆盖（不冒险）
   {
     const dir = makeTarget('no-evidence');
@@ -732,6 +749,57 @@ try {
     });
     await svc.check({ fetch: false });
     ok(!fs.existsSync(old), '过期 staging 目录被清理');
+  }
+
+
+  // 15) 本地改动：默认确定性拦截；显式 overwriteModified 才备份并覆盖
+  {
+    const dir = makeTarget('local-mod', '0.7.0', { withMeta: true });
+    fs.writeFileSync(path.join(dir, '.installed-meta.json'), JSON.stringify({ version: '0.7.0' }));
+    const stateDir = path.join(dir, '.state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.installed-manifest.json'), JSON.stringify({
+      version: '0.7.0', files: { 'package.json': 'deadbeef' },
+    }));
+    const zip = makeZip({ version: '0.7.1' });
+    const svc = createUpdatesService({
+      stateDir,
+      components: () => [{ id: 'surfcore', name: 'SurfCore 本体', dir, kind: 'version', versionRepo: 'Mieksido/surfcore-test-localmod' }],
+      pluginLog: () => {},
+    });
+    const restore = stubFetch(async (u) => {
+      if (u.includes('/contents/package.json')) {
+        const content = Buffer.from(JSON.stringify({ version: '0.7.1' }), 'utf8').toString('base64');
+        return new Response(JSON.stringify({ content }), { status: 200 });
+      }
+      if (u.includes('/zip/refs/tags/') || u.includes('/archive/')) return new Response(zip, { status: 200 });
+      return undefined;
+    });
+    process.env.SURFCORE_UPDATE_NO_SPAWN = '1';
+    try {
+      await svc.check({ fetch: true });
+      const blocked = await svc.apply(['surfcore']);
+      const row = blocked.results[0];
+      ok(row.code === 'local-modifications', '本地改动默认拦截', String(row.code));
+      ok(row.deterministic === true, 'local-modifications 标记 deterministic');
+      ok(row.diagnostics?.total === 1, '诊断带改动总数', JSON.stringify(row.diagnostics));
+      ok(svc.status().lastApply?.deterministic === true, 'lastApply 记录确定性失败');
+      const over = await svc.apply(['surfcore'], { overwriteModified: true });
+      const okRow = over.results[0];
+      ok(okRow.ok === true && okRow.staged === true, 'overwriteModified 后成功排队', JSON.stringify(okRow));
+      const backups = fs.existsSync(path.join(stateDir, 'backups')) ? fs.readdirSync(path.join(stateDir, 'backups')) : [];
+      const hasBackup = backups.some((txn) => fs.existsSync(path.join(stateDir, 'backups', txn, 'files', 'package.json')));
+      ok(hasBackup, '覆盖前备份了被改文件');
+    } finally { restore(); delete process.env.SURFCORE_UPDATE_NO_SPAWN; }
+  }
+
+  // 15.5) UI/API：首次 zip 更新必须有显式确认入口
+  {
+    const client = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
+    const index = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
+    ok(client.includes('firstInstall: true'), 'UI 会传 firstInstall');
+    ok(client.includes('首次更新（先备份）'), 'UI 有首次更新按钮');
+    ok(index.includes('firstInstall: body.firstInstall === true'), 'API 接收 firstInstall');
   }
 
 } finally {

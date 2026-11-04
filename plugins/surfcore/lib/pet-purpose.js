@@ -16,6 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { sliceHead } from '../../../src/safe-text.js';
 import {
   NEED_LABELS,
   ACTION_LABELS,
@@ -58,7 +59,7 @@ function readJson(file, fallback = null) {
 
 function clip(text, max = 120) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  return s.length > max ? `${sliceHead(s, max - 1)}…` : s;
 }
 
 /**
@@ -280,12 +281,12 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     ];
     if (role.persona) {
       systemLines.push('【人格卡（你就是这个人）】');
-      systemLines.push(role.persona.slice(0, 4200));
+      systemLines.push(sliceHead(role.persona, 4200));
       systemLines.push('');
     }
     if (memory) {
       systemLines.push('【记忆卡（越早的事记得越模糊，别把模糊的事说得很确定）】');
-      systemLines.push(memory.slice(0, 2400));
+      systemLines.push(sliceHead(memory, 2400));
       systemLines.push('');
     }
     systemLines.push('【说话规则】');

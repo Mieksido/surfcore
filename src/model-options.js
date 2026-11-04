@@ -85,3 +85,16 @@ export function findCatalogModel(models, provider, model) {
   const m = String(model ?? '').trim();
   return (Array.isArray(models) ? models : []).find((x) => x.provider === p && x.model === m) ?? null;
 }
+
+/**
+ * 配置里的 provider/model 不在 DSH 目录时，选一个可用的 fallback：
+ * 优先同名模型（只换了 provider），否则目录第一项。
+ * 没有可用目录返回 null；只在 selectModel 失败时兜底，不覆盖用户显式选择。
+ */
+export function pickCatalogFallback(models, provider, model) {
+  const list = Array.isArray(models) ? models : [];
+  if (!list.length) return null;
+  if (findCatalogModel(list, provider, model)) return null;
+  const wanted = String(model ?? '').trim();
+  return list.find((x) => x.model === wanted) ?? list[0];
+}

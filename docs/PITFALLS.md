@@ -3301,3 +3301,702 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 - **修法**：一会话一工作树（`git worktree add ..\surfcore-<topic> -b feat/<topic> dev`）；
   禁止 `git add -A`，只 add 自己路径；提交前看 `git diff --cached --stat`；合并/重启/发版串行。
 - **教训**：**工作区是共享资源，不是每个会话的私有草稿纸。** 只要第二个会话开始写，就必须隔离。
+## #104（2026-11-02）多群记忆串：A 群的事被记成 B 群
+
+**现象**
+- 鱼在 B 群提到 A 群才发生的事/人；记忆注入只写「名字（群聊）」，没有群名/群 ID。
+- 主人记录连「群聊」都不写，来源完全不可见。
+
+**根因**
+- 记忆卡是一张共享卡，`recordLine` 不渲染 `groupId`/`conversationKey`。
+- 所有群读同一个 `memory-card-prompt-qq.md`；reminder/快照没有 key。
+- `findDuplicate` 不比较 conversationKey，跨群同文本可能合并。
+
+**处置**
+- 记录增加 `groupName`；`memorySourceLabel` 统一渲染 `群聊·群名 / group:ID`、`私聊`、`未知`。
+- `normalizeMemorySharing`：默认 isolated，封闭 circles，不传递。
+- `visibleFor` 按当前会话过滤；私聊永不出现在群；无来源群不进群。
+- `saveMemoryCardOutputs` 写按会话 map；bridge 按 key 读，map 存在但 key 缺失 = 空。
+- 当前群/私聊身份进 wake/reminder/snapshot/get_prompt/context。
+- `findDuplicate` 加 conversationKey。
+- case：`docs/cases/2026-11-02-memory-sharing-circles.md`
+
+**怎么验证**
+```text
+node scripts/test-memory-sharing.mjs
+node scripts/test-memory-card-wiring.mjs
+npm run test:audit
+```
+
+**残余**
+- 旧记录无 groupId/conversationKey 的只能标未知，不参与互通。
+- 手动记忆默认全局；私聊老记录可能不进新块。
+- map 缺失时回退旧全局块（升级瞬间可能短暂全量）。
+## #105（2026-11-02）模型设置 404 + 配置回显冒充“已加载”
+
+**现象**
+- 设置页报 `未知接口：/dsh-surfcore/api/dsh/effort`，模型下拉只有「当前」。
+- 保存后没有证据证明 DSH 真接受了模型/强度。
+
+**根因**
+- 前端调 `/dsh/model`、`/dsh/effort`，宿主只注册了 `/dsh/repair`，直接 404。
+- 桥接其实有 `/api/dsh/model` 和 `/api/dsh/effort`，但 Web 设置页够不到。
+- 保存只写 config + 递增 epoch，不调用 selectModel；下一条消息才应用，且 `result.selected` 被丢弃。
+- GET 返回 config，不是 DSH 实际选择，形成回显自证。
+
+**处置**
+- 宿主加 proxyDshModel / proxyDshEffort，转发桥接并带 code/hint。
+- `state/model-status.json` 记录 requested / lastApply / lastUsed / pending / bootAt。
+- `ensureChatModel` 成功写 selected，失败写 error/code；`model/selection` 写 lastUsed。
+- UI 显示 pending / DSH 已接受 / 最近使用 / 失败 / 跨进程 stale；保存 toast 不再说“已生效”。
+- case：`docs/cases/2026-11-02-model-settings-trust.md`
+
+**怎么验证**
+```text
+node scripts/test-model-settings.mjs
+npm run test:audit
+```
+
+**残余**
+- selectModel.selected 只证明 DSH 接受，不证明 provider 最终路由/实际推理档位。
+- 没有在保存时主动切模型（会打断回合）。
+- UI 只展示最近一次应用，多会话需看 sessions。
+## #106（2026-11-02）宿主只有 /api/events 快照，桥接 remote.mux 404 收 0 帧
+
+**现象**
+- 桥接反复 `DSH 事件流已结束（本次收到 0 帧）`，QQ 没回复。
+- 宿主 `/api/status`、`/api/events` 200；`/api/remote.mux`、`/api/events_mux` 404。
+- 端口探测误报 `连不上`。
+
+**根因**
+- `src/dsh-client.js` 只开 `/api/remote.mux` WebSocket + session/follow；宿主只有 `GET /api/events?cursor=` 快照。
+- WS 404 → 0 帧 → 退避重连，但没有轮询回退。
+- `probeDshBaseUrl()` 只看 `/` + server 头，桌面内嵌宿主没有该头。
+
+**处置**
+- remote.mux 优先；只有 WS 未 open 且错误明确 404 才降级 `/api/events` 轮询。
+- 首次取 latest 做基线，不重放历史 turn；之后 cursor 增量，1.5s，去重，session 过滤。
+- 每 60s 重试 remote.mux；正常宿主不降级、不轮询。
+- 端口探测先看 `/api/status` JSON 形状，再回退 `/` + server 头。
+- case：`docs/cases/2026-11-02-events-snapshot-fallback.md`
+
+**怎么验证**
+```text
+node scripts/test-events-fallback.mjs
+node scripts/test-dsh-port.mjs
+npm run test:audit
+```
+
+**残余**
+- 审批/提问若不在 `/api/events` 里仍收不到。
+- 轮询最多慢 1.5s；切换瞬间可能丢正在进行的 turn/end。
+- WS 只给裸 close 1006 时可能识别不到 404，不降级。
+- 没有 `/api/events_mux`。
+## #107（2026-11-02）B站监听 TDZ 已修，程序错误仍被一行日志吞掉
+
+**现象**
+- 0.6.12/0.6.22 每 300 秒：`[bili-whale] 监听失败：Cannot access 'L' before initialization`。
+- 评论/@ 监听从未唤醒；直播正常。
+
+**根因**
+- `listenTick` 外层 `const L = cfg.listen`，try 块内又 `const L = limitsNow()`；块级 TDZ 让 `L.scope` 在初始化前被读，直接 ReferenceError。
+- catch 只记 `e.message`，程序错误看起来像网络失败。
+- 当前 dev 已由 `3c99c54` 改名修复（`listenerCfg` / `limits`）。
+
+**处置**
+- 新增 `formatListenError()`：ReferenceError/TypeError 带类型+stack（800 字），普通错误只 message。
+- `listenTick` catch 改用 formatListenError。
+- `L`（配置）→ `listenerCfg`，`L`（额度）→ `limits`，消除同名。
+- 新增 `scripts/test-bili-listen-error.mjs`。
+- case：`docs/cases/2026-11-02-listen-error-visibility.md`
+
+**怎么验证**
+```text
+node scripts/test-bili-listen-error.mjs
+npm run test:audit
+```
+
+**残余**
+- 没上 ESLint no-shadow/no-use-before-define。
+- 没 mock feed 做完整 listenTick 单测。
+- 普通网络错误仍只一行。
+- 其他函数里 `L` 仍可作独立额度变量，暂无冲突。
+## #108（2026-11-02）schemastery 3.18.3+ 把 volatile 字段变成包装对象
+
+**现象**
+- 3.18.5 下 `Config({mode:'chat'}).mode` 是对象，不是字符串；`JSON.stringify` 得到 `{"mode":{}}`。
+- `test-qq-mode-plugin` 两条断言红；DSH 设置页的 mode/ownerQQ 可能被 String 成 `[object Object]`。
+
+**根因**
+- schemastery 3.18.3+ 的 `.extra('volatile')` 字段解析成带 `get()` 的包装对象。
+- 测试直接比较 `.mode`；`src/bridge.js` 的 `settingFromDshNamespace()` 和设置页 `row.value` 原样读取。
+- 当前 lock 是 3.18.1，所以本地绿；package.json 是 `^3.18.1`，换 lock/新装可能变 3.18.5。
+
+**处置**
+- 新增 `src/schema-values.js`：`unwrapSchemaValue()` / `settingFromDshNamespace()`。
+- bridge 读取 settings 统一拆包；设置页 `dshMode` / `dshSetting.mode|ownerQQ` 拆包。
+- `test-qq-mode-plugin` 用 `unwrapSchemaValue` 比较；新增 `test-schema-volatile`。
+- 没有用 `Config.simplify()` 做通用入口：值等于默认值时它会返回 null（3.18.1 实测）。
+- case：`docs/cases/2026-11-02-schemastery-volatile.md`
+
+**怎么验证**
+```text
+node scripts/test-schema-volatile.mjs
+node scripts/test-qq-mode-plugin.mjs
+npm run test:audit
+```
+
+**残余**
+- 只修 known mode/ownerQQ 边界，其他未来 volatile 字段要接入。
+- 测试主环境仍 3.18.1；3.18.5 只用 npm pack 临时验证。
+- 业务对象若碰巧有 get() 会被误拆；当前只用于 schema 字段。
+## #109（2026-11-02）zip 安装首次自动更新被 evidence-insufficient 卡死
+
+**现象**
+- 0.7.4 zip 升级 0.7.8：检查能发现更新，点「立即更新」失败；旧版报清单不一致，修清单后仍报 evidence-insufficient。
+- 0.7.8 的自愈代码装在 0.7.8 里，0.7.4 升不上去用不到 → bootstrap 死锁。
+
+**根因**
+- 旧 `release-manifest` 读 Windows 工作区（CRLF）并枚举 gitignore 文件；GitHub archive 是 LF，且不含 audio/_backups。
+- zip 目录没有 `.installed-manifest.json` / `.installed-meta.json`；preflight 永远拒绝。
+- 0.7.4 没有自愈代码。
+
+**处置**
+- 当前主线已把 manifest 生成改成 `git ls-tree` + `git cat-file`（LF blob，不扫工作区）。
+- 新增 `firstInstall` 逃生口：
+  - 默认仍 blocked；
+  - UI 显式确认「首次更新（先备份）」；
+  - 仅 `package.json.name === surfcore` 且无 `.git` 的目录允许；
+  - 覆盖前 `backupTarget()` 先备份。
+- `check` / `inspectVersionComponent` 支持 firstInstall；API action=apply 接收。
+- case：`docs/cases/2026-11-02-zip-update-bootstrap.md`
+
+**怎么验证**
+```text
+node scripts/test-update-apply-result.mjs
+node scripts/test-update-version-fallback.mjs
+node scripts/test-release-manifest.mjs
+npm run test:audit
+```
+
+**残余**
+- 0.7.4 用户仍需点一次「首次更新」或手动覆盖。
+- manifest 无签名，不能防整包替换。
+- verifyStaging 对“包内缺文件”仍只 log；可能混合目录。
+- 没有真实 0.7.4 live 环境测试。
+## #110（2026-11-03）B站生物钟只传 cwd 创建会话，永远未分组
+
+**现象**
+- B站生物钟会话一直在 DSH「未分组」；每换角色多一条 `bili-whale-<charId>`。
+- cwd = `%USERPROFILE%`；QQ 会话正常归组。
+
+**根因**
+- `index.js` 传 `cwd: os.homedir()`，`scheduler.js` 只 `sessionController.create({ sessionId, cwd })`。
+- DSH 的 `workspaceId` 与 `cwd` 互斥；只传 cwd 不会 attach 到 Workspace。
+- 旧会话没有公开 attach API；换角色不清理。
+
+**处置**
+- 新增 `bili-workspace.js`：专用路径 + `biliSessionCreateParams`。
+- 新会话：`workspaceController.create({path})` → `sessions.create({workspaceId})`。
+- 旧会话：先 inspect，存在就不重建（保留上下文），不强行迁移。
+- 无 workspaceController 的旧版 DSH：退回专用 cwd，不再用用户主目录。
+- `ensureSession` 创建失败不再标 sessionReady=true，下一 tick 重试。
+- case：`docs/cases/2026-11-03-bili-workspace-grouping.md`
+
+**怎么验证**
+```text
+node scripts/test-bili-workspace.mjs
+node scripts/test-scheduler-permission.mjs
+npm run test:audit
+```
+
+**残余**
+- 旧未分组会话不会自动迁移/归档。
+- DSH 无公开 attach API，无法无损迁移。
+- workspaceController 失败时退回专用 cwd，仍可能未分组。
+- danger-full-access 默认未改。
+## #111（2026-11-03）体检把 SnowLuma 配置当运行状态，固定误报 onebot-rejected
+
+**现象**
+- SnowLuma 实际已连接，QQ 能收发；诊断页却报 `onebot-rejected · 多半是 accessToken 不匹配`。
+- 概览/启动检查正常。
+
+**根因**
+- `installChecks()` 把 `config.snowluma`（只有 wsUrl/httpUrl/accessToken）传给 `diagnoseSnowLuma()`。
+- 该函数先看 `connected === true`，配置对象没有这个字段；随后只要 3000/3001 在听就判 `onebot-rejected`。
+- 概览/启动检查传的是 `bridge.snowluma`（运行态，有 connected）。
+
+**处置**
+- `installChecks(bridge)` 复用已读取的 bridge，或自己 `bridgeStatus()`。
+- 诊断输入改 `runtimeBridge?.snowluma ?? {}`。
+- `diagnoseSnowLuma` 增加 `hasRuntimeState`：没有 `connected` 字段 → `bridge-not-running`，不再把配置对象当运行态。
+- 只有运行态且 `connected:false` + 端口在听，才判 `onebot-rejected`。
+- case：`docs/cases/2026-11-03-doctor-snow-state.md`
+
+**怎么验证**
+```text
+node scripts/test-doctor-snow-state.mjs
+npm run test:audit
+```
+
+**残余**
+- onebot-rejected 仍只 probe TCP，不实际 get_login_info 验 token。
+- 3000/3001 被别的服务占用仍可能误判。
+- 概览/启动/体检状态词未完全统一。
+## #112（2026-11-03）DSH 0.2.1-rc.5：B站会话缺 preset、provider 默认值、日记/记忆路径
+
+**现象**
+- B站生物钟 turn 刚 start 就 `blocked`，无 step/start。
+- 账号级日记路径与角色级工具路径不一致；B站→QQ 记忆简报 0 条。
+- 默认 `deepseek-official` 在 rc.5 不可用。
+
+**根因**
+- `sessionController.create` 只有 workspaceId/cwd，没有 agentPreset；B站会话没有可用 agent 组合。
+- 唤醒提示词硬编码账号级日记；`bili-memory` 固定读账号级 bili 目录。
+- `ensureChatModel` 只按 config 的 provider/model selectModel，失败不查目录。
+
+**处置**
+- `resolveBiliAgentPreset()`：优先 standard，否则 default/第一个；建会话带 `agentPreset`。
+- `ensureChatModel` 遇 `model-unavailable` 时读 `session/modelCatalog`，`pickCatalogFallback()` 只重试一次。
+- 唤醒提示词改用 `platformDir()` 角色级日记。
+- `createBiliMemory` 支持 `biliDir`；bridge 传当前角色 `characters/<id>/bili`。
+- case：`docs/cases/2026-11-03-bili-rc5-compat.md`
+
+**怎么验证**
+```text
+node scripts/test-bili-workspace.mjs
+node scripts/test-model-options.mjs
+npm run test:audit
+```
+
+**残余**
+- 旧账号级日记/额度不自动迁移。
+- 旧未分组会话仍可能 blocked；只有新会话走新 preset/workspace。
+- standard preset 是否存在需实机确认。
+- 模型 fallback 不写回 config。
+## #113（2026-11-03）语音页找不到总闸 /「发语音」工具
+
+**现象**
+- 语音自检报「语音总闸已关 · 工具关」，提示去「设置 → SurfCore → 语音」打开。
+- 语音页只有装包/自检，没有这两个开关。
+
+**根因**
+- 实际控件在「全部参数 → QQ」：
+  - `socialV2.voice.enabled`
+  - `socialV2.tools.sendVoice`
+- 语音页 `VoiceTab` 不读/不写这两项；自检提示却指向语音页。
+
+**处置**
+- `VoiceTab` 顶部加「语音开关」卡片：
+  - 总闸开关
+  - 「发语音」工具开关
+  - 「保存语音开关」按钮（复用父级 save，带 stamps）
+  - 明确写“两个都要开、保存后完全退出 DSH”。
+- bridge 的 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` / 自检 hint 改指语音页顶部。
+- 全部参数入口保留。
+- case：`docs/cases/2026-11-03-voice-switch-location.md`
+
+**怎么验证**
+```text
+node scripts/test-voice-gates.mjs
+npm run test:audit
+```
+
+**残余**
+- 默认仍关闭（安全默认）。
+- 改完仍需重启 DSH 才重新注册 MCP 工具。
+- 自检只看配置，不查真实工具列表。
+- 命令行窗口未隐藏。
+## #114（2026-11-03）同一客户端包被两条 Loader 行解析，DSH 启动 fatal
+
+**现象**
+- SurfCore 启用时安装/启用改写 `modules` 行的 client bundle（如 dsh-vision-router），DSH 重启直接崩溃页。
+- 崩溃日志：`package surfcore resolves from multiple active Loader sources`，modules required 失败。
+
+**根因**
+- `plugins/surfcore/package.json` 声明 `dsh.client.platform="web"`。
+- `cordis.patch.yml` 同时插入 `- id: surfcore / name: surfcore` 与 `- id: qq-mode / name: ./lib/qq-mode.js`。
+- 两条都 nearest-package 到 surfcore；冷启动宽松不报，modules 重建严格校验 → fatal。
+
+**处置**
+- 把 qq-mode 实现迁到 `plugins/surfcore/qq-mode/`，自带 package.json，**不声明 dsh.client**。
+- Loader 行改 `name: ./qq-mode/index.js`；`lib/qq-mode.js` 保留 re-export。
+- `compat.js` 新增 `COMPAT_CLIENT_MULTI_SOURCE`：扫描 profile patch + active bundle patch，统计同一客户端包被几条 Loader 行解析；>=2 报 blocker。
+- case：`docs/cases/2026-11-03-client-multi-source.md`
+
+**怎么验证**
+```text
+node scripts/test-qq-mode-plugin.mjs
+node scripts/test-plugin-compat.mjs
+npm run test:audit
+```
+
+**残余**
+- 依赖 DSH nearest-package 解析；上游若改语义需再调整。
+- 用户自己手写的重复 Loader 行仍需删；体检会报。
+- 没有真实 vision-router live 启动测试。
+## #115（2026-11-03）B站记忆旧数据回退 + 管理员输入框超框
+
+**现象**
+- 角色系统启用后 B站记忆只读到角色级；账号级旧日记/评分/收藏/评论不显示。
+- 管理员卡片输入框 width:100% + padding/border 溢出格子，右侧贴边；宽屏拉满整格。
+
+**根因**
+- `bili-memory` 只读 `paths.bili`（角色级），旧账号级文件没有回退。
+- `.qbw-input/.qbw-select/.qbw-textarea` 没有 `box-sizing:border-box`；admin 输入框没有 max-width。
+
+**处置**
+- `createBiliMemory` 保留 `accountBili`；`ledgerFile(name)` 角色级优先、账号级只读回退。
+- `whale-diary.md` / `scores.json` / `favorites.json` / `quota.json` 全部走 ledgerFile。
+- CSS 基础控件加 `box-sizing:border-box`；admin 输入/下拉加 `max-width:240px`。
+- case：`docs/cases/2026-11-03-bili-memory-fallback-admin-css.md`
+
+**怎么验证**
+```text
+node scripts/test-admin-input-css.mjs
+node scripts/test-bili-workspace.mjs
+npm run test:audit
+```
+
+**残余**
+- 不迁移账号级旧数据，只回退读取。
+- 多角色共用账号级旧数据时可能混读。
+- 240px 是参考值，需实机看不同宽度/缩放。
+- 静态测试不保证视觉不重叠。
+## #116（2026-11-03）SnowLuma 掉线期间出站回复被丢 + 早安假成功
+
+**现象**
+- DSH 先起、SnowLuma 后起：agent 正常生成回复，qq_send_* 失败后文本消失，恢复后不补发。
+- 早安 deliverPrompt 成功就写 lastMorningOk，实际 QQ 没收到，当天不再补。
+
+**根因**
+- 入站有 queued 队列，出站 onebotSend/sendToQQ 失败只记日志/抛错。
+- setAccountOnline 上线边沿只补历史，不补出站。
+- 早安只检查 DSH 是否收下提示词，不检查 OneBot 是否可发送。
+
+**处置**
+- 新增 `src/outbox.js`：state/outbox.json、连接类失败入队、10 分钟去重、60 条/24h/12 次、上线 flush。
+- `onebotSend` / `sendToQQ` 失败入队；成功 markSent；fromOutbox 不二次入队。
+- `setAccountOnline` 上线边沿 flush；启动也 flush 一次。
+- 早安 deliverPrompt 前 `probeOneBotSendable()`（get_status，3s）；不可发返回 retry，不写 lastMorningOk。
+- case：`docs/cases/2026-11-03-outbox-greeting-probe.md`
+
+**怎么验证**
+```text
+node scripts/test-outbox.mjs
+node scripts/test-greeting.mjs
+npm run test:audit
+```
+
+**残余**
+- 语音/表情/卡片未完整覆盖。
+- 成功指纹是进程内 Map，重启后窄窗口可能重复。
+- 旧消息补发可能语境过期。
+- 探活成功但模型回合时又掉线仍可能丢；靠 outbox 兜底文本。
+## #117（2026-11-03）人格卡住址规则把枚举当泄露
+
+**现象**
+- 新建/编辑角色，官方模板原样保存也报“人格卡命中密钥/密码/身份证/住址规则，拒绝保存”。
+- 触发句：`私信、密码、令牌、住址、联系方式绝不跨平台搬运。`
+
+**根因**
+- `privacy.js` 住址规则是 `关键字 + 4~60 个非 。；; 换行字符`。
+- 终止字符集没有顿号/逗号，`住址、联系方式` 被当成地址值。
+- `characters.js` 新建/编辑都拒绝 severe PII。
+
+**处置**
+- 住址规则加负向前瞻 `(?![、，,])`：关键字后是枚举标点就跳过。
+- 保留真实地址正例（收货地址：/家庭地址:/地址是/住在）。
+- `plugins/surfcore/scripts/test-privacy.mjs` 增加 7 个正负例。
+
+**怎么验证**
+```text
+node plugins/surfcore/scripts/test-privacy.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**残余**
+- `PRIVATE_TOPIC` 仍含“住址”，记忆侧可能整行丢弃；未在本批处理。
+- 没有回显命中片段，避免 PII 再泄露。
+- 其他 PII 规则未审视。
+## #118（2026-11-03）DSH Desktop 下找不到真正的 node.exe
+
+**现象**
+- 点击「重启桥接」报 `找不到真正的 node.exe（当前解析到 …\DeepSeek Harness.exe）`。
+- 只发生在 DSH Desktop 的 node 只在安装目录、用户缓存/Program Files 都没有的机器。
+
+**根因**
+- `paths.findNodeExe()` 只查 DSH_NODE / ~/.dsh/dsh-runtimes / Program Files。
+- DSH Desktop 真正的 node 在 `<Harness.exe>/resources/runtime/primary-runtime/dependencies/node/bin/node.exe`。
+- 找不到就回退 process.execPath（Harness.exe），bridge basename 校验拒绝。
+
+**处置**
+- 新增 `src/node-path.js`：安装目录候选 + 旧候选，统一 `findNodeExe()`。
+- `plugins/surfcore/lib/paths.js` 改为 re-export。
+- `scheduler.js` 删本地 `findNode()`，复用统一解析。
+- `setup-dsh.mjs` 的 MCP command 用统一解析（复制到无 `../src` 时退回 process.execPath）。
+- `scripts/test-node-path.mjs` 覆盖安装目录优先级、缓存回退、DSH_NODE、最终 fallback。
+- case：`docs/cases/2026-11-03-dsh-desktop-node-path.md`
+
+**怎么验证**
+```text
+node scripts/test-node-path.mjs
+node scripts/test-audit-setup.mjs
+npm run test:audit
+```
+
+**残余**
+- 安装布局硬编码，DSH 换目录要更新候选。
+- 已有 profile 的 MCP command 不会自动改，需要重跑 setup。
+- 没做 Linux/macOS 完整布局测试。
+## #119（2026-11-03）DSH 0.2.x 凭据结构变化导致 web_search 回退 Bing
+
+**现象**
+- DSH 0.2.x 的 `.credentials.yaml` 用 `records`，不再是 `refs`。
+- `web-search.js` 只读 `refs`，读不到账号 token，`deepseekSearch` 抛 NO_KEY，auto 静默回退 Bing。
+
+**根因**
+- `readDshCredential()` 只看 `doc.refs[name]`。
+- `resolveSearchApiKey()` 没有 `deepseek-account-platform/default` 兜底。
+- `deepseekSearch()` 所有 key 都按 API key 发 `x-api-key`。
+
+**处置**
+- `readDshCredential()` 同时认 `refs` 和 `records[name].payload.token`。
+- `resolveSearchApiKey()` 增加账号级 fallback，source=dsh-account-credential。
+- 账号 token 只发 `https://api.deepseek.com`，header 用 `x-dsh-auth-token`；`assertAccountEndpoint()` 拒绝其他 host/端口。
+- 增加 `deepseekApiSearch()` 直连 `/v1/tools/search`，auto 顺序：API → 模型轮次 → Bing。
+- 新增 `apiSearchURL` 配置和 UI 字段。
+- `scripts/test-web-search-credentials.mjs` 钉 records/账号 fallback/端点边界。
+- case：`docs/cases/2026-11-03-web-search-credentials.md`
+
+**怎么验证**
+```text
+node scripts/test-web-search-credentials.mjs
+node scripts/test-media-search.mjs
+npm run test:audit
+```
+
+**残余**
+- 账号 token 过期不自动刷新；
+- 没有 `issuer` 校验；
+- 直连 API 只认 `results`；
+- Bing 缓存 5 分钟；
+- 没做真实 token 直连验证。
+## #120（2026-11-03）桌宠对话 400：截断劈开 emoji 留下孤立代理项
+
+**现象**
+- 桌宠 /chat、测试对话、桌宠主动搭话全部 `DeepSeek Messages request failed (400)`；QQ 群聊正常。
+- 不是偶发：坏文本写进 purpose 状态，每次系统提示词都带进去。
+
+**根因**
+- JS 字符串是 UTF-16；`slice(0,n)` 正好切在 emoji 的高/低位代理之间，留下孤立高位代理。
+- 坏文本能存 JSON、能拼提示词，但发给模型 API 不是合法文本 → 400。
+- 触发链：purpose-engine.clip → goal.intent → pet-chat.purposeBackground → system prompt。
+
+**处置**
+- 新增 `src/safe-text.js`：sliceHead / clipText / wellFormed / deepWellFormed。
+- 截断处替换：purpose-engine、memory-card、pet-purpose、pet-chat。
+- 发送兜底：pet-chat.complete 的 system/user；dsh-client.callUnary 的整个 payload。
+- `scripts/test-safe-text.mjs` 钉任意截断点、wellFormed、purpose-engine、pet-chat。
+- case：`docs/cases/2026-11-03-lone-surrogate-400.md`
+
+**怎么验证**
+```text
+node scripts/test-safe-text.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**残余**
+- 仓库里仍有未替换的 slice 截断点。
+- deepWellFormed 不处理 Buffer/Date/Map/类实例。
+- 400 日志没有响应体/请求 ID。
+- 没有真实 DeepSeek 网络复现。
+## #121（2026-11-03）私聊「不回我」：回访吃额度 + 额度用尽不可见
+
+**现象**
+- 私聊连发几条没有任何回复；设置页/概览没有提示；日志只写「今天已经醒了 10/10 次」。
+- 体检同时误报 `onebot-rejected`。
+
+**根因**
+- `wakeTimes` 一条线同时承担间隔/限频/日额度；`replyCheck` 回访也计次，一次对话花 2 次，私聊 10 次只够 5 轮。
+- 日额度用完只 log；`/api/status`/设置页/体检都没有。
+- 体检把 `config.snowluma` 当桥接状态；配置没有 `connected`，端口在听就误报 `onebot-rejected`。
+
+**处置**
+- token-guard 新增 `replyCheckFree` / `isFreeWakeReason` / `budgetTimes`；回访不占日额度，间隔/限频仍看全量。
+- bridge 新增 `wakeBudgetTimes`（旧状态回填）、`wakeGuardSnapshot`、`lastWakeBlock`、`/api/status`/`states` 暴露。
+- 插件 `mapStatusPayload` 透出 `wakeGuard`；概览黄条 + 体检「唤醒额度」；设置页开关。
+- 体检 `diagnoseSnowLuma(runtimeBridge?.snowluma, { bridge })`；新增 `bridge-down`/`bridge-error` 和对应修法。
+- case：`docs/cases/2026-11-03-wake-quota-visible.md`
+
+**怎么验证**
+```text
+node scripts/test-token-guard.mjs
+node plugins/surfcore/scripts/test-doctor.mjs
+npm run test:audit
+```
+
+**残余**
+- 没有桥接级 VM 测试「重启后 wakeBudgetTimes 不丢」。
+- `lastWakeBlock` 只存在内存。
+- `directBypassDay` 仍允许 @ 越过日额度（当前行为，未改）。
+- 没在真实 QQ 上跑满一天。
+
+## #122（2026-11-03）QQ 工作区不跟随 DSH 默认模型
+
+**现象**
+- DSH 默认模型改成 A，QQ 聊天 / QQ 黑话学习仍用 config.json 的 B；回 Web GUI 看默认又被改回 B。
+- 不认 reasoningEffort 的模型直接 `does not support reasoning effort`，当前没有去掉参数重试。
+
+**根因**
+- `ensureChatModel()` 只读 config.json，不读 `session.modelCatalog.default`。
+- DSH `selectModel()` 后台 `agentDefaultModel.saveSelection()`，QQ 每轮写回 config 值。
+- 每次都带 `reasoningEffort`，模型不认就失败。
+
+**处置**
+- 新增 `src/dsh-model-follow.js`：defaultSelectionOf / effectiveChatModel / writesGlobalDefault。
+- bridge 跟随 `modelCatalog.default`（15s 缓存、3s 超时、失败带原因），`followDefaultModel` 默认开。
+- `modelAppliedKeys` 按 source/provider/model/effort 记指纹：默认模型在 DSH 外部改了，epoch 不变也能重新 selectModel。
+- `GET /api/dsh/model` 返回 follow/source/config/defaultError；`POST /api/dsh/follow-default` 写开关。
+- 模型不认 effort：本进程记住 provider/model，第二次去掉 `reasoningEffort`。
+- 旧控制台和 DSH 设置页都加勾选、来源说明、失败回弹；跟随中禁用模型/强度/保存。
+- case：`docs/cases/2026-11-03-follow-default-model.md`
+
+**怎么验证**
+```text
+node scripts/test-dsh-model-follow.mjs
+node scripts/test-audit-bridge.mjs
+npm run test:audit
+```
+
+**残余**
+- 没有真机 QQ 消息验证。
+- `selectModel` 的全局副作用仍在。
+- 不认 effort 的模型会忽略管理员强度。
+- 15s 缓存。
+
+## #123（2026-11-03）晚注册的全局危险工具没有补装 QQ Schema 限制
+
+**现象**
+- QQ preset 挂载后有全局插件晚注册 `bash` / `pwsh`；执行白名单会拒绝，但 Schema 仍暴露给模型。
+- `qq-tool-restrict` 启动时只扫一次，之后不再 `restrict`。
+
+**根因**
+- `apply()` 只遍历一次 `KNOWN_DANGEROUS_GLOBAL_TOOLS`，没有监听 `tools/change`。
+
+**处置**
+- `restricted` Set + `restrictAvailable()`；成功限制只装一次。
+- 先登记再 restrict，防同步触发 `tools/change` 导致重入。
+- `ctx.on?.('tools/change', ...)` 补装晚注册工具；执行白名单不变。
+- `scripts/test-qq-tool-restrict-events.mjs` 覆盖晚注册、重入、幂等、白名单。
+- case：`docs/cases/2026-11-03-qq-guard-late-tools.md`
+
+**怎么验证**
+```text
+node scripts/test-qq-tool-restrict-events.mjs
+node scripts/test-audit-security.mjs
+npm run test:audit
+```
+
+**残余**
+- 工具移除后重新注册可能不再补装（restricted 只增不减）。
+- 静态名单外的未知危险工具 Schema 仍可见，执行白名单兜底。
+- 旧 DSH 没有 ctx.on 时退回旧行为。
+## #124（2026-11-03）B站 @ 鱼不在“我那一层”回复
+
+**现象**
+- 用户 @ 鱼后，鱼回复跑到别层或新开一层；关掉鱼群保护仍新开一层。
+
+**根因**
+- 报告误判 `source_id`：它表示“来消息这条评论”，拿它当 parent 是回复来消息的人，正确；`target_id` 才是被回复那条。
+- 真正问题：
+  1. `comment-digest` 只给 `reply` 打坐标，不给 `@` 打坐标；
+  2. `@` 一级评论 root_id=0，要回到它下面必须 root=source_id；只传 root=0 + parent=source 会新开层；
+  3. `resolveLatestReply` 拿 source_id 去比 `r.parent`，应比 `r.rpid`；
+  4. 没坐标时鱼群保护聚拢到别人鱼楼。
+
+**处置**
+- `msgfeed.replyCoordinates()`：root=0 时补 `target` 或 `source`；`pullFeed` 保留 sourceId/targetId。
+- `comment-digest` 对 `@` 也输出坐标。
+- `resolveLatestReply` 改按 `rpid` 匹配。
+- `test-bili-reply-coordinates.mjs` 钉 @ 一级/线程/回复一级 + resolve。
+- case：`docs/cases/2026-11-03-bili-at-floor-reply.md`
+
+**怎么验证**
+```text
+node scripts/test-bili-reply-coordinates.mjs
+node plugins/surfcore/scripts/test-bili-automation.mjs
+npm run test:audit
+```
+
+**残余**
+- 没有真实 B站 账号发评论验证。
+- 模型拿到坐标仍可能不用。
+- B站 前端会把楼中楼折叠，用户未必一眼看到。
+## #125（2026-11-03）群里的 #sl 刷屏指令不唤醒 SurfCore
+
+**现象**
+- 群里多人发 `#sl`，会炸出一堆鱼发 `snowluma`，SurfCore 的鱼也可能跟着接话。
+
+**根因**
+- `#sl` 不是 SurfCore 的命令；入站只看白名单/鱼群/额度，不看命令文本。
+
+**处置**
+- 新增 `src/command-spam.js`：只认 `#`/`＃` + ASCII 命令词，可带尾随一段；不碰中文话题标签。
+- bridge 入站：群聊、非主人、非 @/引用、配置开启时，纯 # 短指令不 append 未读、不唤醒，10 分钟节流记一次日志/活动。
+- 配置 `socialV2.ignoreSpamCommands` 默认 true；设置页「鱼群保护（QQ）」加开关。
+- `scripts/test-command-spam.mjs`。
+- case：`docs/cases/2026-11-03-ignore-hash-commands.md`
+
+**怎么验证**
+```text
+node scripts/test-command-spam.mjs
+node scripts/test-audit-bridge.mjs
+npm run test:audit
+```
+
+**残余**
+- 管不了 SnowLuma / 别的鱼。
+- 主人发 #sl 仍进模型；@/引用不忽略。
+- 不是“出现 N 次才拦”，是单条纯指令就拦。
+- 过滤点在 pending 之后，仍会先写记忆 inbox/鱼群窗口；后续可前移。
+## #126（2026-11-03）人格语气层重复/未进目的提示词
+
+**现象**
+- `persona.tone.md` 有内容，但提示词【人格语气】是 `persona.md` 的复制；tone 不出现。
+
+**根因（分层）**
+- v0.8.6 在 `a8ebcba` 之前：`readPersonaLayerText()` 没有 tone 分支，落到 core。
+- 当前 dev 仍有残留：
+  1. `kind==='tone' ? (layers.tone || layers.core)`：没有 tone 时回退 core，full 模式重复；
+  2. `composePersonaLayers` 不判断 tone/core 相同；
+  3. `purposePersonaText()` 只读 `persona.md`，不读 tone。
+
+**处置**
+- `readPersonaLayerText('tone')` 只返回 `layers.tone`；没有就空，交给 composer。
+- `composePersonaLayers`：full 模式下 tone===core 时不再生成【人格语气】；tone 模式保留唯一正文。
+- `purposePersonaText()` 拼 core+tone，Set 去重。
+- 测试补：缺 tone 返回空、tone===core 只出现一次、purpose 接线。
+- case：`docs/cases/2026-11-03-persona-tone-dedup.md`
+
+**怎么验证**
+```text
+node scripts/test-persona-layer-read.mjs
+node scripts/test-persona-layers.mjs
+npm run test:audit
+```
+
+**残余**
+- 不给旧角色自动生成 tone 文件。
+- tone 读取失败仍静默空串。
+- 没在真实运行桥接上看 `/api/socialV2/prompt` 全文。
+
+## 前端有、宿主漏注册：DSH 跟随开关 404
+
+- **现象**：0.8.7 设置页取消「跟随 DSH 默认模型」报 `未知接口：/dsh-surfcore/api/dsh/follow-default`。
+- **根因**：桥接和前端都实现了，宿主 `index.js` 的 `/dsh/*` 代理白名单漏了 `follow-default`；
+  读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
+- **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
+- **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。

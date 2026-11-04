@@ -1,16 +1,159 @@
-## [0.8.6-dev.10] - 2026-11-02
+## [0.8.8-dev.1] - 2026-11-04
 
 ### dev 测试构建
 
 - dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
 
-## [0.8.6-dev.9] - 2026-11-02
+## [0.8.8] - 2026-11-03
 
-### dev 测试构建
+### 修复
 
-- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+- 设置页取消「跟随 DSH 默认模型」不再报 404：宿主补上 `/dsh/follow-default` 代理路由，桥接已有的实现终于能被调用。
+- 代理对非 POST、非法 JSON、桥接不可用分别返回 `DSH_FOLLOW_METHOD` / `DSH_FOLLOW_BODY` / `DSH_FOLLOW_BRIDGE` + hint，不再只给一句“未知接口”。
+- 新增 `test-dsh-follow-route`：静态校验“前端调用的路径 ⊆ 宿主注册的路由”，防同类漏代理再次发生。
 
-## [Unreleased]
+## [0.8.7] - 2026-11-03
+
+### 发布/测试
+
+- 修复 Windows `core.autocrlf=true` 下 preset 补丁被误判为“需重新生成”的发布门禁问题（不影响运行时）。
+
+### 人格语气层
+
+- `persona.tone.md` 不再在缺失时回退 `persona.md`，避免 full 模式核心重复。
+- tone 与 core 内容相同时不再生成两个段落。
+- 目的/主动搭话提示词也带上语气层。
+
+### 群刷屏短指令过滤
+
+- 非主人发的 `#sl` 这类纯 `#` 短指令不再唤醒/回复；主人、@、引用放行。
+- 新增 `socialV2.ignoreSpamCommands` 开关。
+
+### B站 @ 楼层回复
+
+- `@` 一级评论自动补 `root=source_id`，回复落在用户那条评论下面。
+- `comment-digest` 对 `@` 也输出 root/parent 坐标。
+- `resolveLatestReply` 按 source rpid 找，不再拿它当 parent 比。
+- 修复鱼群保护在“没坐标”时聚拢到别人鱼楼。
+
+### QQ 工具晚注册限制
+
+- `qq-tool-restrict` 监听 `tools/change`，晚注册的已知危险全局工具也补装 Schema 限制。
+- 成功的限制幂等；先登记再 restrict，防同步重入。
+
+### QQ 工作区跟随 DSH 默认模型
+
+- `ensureChatModel()` 跟随 `session.modelCatalog.default`，读不到才退回 config。
+- 新增 `dsh.followDefaultModel` 开关；控制台和 DSH 设置页都有勾选与来源说明。
+- 模型不认 `reasoningEffort` 时去掉该参数重试。
+- 旧控制台与设置页都显示跟随失败原因；跟随中禁用模型/强度保存。
+
+### 唤醒额度可见与回访免计次
+
+- `replyCheck` 回访不再占每日唤醒次数；仍受间隔/限频/花费约束。
+- `/api/status` / 会话状态 / 设置页 / 体检暴露今日唤醒额度。
+- 体检使用桥接状态判断 SnowLuma，新增 `bridge-down` / `bridge-error`。
+
+### 孤立代理项 / 桌宠 400
+
+- 新增 `src/safe-text.js`：截断不劈开 emoji，发送前 wellFormed 兜底。
+- 修复桌宠 /chat、测试对话、主动搭话的 400。
+
+### web_search 凭据与 Search API
+
+- 认 DSH 0.2.x `.credentials.yaml` 的 `records` 结构。
+- 增加账号级凭据 fallback；账号 token 只发 `api.deepseek.com`。
+- 新增 Search API 直连，auto 顺序 API → 模型轮次 → Bing。
+- 设置页新增 `webSearch.apiSearchURL`。
+
+### DSH Desktop node 路径
+
+- `findNodeExe()` 增加安装目录候选；scheduler 和 setup 的 MCP command 共用解析。
+- 修复 Desktop 下回退到 `Harness.exe` 导致桥接无法启动。
+
+### 人格卡住址误报
+
+- 住址规则加枚举标点负向前瞻；“住址、联系方式”不再被当成地址值。
+- 保留收货地址/家庭地址/地址是/住在等真实正例。
+
+### 出站 outbox 与早安探活
+
+- 连接类发送失败写入 `state/outbox.json`，账号上线后自动补发。
+- 10 分钟去重、60 条/24h/12 次上限；策略失败不入队。
+- 早安先探活 OneBot，再决定是否标记已发。
+
+### B站记忆回退与管理员输入框
+
+- B站记忆角色级优先，角色级缺文件时只读回退账号级旧数据。
+- 管理员卡片输入框/下拉加 border-box + max-width，避免超框。
+
+### 客户端包唯一 Loader 来源
+
+- `qq-mode` 拆成独立 host-only 嵌套包，不再被解析回 surfcore 客户端包。
+- Loader 行改为 `./qq-mode/index.js`；`lib/qq-mode.js` 保留兼容 re-export。
+- 体检新增 `COMPAT_CLIENT_MULTI_SOURCE`，提前标出同一客户端包多条 Loader 行。
+
+### 语音开关入口
+
+- 语音页顶部新增总闸 /「发语音」工具开关，保存走现有 stamps。
+- 自检与 VOICE_DISABLED / VOICE_TOOL_DISABLED 提示改指语音页。
+
+### DSH 0.2.1-rc.5 B站兼容
+
+- B站新会话补 `agentPreset`（优先 standard/default），避免 turn 直接 blocked。
+- 默认 provider/model 不可用时按 DSH 模型目录 fallback 一次。
+- 唤醒提示词的日记路径改用当前角色目录。
+- B站→QQ 记忆按当前角色 `biliDir` 读取，不再固定账号级。
+
+### 体检 SnowLuma 状态源
+
+- 体检改读 `bridge.snowluma` 运行态，不再拿 `config.snowluma` 冒充 connected。
+- 桥接未运行显示 `bridge-not-running`，不再固定误报 onebot-rejected。
+
+### B站生物钟会话归组
+
+- 新会话改用 `workspaceId` 挂到「B站生物钟」工作区，不再只传 cwd。
+- 专用工作目录改为 `state/bili-agents`，不再用用户主目录。
+- 旧会话保留不强行迁移；创建失败下一 tick 重试。
+
+### zip 安装首次更新迁移
+
+- 清单已按 git blob 生成（LF、排除 gitignore）；首次 zip 更新不再永久 blocked。
+- 设置页新增「首次更新（先备份）」；仅对可信 zip 目录、显式确认后放行。
+- 覆盖前仍先备份；默认无证据仍拒绝。
+
+### schemastery volatile 兼容
+
+- 新增 `unwrapSchemaValue()`：3.18.3+ 的 volatile 包装字段统一取纯值。
+- bridge settings / 设置页 mode·ownerQQ 不再变成 `[object Object]`。
+- qq-mode 测试改用拆包值；新增 `test-schema-volatile`。
+
+### B站监听错误可见性
+
+- listenTick 用 `listenerCfg` / `limits` 消除同名遮蔽。
+- ReferenceError/TypeError 打类型+stack（截断）；普通错误仍只一行。
+- 新增监听错误回归测试。
+
+### DSH 事件流快照回退
+
+- remote.mux 404 时降级 `/api/events` 轮询；正常宿主仍走推送，不降级不加延迟。
+- 快照首次只取 latest 基线，按 cursor 增量，1.5s 去重轮询；60s 重试 remote.mux。
+- 端口探测先看 `/api/status` JSON 形状，修复“HTTP 通但误报连不上”。
+
+### 模型设置与证据链
+
+- 宿主补 `/dsh/model`、`/dsh/effort` 代理，修复设置页 404、模型下拉为空。
+- 保存只标记“已保存/待确认”，不再宣称已生效。
+- 记录 selectModel 回执、model/selection 最近使用、失败原因和跨进程 stale。
+- UI 区分已保存 / DSH 已接受 / 最近使用 / 失败。
+
+### 多群记忆隔离与互通圈
+
+- 记忆默认按群隔离；同圈群互看；私聊记忆永不进群。
+- 每条记忆带来源群名/群 ID；旧记录按已有群 ID 补标，无来源标未知。
+- 当前群身份注入唤醒/提醒/快照/get_prompt/context。
+- 记忆互通圈可配置；封闭集合，不传递。
+- 去重加 conversationKey，避免跨群同文本合并。
 
 ### 本地语音包安装下载
 
@@ -139,6 +282,18 @@
 - 唤醒时动态注入总闸/工具/语音库状态；旧提示/旧记忆不再一律压过当前状态。
 - `qq_list_voices` 补 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` code + hint。
 - 语音设置说明改为“两个开关 + 需重启 DSH + text 不依赖语音库”。
+
+## [0.8.6-dev.10] - 2026-11-02
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
+
+## [0.8.6-dev.9] - 2026-11-02
+
+### dev 测试构建
+
+- dev 构建（Pre-release，仅测试机使用；稳定用户不受影响）。
 
 ## [0.8.6-dev.8] - 2026-11-01
 

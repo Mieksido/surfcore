@@ -222,7 +222,7 @@ export function readPersonaLayerText(kind = 'core', scene = '') {
     : kind === 'scene'
       ? (layers.scenes?.[scene] || '')
       : kind === 'tone'
-        ? (layers.tone || layers.core)
+        ? layers.tone
         : kind === 'core'
           ? layers.core
           : (() => {

@@ -237,6 +237,18 @@ export function writeInstalledMeta(dir, meta) {
 `, 'utf8');
   } catch {}
 }
+
+/**
+ * 首次 zip 解压安装没有安装证据。只允许对“看起来确实是 SurfCore 的解压目录”做一次性迁移，
+ * 且必须由 UI 明确确认、先备份；git 工作副本永远不走这条路。
+ */
+function isTrustedZipInstall(dir) {
+  try {
+    if (!dir || fs.existsSync(path.join(dir, '.git'))) return false;
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    return pkg?.name === 'surfcore';
+  } catch { return false; }
+}
 const releaseManifestCache = new Map(); // versionUrl -> { json, at }
 
 /**
@@ -339,7 +351,7 @@ async function fetchLatestDevRelease(repo) {
   }
 }
 
-export async function inspectVersionComponent(component, { fetch: doFetch = true, channel = 'stable' } = {}) {
+export async function inspectVersionComponent(component, { fetch: doFetch = true, channel = 'stable', firstInstall = false } = {}) {
   const id = String(component?.id ?? '').trim();
   const name = String(component?.name ?? id);
   const dir = normalizeDir(component?.dir);
@@ -398,7 +410,8 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
   // ── 测试通道（dev）：只认 GitHub pre-release 的 -dev.N，完全不碰稳定版的 latest ──
   if (channel === 'dev') {
     const dev = await fetchLatestDevRelease(repo).catch(() => null);
-    const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta);
+    const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta)
+      || (firstInstall === true && isTrustedZipInstall(dir));
     if (!dev) {
       return {
         ...base, available: true, installedVersion, latestVersion: null,
@@ -427,7 +440,7 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
         updateAvailable: true, status: 'blocked', code: 'evidence-insufficient', channel: 'dev',
         blocked: '目录里没有安装清单/安装记录，无法确认归属',
         reason: `有测试构建 v${latestVersion}，但这个目录没有安装证据`,
-        hint: '为安全不自动覆盖：请手动下载该版本 zip 覆盖一次；装好后会自动补登记',
+        hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请手动下载该版本 zip 覆盖一次，装好后会自动补登记',
       };
     }
     return {
@@ -482,7 +495,7 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
         // 有更新，但先看有没有"安装证据"：既无安装清单也无安装记录时不能自动覆盖，
         // 必须在这里标成 blocked —— 否则用户点了更新会失败、下次检查又弹同一条（2026-10-29 反馈）。
         const hasManifest = fs.existsSync(path.join(dir, '.installed-manifest.json'));
-        const evidence = hasManifest || Boolean(meta);
+        const evidence = hasManifest || Boolean(meta) || (firstInstall === true && isTrustedZipInstall(dir));
         if (!evidence) {
           return {
             ...base, available: true, installedVersion, latestVersion: remoteVer,
@@ -490,7 +503,7 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
             status: 'blocked', code: 'evidence-insufficient',
             blocked: '目录里没有安装清单/安装记录，无法确认归属',
             reason: `有新版 v${remoteVer}，但这个目录没有安装证据（无 .installed-manifest.json / .installed-meta.json）`,
-            hint: '为安全不自动覆盖：请手动下载新版 zip 覆盖一次；装好后新版会自动补登记，之后可自动更新',
+            hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请手动下载新版 zip 覆盖一次，装好后新版会自动补登记，之后可自动更新',
           };
         }
         return {
@@ -548,14 +561,15 @@ export async function inspectVersionComponent(component, { fetch: doFetch = true
   }
   const latestVersion = latest.tag.replace(/^v/i, '');
   const cmp = semverCompare(latestVersion, installedVersion);
-  const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta);
+  const hasEvidence = fs.existsSync(path.join(dir, '.installed-manifest.json')) || Boolean(meta)
+    || (firstInstall === true && isTrustedZipInstall(dir));
   if (cmp > 0 && !hasEvidence) {
     return {
       ...base, available: true, installedVersion, latestVersion,
       updateAvailable: true, status: 'blocked', code: 'evidence-insufficient',
       blocked: '目录里没有安装清单/安装记录，无法确认归属',
       reason: `有新版 v${latestVersion}，但这个目录没有安装证据`,
-      hint: '为安全不自动覆盖：请手动下载新版 zip 覆盖一次；装好后新版会自动补登记',
+      hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请手动下载新版 zip 覆盖一次，装好后新版会自动补登记',
     };
   }
   return {
@@ -1261,7 +1275,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     return removed;
   }
 
-  async function check({ fetch = true } = {}) {
+  async function check({ fetch = true, firstInstall = false } = {}) {
     if (checking) return status();
     cleanupStaleStaging();
     try { setGitHubToken(githubToken()); } catch {}
@@ -1271,7 +1285,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       const results = [];
       for (const item of items) {
         try {
-          results.push(await inspectComponent(item, { fetch, channel: channel() }));
+          results.push(await inspectComponent(item, { fetch, channel: channel(), firstInstall }));
         } catch (error) {
           // 单个组件炸了不能拖垮整次检查，但必须留下可读结论（不能变成"最新"）
           results.push({
@@ -1377,7 +1391,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
    * 覆盖正在使用的文件会让进程直接终止（0xFFFF7003），更新也不会落地
    * （2026-10-28 用户崩溃报告）。
    */
-  async function updateFromZip(item, report) {
+  async function updateFromZip(item, report, opts = {}) {
     const dir = normalizeDir(item.dir);
     const repo = String(item.versionRepo ?? '').trim();
     if (!dir || !repo) {
@@ -1580,19 +1594,40 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
       } catch {}
       const hasMeta = fs.existsSync(path.join(dir, '.installed-meta.json'));
       if (!priorFiles && !hasMeta) {
-        return fail({
-          ok: false, status: 'blocked', stage: 'preflight', code: 'evidence-insufficient',
-          reason: '这个安装既没有安装清单也没有安装记录，无法确认目录归属',
-          hint: '为安全起见不自动覆盖：请按官方 Release 手动下载；装一次新版后即可恢复自动更新',
-        });
+        if (opts.firstInstall !== true) {
+          return fail({
+            ok: false, status: 'blocked', stage: 'preflight', code: 'evidence-insufficient',
+            reason: '这个安装既没有安装清单也没有安装记录，无法确认目录归属',
+            hint: '官方 zip 解压安装可点「首次更新（先备份）」；其他情况请按官方 Release 手动下载，装一次新版后即可恢复自动更新',
+          });
+        }
+        if (!isTrustedZipInstall(dir)) {
+          return fail({
+            ok: false, status: 'blocked', stage: 'preflight', code: 'evidence-untrusted',
+            reason: '目录不像 SurfCore 解压安装（package.json 名称不符，或是 git 工作副本）',
+            hint: '不自动覆盖：请确认安装目录，或按官方 Release 手动下载',
+          });
+        }
+        pluginLog(`[updates] ${item.id} 首次 zip 更新：用户确认后先备份再覆盖（无历史安装证据）`);
       }
       const plan = planOverwrite(dir, pkg.manifest, priorFiles);
-      if (plan.modified.length) {
+      if (plan.modified.length && opts.overwriteModified !== true) {
+        // 确定性失败：不还原/不显式覆盖，重试必然同样结果 → 前端应禁用“立即更新”，
+        // 只留“备份并覆盖”这个显式出口（2026-11-02 测试机反馈 P0）。
         return fail({
           ok: false, status: 'blocked', stage: 'preflight', code: 'local-modifications',
-          reason: `这些文件被本地改过，覆盖会丢掉改动：${plan.modified.slice(0, 5).join('、')}${plan.modified.length > 5 ? ` 等 ${plan.modified.length} 个` : ''}`,
-          hint: '先备份/还原这些文件，或手动下载新版覆盖',
+          deterministic: true,
+          reason: `这些文件被本地改过，覆盖会丢掉改动（共 ${plan.modified.length} 个）：${plan.modified.slice(0, 8).join('、')}${plan.modified.length > 8 ? '…' : ''}`,
+          hint: '点「备份并覆盖」继续（会先把这些文件备份到 state/backups）；或先还原/手动下载新版',
+          diagnostics: {
+            modified: plan.modified.slice(0, 20),
+            total: plan.modified.length,
+            checked: plan.overwrite.length,
+          },
         });
+      }
+      if (plan.modified.length) {
+        pluginLog(`[updates] ${item.id} 用户选择备份并覆盖 ${plan.modified.length} 个本地改动文件`);
       }
 
       const txn = `${item.id}-${stamp}`;
@@ -1692,7 +1727,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     return { ok: true, pid: child.pid, pendingFile };
   }
 
-  async function apply(ids) {
+  async function apply(ids, opts = {}) {
     if (applying) return { ok: false, error: '正在更新中，请稍候', results: [] };
     const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));
     if (!wanted.size) return { ok: false, error: '没有选择要更新的组件', results: [] };
@@ -1700,7 +1735,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     downloadProgress = null;
     try {
       // 更新前重新检查一次：用户可能刚改过文件、远端也可能又变了
-      await check({ fetch: true });
+      await check({ fetch: true, firstInstall: opts.firstInstall === true });
       const all = list();
       const results = [];
       const stagedTargets = new Map();
@@ -1723,7 +1758,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 
         if (report.channel === 'version' || report.channel === 'dev') {
           // dev 构建也是 tag 归档：和稳定版走同一条 zip 流水线（校验/暂存/回滚都复用）。
-          const done = await updateFromZip(item, report);
+          const done = await updateFromZip(item, report, opts);
           if (done?.ok && done.staged) stagedTargets.set(String(item.id), targetKeyOf(report));
           results.push({ id: item.id, ...done });
           continue;
@@ -1853,6 +1888,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
           deterministic: failedNow[0].deterministic === true,
           mismatchCount: failedNow[0].diagnostics?.mismatch,
           missingCount: failedNow[0].diagnostics?.missing,
+          modifiedCount: failedNow[0].diagnostics?.total,
+          modifiedSample: failedNow[0].diagnostics?.modified,
           sample: failedNow[0].diagnostics?.sample,
           at: new Date().toISOString(),
         }

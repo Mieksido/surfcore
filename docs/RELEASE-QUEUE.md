@@ -14,6 +14,855 @@
 
 ## 待发布
 
+> **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
+> 以下批次保留作追溯；后续新批次继续加在最上面。
+
+### 批次 2026-11-03 08:30 · 人格语气层去重
+<!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
+
+**覆盖提交**：`2a473a3`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `readPersonaLayerText('tone')` 不再回退 core。
+- `composePersonaLayers` 在 tone===core 时去重。
+- `purposePersonaText()` 接入 tone。
+- 测试补缺 tone、相同内容、purpose 接线。
+
+**没做**：
+- 不自动生成旧角色的 tone 文件；
+- tone 读取失败仍静默空串；
+- 没在真实运行桥接看 `/api/socialV2/prompt` 全文。
+
+**验证**：
+```text
+node scripts/test-persona-layer-read.mjs
+node scripts/test-persona-layers.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 QQ 桥接 / DSH 插件。
+
+**风险**：
+- 旧角色 full 模式提示词变短；
+- tone 与 core 相同会少一段重复；
+- purpose 风格可能变化。
+
+**case**：`docs/cases/2026-11-03-persona-tone-dedup.md`
+
+---
+
+### 批次 2026-11-03 08:00 · 群刷屏短指令过滤
+<!-- release-batch: start=2026-11-03T07:50+08:00 end=2026-11-03T08:00+08:00 commits=23f0297 -->
+
+**覆盖提交**：`23f0297`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `src/command-spam.js`：`#sl` 这类 `#` + ASCII 命令词识别。
+- bridge 入站：群聊、非主人、非 @/引用、配置开启时不唤醒/不 append 未读。
+- 配置 `socialV2.ignoreSpamCommands` 默认 true；设置页开关。
+- 新增 `test-command-spam.mjs`。
+
+**没做**：
+- 管不了 SnowLuma / 别的鱼；
+- 主人发 #sl 仍进模型；
+- 不是“出现 N 次才拦”，单条就拦；
+- 过滤点在 pending 之后，仍会先写记忆/鱼群窗口。
+
+**验证**：
+```text
+node scripts/test-command-spam.mjs
+node scripts/test-audit-bridge.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 QQ 桥接。
+
+**风险**：
+- 如果 #sl 是正常叫鱼方式，会被忽略（可关开关或 @ 鱼）；
+- 其他机器人仍会回，用户可能误以为没生效；
+- 尾随中文长句可能仍匹配。
+
+**case**：`docs/cases/2026-11-03-ignore-hash-commands.md`
+
+---
+
+### 批次 2026-11-03 07:30 · B站 @ 楼层回复
+<!-- release-batch: start=2026-11-03T07:20+08:00 end=2026-11-03T07:30+08:00 commits=8f9a4a7 -->
+
+**覆盖提交**：`8f9a4a7`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `msgfeed.replyCoordinates()`：@ 一级评论补 `root=source_id`。
+- `pullFeed` 保留 `sourceId` / `targetId`，root/parent 规范化。
+- `comment-digest` 对 `@` 也输出坐标。
+- `resolveLatestReply` 按 source rpid 找，不再拿 parent 比。
+- 新增 `test-bili-reply-coordinates.mjs`。
+
+**没做**：
+- 没有真实 B站 账号发评论验证；
+- 模型拿到坐标仍可能不用；
+- B站 前端折叠展示未处理。
+
+**验证**：
+```text
+node scripts/test-bili-reply-coordinates.mjs
+node plugins/surfcore/scripts/test-bili-automation.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH / B站 调度器。
+
+**风险**：
+- `@` 一级评论的年龄检查可能查不到作者，但不阻塞；
+- 关鱼群保护后仍可能新开层，如果模型不按坐标；
+- 前端折叠可能让用户仍不一眼看到。
+
+**case**：`docs/cases/2026-11-03-bili-at-floor-reply.md`
+
+---
+
+### 批次 2026-11-03 07:00 · QQ 工具晚注册限制
+<!-- release-batch: start=2026-11-03T06:50+08:00 end=2026-11-03T07:00+08:00 commits=cc7e1b7 -->
+
+**覆盖提交**：`cc7e1b7`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `qq-tool-restrict` 监听 `tools/change`，晚注册的已知危险全局工具补装 Schema 限制。
+- 成功限制幂等；先登记再 restrict，防同步重入。
+- 新增 `test-qq-tool-restrict-events.mjs`。
+
+**没做**：
+- 工具移除后重新注册可能漏限制；
+- 静态名单外未知工具 Schema 仍可见；
+- 旧 DSH 无 `ctx.on` 时退回旧行为；
+- 没有真实 DSH 全量验收。
+
+**验证**：
+```text
+node scripts/test-qq-tool-restrict-events.mjs
+node scripts/test-audit-security.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH。
+
+**风险**：
+- `tools/change` 频率高时多一次静态名单遍历；
+- 重新注册同名工具可能漏；
+- 执行白名单仍是最后防线。
+
+**case**：`docs/cases/2026-11-03-qq-guard-late-tools.md`
+
+---
+
+### 批次 2026-11-03 06:30 · QQ 工作区跟随 DSH 默认模型
+<!-- release-batch: start=2026-11-03T06:20+08:00 end=2026-11-03T06:30+08:00 commits=60c57a7 -->
+
+**覆盖提交**：`60c57a7`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `src/dsh-model-follow.js`；`ensureChatModel` 跟随 `modelCatalog.default`。
+- `dsh.followDefaultModel` 默认开；旧控制台和 DSH 设置页都有勾选/来源/失败提示。
+- 模型不认 `reasoningEffort` 时去掉参数重试。
+- 新增 `test-dsh-model-follow.mjs`。
+
+**没做**：
+- 没有真机 QQ 消息验证；
+- 没有拦 DSH 的 `saveSelection`；
+- 不认 effort 的模型会忽略管理员强度；
+- 15s 缓存。
+
+**验证**：
+```text
+node scripts/test-dsh-model-follow.mjs
+node scripts/test-audit-bridge.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：桥接需重启；旧控制台刷新即可；DSH 设置页刷新。
+
+**风险**：
+- `selectModel` 全局副作用仍在；
+- 跟随失败退回 config，需看 UI 提示；
+- 两套 UI 要同步维护；
+- 默认模型外部改变最多 15s 生效。
+
+**case**：`docs/cases/2026-11-03-follow-default-model.md`
+
+---
+
+### 批次 2026-11-03 05:50 · 唤醒额度可见与回访免计次
+<!-- release-batch: start=2026-11-03T05:40+08:00 end=2026-11-03T05:50+08:00 commits=771573a -->
+
+**覆盖提交**：`771573a`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `replyCheck` 回访不占每日次数；`wakeBudgetTimes` 单独记计费唤醒。
+- 旧状态回填 `wakeBudgetTimes`；purpose/成功唤醒/回滚同步两条线。
+- `/api/status` / `states` / 插件 `mapStatusPayload` 暴露 `wakeGuard`。
+- 概览黄条 + 体检「唤醒额度」+ 设置页 `replyCheckFree` 开关。
+- 体检 `diagnoseSnowLuma` 用桥接状态，新增 bridge-down/bridge-error。
+
+**没做**：
+- 没有桥接级 VM 测试「重启后额度不丢」；
+- `lastWakeBlock` 只存内存；
+- `directBypassDay` 保持当前行为（@ 可越过日额度）；
+- 没在真实 QQ 跑满一天。
+
+**验证**：
+```text
+node scripts/test-token-guard.mjs
+node plugins/surfcore/scripts/test-doctor.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启桥接 + DSH。
+
+**风险**：
+- 旧状态迁移必须回填，否则升级当天多额度；
+- 回访免费增加模型回合数；
+- 多入口 wakeGuard 漏一个就仍看不见；
+- 真实额度曲线未验证。
+
+**case**：`docs/cases/2026-11-03-wake-quota-visible.md`
+
+---
+
+### 批次 2026-11-03 05:20 · 孤立代理项 / 桌宠 400
+<!-- release-batch: start=2026-11-03T05:10+08:00 end=2026-11-03T05:20+08:00 commits=8f865df -->
+
+**覆盖提交**：`8f865df`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `src/safe-text.js`：sliceHead / clipText / wellFormed / deepWellFormed。
+- 替换 purpose-engine、memory-card、pet-purpose、pet-chat 的截断点。
+- pet-chat.complete 与 dsh-client.callUnary 发送前兜底。
+- 新增 `test-safe-text.mjs`。
+
+**没做**：
+- 没有替换仓库所有 slice；
+- deepWellFormed 不处理 Buffer/Date/Map/类实例；
+- 400 日志没加响应体/请求 ID；
+- 没有真实网络复现。
+
+**验证**：
+```text
+node scripts/test-safe-text.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH；桥接也需重启才能吃到 purpose-engine 修复。
+
+**风险**：
+- 坏字符替换成 �；
+- deepWellFormed 每次 RPC 有遍历开销；
+- 未替换的截断点仍可能写坏数据；
+- 非普通对象里的字符串不修。
+
+**case**：`docs/cases/2026-11-03-lone-surrogate-400.md`
+
+---
+
+### 批次 2026-11-03 04:50 · web_search 凭据与 Search API
+<!-- release-batch: start=2026-11-03T04:40+08:00 end=2026-11-03T04:50+08:00 commits=f294000 -->
+
+**覆盖提交**：`f294000`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `readDshCredential()` 认 DSH 0.2.x `records`。
+- 账号级凭据 fallback；账号 token 只发 `api.deepseek.com`（`x-dsh-auth-token`）。
+- 新增 `deepseekApiSearch()` 直连 `/v1/tools/search`。
+- auto：API → 模型轮次 → Bing，失败原因全带出。
+- 配置/设置页新增 `webSearch.apiSearchURL`。
+- 新增凭据/端点边界测试。
+
+**没做**：
+- 不自动刷新账号 token；
+- 不校验 issuer；
+- 直连 API 只认 `results`；
+- 没做真实 token 直连验证。
+
+**验证**：
+```text
+node scripts/test-web-search-credentials.mjs
+node scripts/test-media-search.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 MCP web-search 进程/DSH。
+
+**风险**：
+- 账号 token 端点边界若被绕过会外泄；
+- token 过期会再次回退；
+- Bing 缓存 5 分钟；
+- API 响应形状变化可能变空结果。
+
+**case**：`docs/cases/2026-11-03-web-search-credentials.md`
+
+---
+
+### 批次 2026-11-03 04:20 · DSH Desktop node 路径
+<!-- release-batch: start=2026-11-03T04:10+08:00 end=2026-11-03T04:20+08:00 commits=555896c -->
+
+**覆盖提交**：`555896c`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `src/node-path.js`，`findNodeExe()` 查 DSH Desktop 安装目录。
+- `paths.js` re-export；scheduler 复用；setup 的 MCP command 用真 node。
+- 新增 `test-node-path.mjs`。
+
+**没做**：
+- 安装目录布局仍硬编码；
+- 旧 profile 的 MCP command 不自动迁移；
+- 没做 Linux/macOS 完整布局测试。
+
+**验证**：
+```text
+node scripts/test-node-path.mjs
+node scripts/test-audit-setup.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启桥接；已有 profile 需重跑 setup 才会重写 MCP command。
+
+**风险**：
+- DSH 换目录会再次失效；
+- setup 单独复制运行时可能退回 process.execPath；
+- 路径含空格必须用参数数组 spawn。
+
+**case**：`docs/cases/2026-11-03-dsh-desktop-node-path.md`
+
+---
+
+### 批次 2026-11-03 03:50 · 人格卡住址误报
+<!-- release-batch: start=2026-11-03T03:40+08:00 end=2026-11-03T03:50+08:00 commits=d3ebbd5 -->
+
+**覆盖提交**：`d3ebbd5`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `privacy.js` 住址规则加 `(?![、，,])`：枚举不再当地址赋值。
+- 保留真实地址正例。
+- `test-privacy.mjs` 增加 7 个正负例。
+
+**没做**：
+- 未改 `PRIVATE_TOPIC`；
+- 未回显命中片段；
+- 未审视其他 PII 规则。
+
+**验证**：
+```text
+node plugins/surfcore/scripts/test-privacy.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：刷新设置页即可。
+
+**风险**：
+- 顿号后接真地址会放过；
+- 其他 PII 规则仍可能过度匹配；
+- 记忆侧 `PRIVATE_TOPIC` 仍可能整行丢弃含“住址”的内容。
+
+**case**：`docs/cases/2026-11-03-persona-address-false-positive.md`
+
+---
+
+### 批次 2026-11-03 03:20 · 出站 outbox 与早安探活
+<!-- release-batch: start=2026-11-03T03:10+08:00 end=2026-11-03T03:20+08:00 commits=a799f1b -->
+
+**覆盖提交**：`a799f1b`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `src/outbox.js`：连接类失败持久化，账号上线/启动补发。
+- `onebotSend` / `sendToQQ` 失败入队；成功 markSent 去重。
+- 10 分钟去重、60 条/24h/12 次上限；策略失败不入队。
+- 早安 deliverPrompt 前探活 OneBot，失败不写 lastMorningOk。
+
+**没做**：
+- 语音/表情/卡片未完整覆盖；
+- 成功指纹仅进程内；
+- 没有 outbox 管理 UI。
+
+**验证**：
+```text
+node scripts/test-outbox.mjs
+node scripts/test-greeting.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启桥接。
+
+**风险**：
+- HTTP 超时可能已送达，补发会重复；
+- 旧消息补发可能语境过期；
+- outbox 明文落盘，依赖 state ACL；
+- 探活不能保证模型一定发送。
+
+**case**：`docs/cases/2026-11-03-outbox-greeting-probe.md`
+
+---
+
+### 批次 2026-11-03 02:50 · B站记忆回退与管理员输入框
+<!-- release-batch: start=2026-11-03T02:40+08:00 end=2026-11-03T02:50+08:00 commits=c708744 -->
+
+**覆盖提交**：`c708744`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- B站记忆：角色级优先，角色级缺文件时只读回退账号级旧数据。
+- 覆盖日记/评分/收藏/评论账四类输入。
+- 管理员卡片输入框/下拉：border-box + max-width 240。
+- 新增 CSS/记忆路径回归测试。
+
+**没做**：
+- 不迁移账号级旧数据；
+- 不保证多角色共用旧数据时不混读；
+- 240px 未按所有屏幕自适应；
+- 没做截图回归。
+
+**验证**：
+```text
+node scripts/test-admin-input-css.mjs
+node scripts/test-bili-workspace.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：刷新设置页；B站记忆下一轮刷新生效。
+
+**风险**：
+- 账号级回退可能读到上一角色旧数据；
+- box-sizing 会改变其他输入控件尺寸；
+- 240px 只是参考值。
+
+**case**：`docs/cases/2026-11-03-bili-memory-fallback-admin-css.md`
+
+---
+
+### 批次 2026-11-03 02:20 · 客户端包唯一 Loader 来源
+<!-- release-batch: start=2026-11-03T02:10+08:00 end=2026-11-03T02:20+08:00 commits=ce666ed -->
+
+**覆盖提交**：`ce666ed`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- `qq-mode` 拆成 `plugins/surfcore/qq-mode/` 独立 host-only 包（自带 package.json，不声明 dsh.client）。
+- `cordis.patch.yml` 改 `./qq-mode/index.js`；`lib/qq-mode.js` re-export。
+- `compat.js` 新增 `COMPAT_CLIENT_MULTI_SOURCE`。
+
+**没做**：
+- 不改 DSH client-modules 的 fatal 语义；
+- 不删 qq-mode 设置命名空间；
+- 不自动清理用户手写重复 Loader 行。
+
+**验证**：
+```text
+node scripts/test-qq-mode-plugin.mjs
+node scripts/test-plugin-compat.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH；建议同时启用 vision-router 做一次冷启动验证。
+
+**风险**：
+- 依赖 DSH nearest-package 解析；
+- 旧 profile 手写重复行仍要删；
+- 没有真实 vision-router live 测试。
+
+**case**：`docs/cases/2026-11-03-client-multi-source.md`
+
+---
+
+### 批次 2026-11-03 01:50 · 语音开关入口
+<!-- release-batch: start=2026-11-03T01:40+08:00 end=2026-11-03T01:50+08:00 commits=9d532c2 -->
+
+**覆盖提交**：`9d532c2`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 语音页顶部新增「语音开关」卡片（总闸 + 发语音工具）。
+- 保存复用父级 `/config` + stamps。
+- 自检 / VOICE_DISABLED / VOICE_TOOL_DISABLED 提示改指语音页。
+- 明确“两个都要开、保存后完全退出 DSH”。
+
+**没做**：
+- 默认值仍关闭；
+- 自动重启 DSH；
+- 自检不查真实 MCP 工具列表；
+- 命令行窗口隐藏。
+
+**验证**：
+```text
+node scripts/test-voice-gates.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：保存后完全退出 DSH 再打开。
+
+**风险**：
+- 语音页保存整份 QQ 配置，受 CONFIG_STALE 保护；
+- 只开一个仍不能发；
+- 隐藏控制台窗口可能隐藏错误。
+
+**case**：`docs/cases/2026-11-03-voice-switch-location.md`
+
+---
+
+### 批次 2026-11-03 01:20 · DSH 0.2.1-rc.5 B站兼容
+<!-- release-batch: start=2026-11-03T01:10+08:00 end=2026-11-03T01:20+08:00 commits=3ef2164 -->
+
+**覆盖提交**：`3ef2164`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- B站新会话补 agentPreset（standard/default）。
+- selectModel 不可用时按模型目录 fallback 一次。
+- 日记提示词改角色级 platformDir。
+- bili-memory 支持 biliDir，bridge 传当前角色目录。
+
+**没做**：
+- 账号级旧日记/额度迁移；
+- 旧未分组会话迁移；
+- standard preset 实机验证。
+
+**验证**：
+```text
+node scripts/test-bili-workspace.mjs
+node scripts/test-model-options.mjs
+node scripts/test-scheduler-permission.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件/桥接。
+
+**风险**：
+- standard preset 不存在时退 default；
+- fallback 可能选到更贵模型；
+- 旧账号级数据不会自动出现在角色级。
+
+**case**：`docs/cases/2026-11-03-bili-rc5-compat.md`
+
+---
+
+### 批次 2026-11-03 00:50 · 体检 SnowLuma 状态源
+<!-- release-batch: start=2026-11-03T00:40+08:00 end=2026-11-03T00:50+08:00 commits=d4b2cf8 -->
+
+**覆盖提交**：`d4b2cf8`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 体检复用 `bridgeStatus()` 的 `snowluma`，不再传 `config.snowluma`。
+- `diagnoseSnowLuma` 增加 `hasRuntimeState`：没有 connected 字段 → `bridge-not-running`。
+- 只有运行态 connected:false + 端口在听才判 onebot-rejected。
+- 新增体检状态源回归测试。
+
+**没做**：
+- onebot-rejected 仍只 probe TCP，不实际 get_login_info；
+- 概览/启动/体检状态词未完全统一。
+
+**验证**：
+```text
+node scripts/test-doctor-snow-state.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件。
+
+**风险**：
+- 桥接状态接口失败时显示 bridge-not-running；
+- 端口被其它服务占用仍可能误判；
+- 没有真实 SnowLuma live 测试。
+
+**case**：`docs/cases/2026-11-03-doctor-snow-state.md`
+
+---
+
+### 批次 2026-11-03 00:20 · B站生物钟会话归组
+<!-- release-batch: start=2026-11-03T00:10+08:00 end=2026-11-03T00:20+08:00 commits=26f3b5e -->
+
+**覆盖提交**：`26f3b5e`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新 B站生物钟会话走 `workspaceId`，归入「B站生物钟」工作区。
+- 专用目录 `state/bili-agents`；不再 `cwd: os.homedir()`。
+- 旧会话保留不强行迁移；旧版无 workspaceController 时退回专用 cwd。
+- `ensureSession` 创建失败不再标 ready，下一 tick 重试。
+
+**没做**：
+- 旧未分组会话自动迁移/归档；
+- 无损 attach（DSH 无公开 API）；
+- danger-full-access 默认调整。
+
+**验证**：
+```text
+node scripts/test-bili-workspace.mjs
+node scripts/test-scheduler-permission.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件。
+
+**风险**：
+- 旧会话仍在「未分组」；
+- workspaceController 失败时退回 cwd，仍可能未分组；
+- 新工作区目录权限问题。
+
+**case**：`docs/cases/2026-11-03-bili-workspace-grouping.md`
+
+---
+
+### 批次 2026-11-02 23:10 · zip 首次更新迁移
+<!-- release-batch: start=2026-11-02T23:00+08:00 end=2026-11-02T23:10+08:00 commits=fd7bccf -->
+
+**覆盖提交**：`fd7bccf`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 首次 zip 更新增加显式 `firstInstall` 逃生口；默认仍 blocked。
+- 仅 `package.json.name === surfcore` 且无 `.git` 的目录允许。
+- UI 新增「首次更新（先备份）」确认；覆盖前 backupTarget 备份。
+- API `action=apply` 接收 firstInstall。
+- 回归测试覆盖默认 blocked、显式放行、备份、UI/API 接线。
+
+**没做**：
+- 0.7.4 本身仍需用户点一次；
+- manifest 无签名；
+- verifyStaging 缺文件仍只 log。
+
+**验证**：
+```text
+node scripts/test-update-apply-result.mjs
+node scripts/test-update-version-fallback.mjs
+node scripts/test-release-manifest.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件。
+
+**风险**：
+- firstInstall 是显式逃生口，误确认可能覆盖；
+- 只备份 manifest 中将被覆盖的文件；
+- 首次更新后仍需退出 DSH 由 helper 写证据。
+
+**case**：`docs/cases/2026-11-02-zip-update-bootstrap.md`
+
+---
+
+### 批次 2026-11-02 22:40 · schemastery volatile 兼容
+<!-- release-batch: start=2026-11-02T22:30+08:00 end=2026-11-02T22:40+08:00 commits=9d583f9 -->
+
+**覆盖提交**：`9d583f9`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 新增 `src/schema-values.js`：`unwrapSchemaValue` / `settingFromDshNamespace`。
+- bridge 读 DSH settings 的 mode/ownerQQ 统一拆包。
+- 设置页 `dshMode` / `dshSetting` 拆包，JSON 不再变 `{}`。
+- qq-mode 测试改用拆包值；新增 `test-schema-volatile`。
+
+**没做**：
+- 没锁 3.18.2；
+- 没全仓库禁止 volatile 裸读；
+- 没把 3.18.5 写进 lock（只用 npm pack 临时验证）。
+
+**验证**：
+```text
+node scripts/test-schema-volatile.mjs
+node scripts/test-qq-mode-plugin.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件。
+
+**风险**：
+- 业务对象若碰巧有 get() 会被误拆；
+- `.get()` 抛错时保留包装对象；
+- 只修已知 mode/ownerQQ 边界。
+
+**case**：`docs/cases/2026-11-02-schemastery-volatile.md`
+
+---
+
+### 批次 2026-11-02 22:00 · B站监听错误可见性
+<!-- release-batch: start=2026-11-02T21:50+08:00 end=2026-11-02T22:00+08:00 commits=8621cb8 -->
+
+**覆盖提交**：`8621cb8`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- listenTick 配置/额度改名，消除 L 同名遮蔽；
+- ReferenceError/TypeError 带类型+stack（800 字）；
+- 普通错误仍只 message，避免刷日志；
+- 新增监听错误回归测试。
+
+**没做**：
+- ESLint no-shadow/no-use-before-define；
+- mock feed 的完整 listenTick 单测；
+- 其他函数里的 L 命名统一。
+
+**验证**：
+```text
+node scripts/test-bili-listen-error.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件。
+
+**风险**：
+- stack 含本机路径，只进 plugin.log；
+- 普通网络错误仍只一行；
+- 源码约束测试不能替代 lint。
+
+**case**：`docs/cases/2026-11-02-listen-error-visibility.md`
+
+---
+
+### 批次 2026-11-02 21:30 · 事件流快照回退
+<!-- release-batch: start=2026-11-02T21:20+08:00 end=2026-11-02T21:30+08:00 commits=72e100d -->
+
+**覆盖提交**：`72e100d`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- remote.mux 404 才降级 `/api/events` 轮询；
+- 正常宿主保持 remote.mux 推送，不轮询、不加延迟；
+- 快照首次取 latest 基线，cursor 增量，1.5s 去重；
+- 60s 重试 remote.mux；
+- 端口探测先看 `/api/status` JSON，修复误报“连不上”。
+
+**没做**：
+- `/api/events_mux`；
+- 快照不含审批/提问的兼容；
+- 真实老宿主 live 测试。
+
+**验证**：
+```text
+node scripts/test-events-fallback.mjs
+node scripts/test-dsh-port.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启桥接。
+
+**风险**：
+- 轮询最多慢 1.5s；
+- 切换瞬间可能丢正在进行的 turn/end；
+- 审批/提问若不在快照里仍收不到；
+- WS 只给裸 1006 时可能识别不到 404。
+
+**case**：`docs/cases/2026-11-02-events-snapshot-fallback.md`
+
+---
+
+### 批次 2026-11-02 21:00 · 模型设置与证据链
+<!-- release-batch: start=2026-11-02T20:50+08:00 end=2026-11-02T21:00+08:00 commits=cdaf453 -->
+
+**覆盖提交**：`cdaf453`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 宿主补 `/dsh/model`、`/dsh/effort` 代理，修复 404/模型下拉空。
+- 保存只写“待确认”，不再宣称已生效。
+- 记录 requested / lastApply(selected) / lastUsed(model/selection) / pending / bootAt。
+- 失败可见；跨进程旧回执标 stale。
+- UI 显示三态，保存 toast 改成“等待下一条消息由 DSH 确认”。
+
+**没做**：
+- 没有每条回复的实际 usage/model 证据；
+- 保存时不主动 selectModel（避免打断回合）；
+- 多会话逐条状态 UI 未做。
+
+**验证**：
+```text
+node scripts/test-model-settings.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件 / 桥接。
+
+**风险**：
+- selectModel.selected 只证明 DSH 接受，不证明最终路由/实际推理档位；
+- 保存时正在跑的回合仍用旧模型；
+- 全局默认副作用仍在。
+
+**case**：`docs/cases/2026-11-02-model-settings-trust.md`
+
+---
+
+### 批次 2026-11-02 20:30 · 多群记忆隔离与互通圈
+<!-- release-batch: start=2026-11-02T20:20+08:00 end=2026-11-02T20:30+08:00 commits=18a41bc,8f1d872 -->
+
+**覆盖提交**：`18a41bc` + `8f1d872`
+**建议**：**0.8.7（patch）**
+
+**改了什么**：
+- 记忆默认按群隔离；封闭互通圈；私聊永不进群。
+- 每条记忆带群名/群 ID；旧记录按 groupId/conversationKey 补标。
+- 当前群身份进唤醒/提醒/快照/get_prompt/context。
+- 按会话生成记忆块；bridge 按 key 读取。
+- 去重加 conversationKey。
+- 设置页新增「记忆互通圈」。
+
+**没做**：
+- B站/桌宠的按群隔离；
+- circle 嵌套/传递；
+- 旧记录 JSON 重写（只在渲染时补标）；
+- 私聊老记录重分片；
+- 手动记忆严格隔离（默认全局）。
+
+**验证**：
+```text
+node scripts/test-memory-sharing.mjs
+node scripts/test-memory-card-wiring.mjs
+node scripts/test-callname.mjs
+npm run test:audit
+cd plugins/surfcore && npm test
+```
+
+**重启**：重启 DSH 插件 / 桥接。
+
+**风险**：
+- 默认隔离改变现有体验；
+- 开启互通圈会跨群暴露人/事；
+- 旧记录无来源只能标未知；
+- map 缺失时短暂回退全局块。
+
+**case**：`docs/cases/2026-11-02-memory-sharing-circles.md`
+
+---
+
 ### 批次 2026-11-02 14:50 · 本地语音包下载/安装
 <!-- release-batch: start=2026-11-02T14:40+08:00 end=2026-11-02T14:50+08:00 commits=4d2d7c3 -->
 

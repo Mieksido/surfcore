@@ -25,6 +25,13 @@ import { PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patche
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+// MCP 的 command 必须是真 node，不能是 DSH Desktop 的 Harness.exe。
+// 复制到别处单独运行时可能没有 ../src，退回当前进程（CLI 下就是 node）。
+let NODE_EXE = process.execPath;
+try {
+  const { findNodeExe } = await import('../src/node-path.js');
+  NODE_EXE = findNodeExe({ dshHome: DSH_HOME, home: process.env.USERPROFILE || os.homedir() });
+} catch {}
 // 没传 profile 就自动判断（环境变量 → 正在运行的 DSH 进程 → 最近使用 → 兜底 web）。
 // 用动态 import + 兜底：这个脚本偶尔会被单独复制到别处跑（审计台就在这么测），
 // 没有 detect-profile.mjs 时不能直接崩。
@@ -179,7 +186,7 @@ function yamlSingleQuote(s) {
 const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe'];
 
 function mcpEntries() {
-  const node = process.execPath;
+  const node = NODE_EXE;
   const servers = {
     'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
     'mcp-snowluma-host': { serverName: 'snowluma-host', script: path.join(REPO_ROOT, 'src', 'mcp-host-server.js') },

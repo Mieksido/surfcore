@@ -27,6 +27,21 @@ const dsh200 = await serve((req, res) => { res.setHeader('server', 'dsh/0.2.1');
 assert.equal(await looksLikeDsh(dsh200.port), true);
 await dsh200.close();
 
+// 2.5) 桌面内嵌宿主没有 server: dsh，但 /api/status 形状是 DSH：也要认。
+const embedded = await serve((req, res) => {
+  if (req.url.startsWith('/api/status')) {
+    res.setHeader('content-type', 'application/json');
+    res.statusCode = 200;
+    res.end(JSON.stringify({ ok: true, modelConnection: { module: 'coo' }, latestEventCursor: 12 }));
+    return;
+  }
+  res.statusCode = 200;
+  res.end('<!doctype html><title>DSH Desktop</title>');
+});
+assert.equal(await probeDshBaseUrl(`http://127.0.0.1:${embedded.port}`), true,
+  'HTTP 通且 /api/status 像 DSH 时不能误报连不上');
+await embedded.close();
+
 // 3) 端口上的东西不像 DSH（200 但没有 dsh 头）：不能认。
 const stranger = await serve((req, res) => { res.setHeader('server', 'nginx'); res.statusCode = 200; res.end('hi'); });
 assert.equal(await looksLikeDsh(stranger.port), false, '别把别的 Web 服务当成 DSH');

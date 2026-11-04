@@ -9,6 +9,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findNodeExe } from '../../../src/node-path.js';
+
+export { findNodeExe };
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const HOME = process.env.USERPROFILE || os.homedir();
@@ -95,18 +98,7 @@ export function ensureDirs() {
 }
 
 /** 真 node.exe（Electron 的 process.execPath 是 Harness.exe，跑不了部分脚本）。 */
-export function findNodeExe() {
-  const candidates = [
-    process.env.DSH_NODE,
-    path.join(DSH_HOME, 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
-    path.join(HOME, '.dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
-    'C:\\Program Files\\nodejs\\node.exe',
-  ];
-  for (const candidate of candidates) {
-    try { if (candidate && fs.existsSync(candidate)) return candidate; } catch {}
-  }
-  return process.execPath;
-}
+/** 真 node.exe：统一从 src/node-path.js 解析（含 DSH Desktop 安装目录）。 */
 
 export function maskPath(input) {
   let text = String(input ?? '');

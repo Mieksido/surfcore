@@ -364,7 +364,7 @@ assert.ok(source.includes('onChange: (list) => setQqToBili("includeGroups", list
 // ── 通知函数接线（2026-10-30 用户反馈：语音页保存后红字 "toast is not a function"）──
 // 根因：Settings 里 toast 是"浮层文案字符串"，真正的函数叫 notify；
 // VoiceTab 那一处只传了 { toast }，字符串被当函数调用 → 保存成功却显示失败。
-assert.ok(source.includes('h(VoiceTab, { toast: notify })'), 'VoiceTab 必须收到 notify 函数（不是字符串 toast）');
+assert.ok(source.includes('h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy })'), 'VoiceTab 必须收到 notify 函数和配置/保存接线');
 assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toast（字符串）');
 {
   // 通用：所有 Tab 的 props 里出现 toast 的，都必须是 toast: notify
@@ -373,7 +373,7 @@ assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toa
   assert.equal(bad.length, 0, `有 Tab 把字符串 toast 当函数传：${bad.map((m) => m[1]).join(', ')}`);
 }
 assert.ok(source.includes('const [toastText, setToastText]'), '浮层文案状态应叫 toastText（避免与 notify 混淆）');
-assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify });'), '语音页接线固定为 toast: notify');
+assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy });'), '语音页接线固定为 notify + 配置/保存');
 
 // ── 语音页网盘离线包入口（2026-10-30 用户要求：网络不稳时可走网盘）──
 assert.ok(source.includes('https://pan.quark.cn/s/ec6cf2b123de?pwd=sxUZ'), '语音页必须包含网盘链接');

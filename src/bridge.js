@@ -27,6 +27,8 @@ import {
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
+import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoicePacks } from './voice-packs.js';
@@ -48,7 +50,8 @@ import {
   normalizePurposeState, parsePurposeMemo, planNextFire, selectPurpose, summarizePurposeState,
 } from './purpose-engine.js';
 import { resolvePriceTable } from './model-prices.js';
-import { catalogChoices, findCatalogModel } from './model-options.js';
+import { catalogChoices, findCatalogModel, pickCatalogFallback } from './model-options.js';
+import { createOutbox } from './outbox.js';
 import {
   DEFAULT_QQ_FISH_GUARD, appendFishGuardTrigger, assessFishDensity, fishGuardPromptLine, fishGuardReasonText,
   isFishName, normalizeQqFishGuard,
@@ -69,7 +72,7 @@ import { createGateEventStore } from './gate-events.js';
 import { normalizeAllowlist, pickBacklogSessions } from './allowlist.js';
 import { pickPeerAlias, buildPeerAliasTag } from './callname.js';
 import { buildPersonaIdentity, personaNameFromCard } from './persona-identity.js';
-import { evaluateWakeBudget, evaluateOutbound, localDayStart } from './token-guard.js';
+import { evaluateWakeBudget, evaluateOutbound, isFreeWakeReason, localDayStart } from './token-guard.js';
 import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
 } from './token-budget.js';
@@ -172,6 +175,7 @@ const ACTIVE_CHARACTER = readCurrentCharacter();
 const CHARACTER_ID = ACTIVE_CHARACTER?.id ?? '';
 const CHARACTER_EPOCH = Number(ACTIVE_CHARACTER?.epoch ?? 0);
 const MEMORY_CARD_PATHS = resolveMemoryCardPaths(activeMemoryPaths().dir);
+const MEMORY_CARD_GROUP_PROMPTS = path.join(path.dirname(MEMORY_CARD_PATHS.promptQq), 'memory-card-prompt-qq-groups.json');
 const PLATFORM_STATE_DIR = activePlatformStateDir(STATE_DIR);
 // 容量告警私聊节流（同一档 10 分钟内最多一条；插件侧还有 12 小时的同档节流）。
 const memoryCardNotifyAt = new Map();
@@ -221,7 +225,10 @@ function settingFromDshNamespace(ns, key) {
   if (!ns || typeof ns !== 'object') return undefined;
   for (const layer of [ns.user, ns.value]) {
     if (!layer || typeof layer !== 'object' || Array.isArray(layer)) continue;
-    if (Object.prototype.hasOwnProperty.call(layer, key) && layer[key] !== undefined) return layer[key];
+    if (Object.prototype.hasOwnProperty.call(layer, key) && layer[key] !== undefined) {
+      const value = layer[key];
+      return value && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value;
+    }
   }
   return undefined;
 }
@@ -684,6 +691,68 @@ function normalizeReasoningEffort(value) {
   return v;
 }
 
+// 模型选择证据链：requested（配置已保存）→ lastApply（DSH selectModel 回执）→ lastUsed（model/selection 事件）。
+// 只有 selectModel 返回 selected 才算“DSH 已接受”，不能把配置回显当成已加载。
+const MODEL_STATUS_FILE = path.join(STATE_DIR, 'model-status.json');
+function readModelStatus() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(MODEL_STATUS_FILE, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch { return {}; }
+}
+let modelStatusState = { ...readModelStatus(), bootAt: new Date().toISOString() };
+function patchModelStatus(patch = {}) {
+  modelStatusState = {
+    ...modelStatusState,
+    ...patch,
+    sessions: { ...(modelStatusState.sessions ?? {}), ...(patch.sessions ?? {}) },
+    updatedAt: new Date().toISOString(),
+  };
+  try { atomicWriteJson(MODEL_STATUS_FILE, modelStatusState); } catch {}
+  return modelStatusState;
+}
+function recordModelRequested(requested = {}) {
+  return patchModelStatus({
+    requested: { ...requested, at: new Date().toISOString() },
+    pending: true,
+    lastError: null,
+  });
+}
+function recordModelApplied({ ok, sessionId, selected = null, error = '', code = '', requested = null } = {}) {
+  const apply = {
+    ok: ok === true,
+    sessionId: String(sessionId ?? ''),
+    selected: selected && typeof selected === 'object' ? selected : null,
+    error: String(error ?? ''),
+    code: String(code ?? ''),
+    at: new Date().toISOString(),
+    evidence: 'session.selectModel',
+  };
+  const sessions = {};
+  if (apply.sessionId) sessions[apply.sessionId] = { ...(modelStatusState.sessions?.[apply.sessionId] ?? {}), lastApply: apply };
+  return patchModelStatus({
+    lastApply: apply,
+    lastError: apply.ok ? null : (apply.error || '模型应用失败'),
+    pending: false,
+    requested: requested ?? modelStatusState.requested,
+    sessions,
+  });
+}
+function recordModelUsed(sessionId, data = {}) {
+  const used = {
+    sessionId: String(sessionId ?? ''),
+    provider: String(data?.provider ?? ''),
+    model: String(data?.model ?? data?.usage?.model ?? ''),
+    reasoningEffort: String(data?.reasoningEffort ?? data?.effort ?? ''),
+    at: new Date().toISOString(),
+    evidence: 'model/selection',
+  };
+  if (!used.model) return modelStatusState;
+  const sessions = {};
+  if (used.sessionId) sessions[used.sessionId] = { ...(modelStatusState.sessions?.[used.sessionId] ?? {}), lastUsed: used };
+  return patchModelStatus({ lastUsed: used, sessions });
+}
+
 // 敏感文本脱敏：把 SENSITIVE_RE 命中的片段替换为 ***，供日志/反馈/活动记录写入前使用。
 // SENSITIVE_RE 未带 g 标志，这里动态补 g 以替换所有命中片段。
 function redactSensitiveText(text) {
@@ -804,6 +873,9 @@ function loadConfig() {
       // 旧默认 deepseek-v4-flash-vision-exp 已被取代；config.json 未配置时用此兜底。
       model: 'deepseek-flash',
       reasoningEffort: 'max',
+      // 跟随 DSH 的默认模型（session.modelCatalog.default，也就是 agentDefaultModel 的当前值）。
+      // 开着的话 QQ 聊天 / QQ 黑话学习都用这份默认；关掉则用下面的 provider/model 写死。
+      followDefaultModel: true,
       // 兼容新版 DSH 的 API 鉴权：如果 DSH 升级后要求非浏览器客户端带 token，
       // 在这里配置 token；默认走 Authorization: Bearer <token>。
       authToken: '',
@@ -901,6 +973,8 @@ function loadConfig() {
     },
     socialV2: {
       enabled: true,
+      // 群里非主人发的 #sl 这类短指令不唤醒 AI；@/引用/主人不受影响（2026-11-03 用户要求）。
+      ignoreSpamCommands: true,
       autoReplyCheckMs: 30000,
       agentPreset: 'qq-chat-v2',
       provideRecommendations: true,
@@ -984,6 +1058,8 @@ function loadConfig() {
         privateMaxWakesPerDay: 10,   // 私聊单独更紧
         minWakeGapMs: 120000,        // 同一会话两次苏醒至少隔 2 分钟
         directBypassGap: true,        // 被 @/叫到/引用时越过这个最小间隔（每日/花费上限仍生效）
+        directBypassDay: true,        // @/叫名字/提问/拍一拍 也不受每日自动唤醒次数限制
+        replyCheckFree: true,         // 回复后回访不占每日次数（仍受间隔/限频/花费约束）
         maxOutboundPerTurn: 8,       // 一次醒来最多发 8 条（burst/单发/表情/拍一拍/语音都算）
         maxDailyCostCNY: 8,          // 近 24h 全局花费上限；0 = 不限
       },
@@ -1848,7 +1924,11 @@ async function main() {
 
   // B站那边的角色：把公开经历做成记忆，注入 QQ 提示词；动态与每日分享在启动时排定。
   // 隐私：这个模块只读公开数据与公开见闻，不读任何私信文件。
-  const biliMemory = createBiliMemory({ stateDir: PLATFORM_STATE_DIR, log });
+  const biliMemory = createBiliMemory({
+    stateDir: PLATFORM_STATE_DIR,
+    biliDir: CHARACTER_ID ? characterPaths(CHARACTER_ID).biliDir : null,
+    log,
+  });
   let biliDynamics = null;
   let biliShare = null;
 
@@ -3158,6 +3238,42 @@ async function main() {
       return api.callUnary('session.models', {});
     }
   }
+
+  // ── 跟随 DSH 默认模型（QQ 聊天 / QQ 黑话学习共用的那条）───────────────────
+  // default 就是 agentDefaultModel.currentSelection()：装了默认模型插件时是用户固定下来的值。
+  // 缓存 15s：ensureChatModel 每条消息都会调用，modelCatalog 会列全部 provider，并不便宜。
+  const DEFAULT_MODEL_TTL_MS = 15 * 1000;
+  let defaultModelCache = { at: 0, selection: null, error: '' };
+  let defaultModelInFlight = null;
+  function invalidateDefaultModel() {
+    defaultModelCache = { at: 0, selection: null, error: '' };
+  }
+  async function resolveDefaultModel() {
+    if (Date.now() - defaultModelCache.at < DEFAULT_MODEL_TTL_MS) return defaultModelCache.selection;
+    if (defaultModelInFlight === null) {
+      defaultModelInFlight = (async () => {
+        try {
+          const catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session/modelCatalog');
+          const selection = defaultSelectionOf(catalog);
+          if (selection === null) return { selection: null, error: 'DSH 的模型目录没有给出默认模型' };
+          return { selection, error: '' };
+        } catch (error) {
+          return { selection: null, error: String(error?.message ?? error) };
+        }
+      })().finally(() => { defaultModelInFlight = null; });
+    }
+    const result = await defaultModelInFlight;
+    defaultModelCache = { at: Date.now(), selection: result.selection, error: result.error };
+    if (result.error !== '' && !modelCatalogErrorLogged.has(result.error)) {
+      modelCatalogErrorLogged.add(result.error);
+      log(`读取 DSH 默认模型失败，QQ 工作区先用 config.json 的模型：${result.error}`);
+    }
+    return defaultModelCache.selection;
+  }
+  /** 当前是否跟随 DSH 默认模型；config.json 里只有显式 false 才算关。 */
+  function followsDefaultModel() {
+    return cfg.dsh?.followDefaultModel !== false;
+  }
   const collectors = new Map(); // sessionId -> turn collector
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
   const v2TurnStartAt = new Map(); // sessionId -> timestamp：reserved2 turn 开始时间，用于判断是否“无行动”
@@ -3270,7 +3386,10 @@ async function main() {
   /** 摄入一条会话事件到 token 账本；任何异常都不能影响 QQ 主链路。 */
   function recordSessionUsage(sessionId, event) {
     try {
-      if (event?.type === 'model/selection') rememberModel(sessionId, event.data);
+      if (event?.type === 'model/selection') {
+        rememberModel(sessionId, event.data);
+        recordModelUsed(sessionId, event.data);
+      }
       const known = sessionModels.get(sessionId);
       tokenLedger.ingestEvent({
         sessionId,
@@ -3586,6 +3705,7 @@ async function main() {
     collectors.delete(sessionId);
     sessionModels.delete(sessionId);
     modelAppliedSessions.delete(sessionId);
+    modelAppliedKeys.delete(sessionId);
     sendToolSucceededSessions.delete(sessionId);
     pendingSendToolCalls.delete(sessionId);
     v2TurnStartAt.delete(sessionId);
@@ -4144,6 +4264,7 @@ async function main() {
         log(`[history] QQ 账号会话已上线（${source}），检查离线期间的历史消息`);
         void runHistoryCatchUp(`online:${source}`).catch((error) => log(`[history] 上线补历史异常：${error?.message ?? error}`));
       }
+      void outbox.flush(`account-online:${source}`).catch((error) => log(`[outbox] 上线补发异常：${error?.message ?? error}`));
     }
   }
 
@@ -4645,6 +4766,8 @@ async function main() {
             // 上游健康只给操作者看：它包含网关诊断信息（good/hint），
             // 属于管理侧观测，不该进 QQ 会话里那个受限的智能体视图。
             snowluma: snowlumaHealthSnapshot(),
+            // 今日唤醒额度：设置页靠它显示「今天还能叫醒它几次」，体检靠它给出可执行提示。
+            wakeGuard: wakeGuardSnapshot(),
             activity: readActivityTail(100)
           });
           return;
@@ -5337,8 +5460,19 @@ async function main() {
 
         // ── DSH 模型与思考强度 ───────────────────────────────────────────────
         if (req.method === 'GET' && url.pathname === '/api/dsh/model') {
-          const provider = String(cfg.dsh?.provider || 'deepseek-official');
-          const model = String(cfg.dsh?.model || 'deepseek-flash');
+          // 先算「现在到底用哪个模型」：跟随 DSH 默认时以默认模型为准，
+          // config.json 的 provider/model 只是关掉跟随后（或读不到默认时）的兜底。
+          const followDefault = followsDefaultModel();
+          const followed = followDefault ? await resolveDefaultModel() : null;
+          const chosen = effectiveChatModel({
+            followDefault,
+            config: cfg.dsh,
+            defaultSelection: followed,
+            defaultError: defaultModelCache.error,
+          });
+          const provider = chosen.provider || 'deepseek-official';
+          const model = chosen.model || 'deepseek-flash';
+          const effectiveEffort = String(chosen.reasoningEffort || REASONING_EFFORT_DEFAULT);
           // 档位优先取 DSH 实际公布的能力（DSH 换档位词汇或换 provider 时自动跟随），失败退回内置白名单。
           let options = REASONING_EFFORT_OPTIONS.slice();
           let labels = {};
@@ -5382,18 +5516,41 @@ async function main() {
           sendJson({
             provider,
             model,
-            reasoningEffort: String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT),
+            reasoningEffort: effectiveEffort,
             options,
             labels,
             default: REASONING_EFFORT_DEFAULT,
             providerDefault,
             catalogSource,
+            // 跟随 DSH 默认模型的状态：控制台据此解释“模型从哪来 / 为什么改 config 没反应”。
+            followDefault,
+            modelSource: chosen.source,
+            effectiveReasoningEffort: effectiveEffort,
+            configProvider: String(cfg.dsh?.provider || ''),
+            configModel: String(cfg.dsh?.model || ''),
+            configReasoningEffort: String(cfg.dsh?.reasoningEffort || ''),
+            defaultModel: followed ?? null,
+            defaultModelError: chosen.defaultError ?? '',
             // 目录不可用时只回当前模型，前端不要凭旧缓存瞎给选项。
             models: choices.models,
             providers: choices.providers,
-            // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
-            // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
-            globalSideEffect: true,
+            // selectModel 会同时写会话级与 DSH 全局默认；跟随成功且值相同时等于没改。
+            globalSideEffect: writesGlobalDefault({
+              followed,
+              provider,
+              model,
+              reasoningEffort: effectiveEffort,
+            }),
+            modelStatus: modelStatusState,
+            requested: modelStatusState.requested ?? null,
+            lastApply: modelStatusState.lastApply ?? null,
+            lastUsed: modelStatusState.lastUsed ?? null,
+            lastApplyStale: Boolean(modelStatusState.lastApply?.at
+              && modelStatusState.bootAt
+              && Date.parse(modelStatusState.lastApply.at) < Date.parse(modelStatusState.bootAt)),
+            bootAt: modelStatusState.bootAt ?? null,
+            pending: modelStatusState.pending === true,
+            lastError: modelStatusState.lastError ?? null,
           });
           return;
         }
@@ -5455,6 +5612,7 @@ async function main() {
           cfg.dsh = { ...(cfg.dsh ?? {}), provider, model, reasoningEffort: effort };
           modelSelectionEpoch += 1;
           imageInputSupport = null;
+          recordModelRequested({ provider, model, reasoningEffort: effort, source: 'settings' });
           const warnings = [];
           if (picked.imageInput === false) warnings.push('这个模型未声明图片输入：QQ 图片/表情将只发文字标签，不会发 image block');
           if (picked.imageInput == null) warnings.push('模型目录没有声明图片能力：未知，按文字兜底更安全');
@@ -5462,9 +5620,13 @@ async function main() {
           log(`控制台：DSH 模型已设为 ${provider}/${model}，思考强度 ${effort}（对已有会话于下一条消息生效）`);
           sendJson({
             ok: true,
+            saved: true,
+            applied: false,
+            pending: true,
             provider,
             model,
             reasoningEffort: effort,
+            requested: { provider, model, reasoningEffort: effort },
             imageInput: picked.imageInput,
             price: picked.price ?? null,
             globalSideEffect: true,
@@ -5487,8 +5649,41 @@ async function main() {
           cfg.dsh = { ...(cfg.dsh ?? {}), reasoningEffort: effort };
           // 递增代号：已在运行的会话在下一条消息会重新 selectModel（无需重启桥接或 DSH）
           modelSelectionEpoch += 1;
+          recordModelRequested({
+            provider: String(cfg.dsh?.provider || ''),
+            model: String(cfg.dsh?.model || ''),
+            reasoningEffort: effort,
+            source: 'settings-effort',
+          });
           log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
-          sendJson({ ok: true, reasoningEffort: effort });
+          sendJson({ ok: true, saved: true, applied: false, pending: true, reasoningEffort: effort });
+          return;
+        }
+        // 开关「QQ 工作区跟随 DSH 默认模型」。默认开；关掉就退回 config.json 的 provider/model。
+        if (req.method === 'POST' && url.pathname === '/api/dsh/follow-default') {
+          const body = await readBody();
+          const follow = body?.follow !== false;
+          const configFile = path.join(ROOT, 'config.json');
+          try {
+            // fail-fast：配置损坏时直接报错，绝不覆盖写（与白名单/强度接口同语义）。
+            const file = readConfigObject(configFile);
+            file.dsh = { ...(file.dsh ?? {}), followDefaultModel: follow };
+            atomicWriteJson(configFile, file);
+          } catch (error) {
+            sendJson({
+              ok: false,
+              code: 'config-write-failed',
+              error: `保存失败：${error?.message ?? error}`,
+              hint: `手动把 ${configFile} 里的 dsh.followDefaultModel 改成 ${follow}，或检查该文件是否只读`,
+            }, 500);
+            return;
+          }
+          cfg.dsh = { ...(cfg.dsh ?? {}), followDefaultModel: follow };
+          // 立刻丢掉缓存的默认模型：改完开关，下一条消息就该按新语义走。
+          invalidateDefaultModel();
+          modelSelectionEpoch += 1;
+          log(`控制台：QQ 工作区${follow ? '跟随' : '不再跟随'} DSH 默认模型（下一条消息生效）`);
+          sendJson({ ok: true, followDefaultModel: follow });
           return;
         }
 
@@ -6050,6 +6245,7 @@ async function main() {
               stopRetiredSessionWork(sid, key);
               sessionModels.delete(sid);
               modelAppliedSessions.delete(sid);
+              modelAppliedKeys.delete(sid);
               reverse.delete(sid);
               collectors.delete(sid);
               v2TurnStartAt.delete(sid);
@@ -6164,11 +6360,17 @@ async function main() {
               userId: selfUserId || null,
               line: selfIdentityTextV2().trim() || null
             },
+            conversation: (() => {
+              const m = /^group:(\d+)$/.exec(String(key));
+              if (!m) return { key, kind: 'private', name: '', memberCount: 0 };
+              const profile = groupProfile(key, getSocialV2State(key));
+              return { key, kind: 'group', name: profile.name || '', memberCount: Number(profile.memberCount) || 0 };
+            })(),
             role: (() => {
               const personaMode = url.searchParams.get('mode') === 'full' ? 'full' : (key.startsWith('group:') ? 'tone' : 'full');
               return { name: roleState.role ?? null, mode: personaMode, hint: currentMode === 'reserved2' ? currentRoleHintV2(key, personaMode) : currentRoleHint(key, personaMode) };
             })(),
-            memoryCard: memoryCardPromptBlock(),
+            memoryCard: memoryCardPromptBlock(key),
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -6232,6 +6434,7 @@ async function main() {
           const snapshot = buildContextSnapshot({
             key,
             st,
+            groupName: groupProfile(key, st).name || '',
             include,
             caps,
             afterSeq: Number(url.searchParams.get('afterSeq') ?? 0) || 0,
@@ -6550,6 +6753,7 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/states') {
           const list = [];
+          const guard = wakeGuardSnapshot();
           for (const [key, st] of socialV2.conversations) {
             list.push({
               key,
@@ -6558,10 +6762,12 @@ async function main() {
               recentCount: st.recentMessages.length,
               lastWakeReason: st.lastWakeReason,
               lastAiReplyAt: st.lastAiReplyAt,
-              noActionCount: st.wakeConfig.noActionCount || 0
+              noActionCount: st.wakeConfig.noActionCount || 0,
+              // 今日额度：控制台「查看唤醒状态」直接渲染，不用自己数 wakeTimes。
+              wakeGuard: guard.conversations.find((row) => row.key === key) ?? null,
             });
           }
-          sendJson({ ok: true, conversations: list });
+          sendJson({ ok: true, day: guard.day, conversations: list });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/wake') {
@@ -7206,7 +7412,7 @@ async function main() {
               name: 'send', ok: toolOn && v.enabled,
               detail: `${v.enabled ? '语音可用' : '语音总闸已关'} · 工具${cfg.socialV2?.tools?.sendVoice === false ? '关' : '开'} · 本分钟已发 ${perMin}/${v.maxPerMinute} · 本小时 ${perHour}/${v.maxPerHour}`,
               code: toolOn && v.enabled ? '' : 'voice.tool-disabled',
-              hint: toolOn && v.enabled ? '' : '设置 → SurfCore → 语音：打开总闸与「发语音」工具',
+              hint: toolOn && v.enabled ? '' : '设置 → SurfCore → 语音 → 页顶「语音开关」：打开总闸与「发语音」工具，保存后重启 DSH',
             });
           }
           sendJson({ ok: stages.every((x) => x.ok), route, endpoint, stages });
@@ -7514,7 +7720,7 @@ async function main() {
             sendJson({
               ok: false, code: 'VOICE_DISABLED',
               error: '语音功能已关闭（总闸）',
-              hint: '设置 → SurfCore → 全部参数 → socialV2.voice.enabled 打开；或在控制台开启后再发',
+              hint: '设置 → SurfCore → 语音 → 页顶「语音开关」打开总闸；保存后重启 DSH',
             }, 403);
             return;
           }
@@ -7526,7 +7732,7 @@ async function main() {
             sendJson({
               ok: false, code: 'VOICE_TOOL_DISABLED',
               error: '工具开关未启用：qq_send_voice',
-              hint: '设置 → SurfCore → 工具 → 「发语音」打开（或 socialV2.tools.sendVoice=true），保存后重启 DSH',
+              hint: '设置 → SurfCore → 语音 → 页顶「语音开关」打开「发语音」工具（或 socialV2.tools.sendVoice=true），保存后重启 DSH',
             }, 403);
             return;
           }
@@ -7802,7 +8008,7 @@ async function main() {
               ok: false,
               code: 'VOICE_DISABLED',
               error: '语音功能已关闭（总闸）',
-              hint: '设置 → SurfCore → 全部参数 → socialV2.voice.enabled 打开；重启 DSH 后工具列表才会刷新',
+              hint: '设置 → SurfCore → 语音 → 页顶「语音开关」打开总闸；保存后重启 DSH，工具列表才会刷新',
             }, 403);
             return;
           }
@@ -7814,7 +8020,7 @@ async function main() {
               ok: false,
               code: 'VOICE_TOOL_DISABLED',
               error: '工具未启用：qq_list_voices / qq_send_voice',
-              hint: '设置 → SurfCore → 工具 → 「发语音」打开（或 socialV2.tools.sendVoice=true），保存后重启 DSH',
+              hint: '设置 → SurfCore → 语音 → 页顶「语音开关」打开「发语音」工具（或 socialV2.tools.sendVoice=true），保存后重启 DSH',
             }, 403);
             return;
           }
@@ -9090,6 +9296,7 @@ async function main() {
           const oldSessionId = state.sessions[key];
           delete state.sessions[key];
           modelAppliedSessions.delete(oldSessionId);
+          modelAppliedKeys.delete(oldSessionId);
           // 权限元数据必须与映射一起删除，否则会永久残留在 sessions.json 里。
           delete state.sessionPolicies[key];
           reverse.delete(oldSessionId);
@@ -9308,11 +9515,15 @@ async function main() {
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           noteSendSuccess(key);
+          outbox.markSent(kind, id, part);
         })
         .catch((error) => {
           lastSendFailed.set(key, true);
           noteSendFailure(key, error);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          if (isConnectionSendError(error) && outbox.push(kind, id, part)) {
+            log(`[outbox] 暂存待补发 1 条（${key}），累计 ${outbox.stats().count} 条`);
+          }
         })
         .then(() => sleep(cfg.sendDelayMs));
     }
@@ -9520,7 +9731,12 @@ async function main() {
   }
 
 
-  async function onebotSend(kind, id, message, replyToMessageId, atUserId = null) {
+  function isConnectionSendError(error) {
+    const message = String(error?.message ?? error ?? '');
+    return /ECONNREFUSED|ECONNRESET|EPIPE|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|fetch failed|socket hang up|network|WebSocket closed|closed before opening|timed? ?out|\b5\d\d\b|1006/i.test(message);
+  }
+
+  async function onebotSend(kind, id, message, replyToMessageId, atUserId = null, { fromOutbox = false } = {}) {
     const segments = [];
     if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
       const rid = String(replyToMessageId).trim();
@@ -9557,6 +9773,11 @@ async function main() {
       });
     } catch (error) {
       noteSendFailure(sendKey, error);
+      if (!fromOutbox && isConnectionSendError(error)) {
+        if (outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
+          log(`[outbox] 暂存待补发 1 条（${kind}:${id}），累计 ${outbox.stats().count} 条`);
+        }
+      }
       throw error;
     }
     const body = await res.json().catch(() => ({}));
@@ -9564,11 +9785,27 @@ async function main() {
       const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址）' : '';
       const error = new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
       noteSendFailure(sendKey, error);
+      if (!fromOutbox && isConnectionSendError(error)) {
+        if (outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
+          log(`[outbox] 暂存待补发 1 条（${kind}:${id}），累计 ${outbox.stats().count} 条`);
+        }
+      }
       throw error;
     }
     noteSendSuccess(sendKey);
+    outbox.markSent(kind, id, rawMessage);
     return body.data;
   }
+
+  const outbox = createOutbox({
+    file: path.join(STATE_DIR, 'outbox.json'),
+    isConnectionError: isConnectionSendError,
+    send: async (entry) => {
+      await onebotSend(entry.kind, entry.id, entry.text, entry.replyToMessageId, entry.atUserId, { fromOutbox: true });
+    },
+    log,
+  });
+  void outbox.flush('startup').catch((error) => log(`[outbox] 启动补发异常：${error?.message ?? error}`));
 
   // 直接发任意 OneBot 消息段（卡片/分享卡用）。文本发送仍走 sendToQQ，
   // 这样限速、审计和会话守卫不被绕过。
@@ -10249,6 +10486,11 @@ async function main() {
   // 四种 QQ 模式共用 DSH 会话，统一强制使用多模态模型 DeepSeek-V41-Flash（id: deepseek-flash）；
   // 它同时支持 text/image 输入，取代已下线的 deepseek-v4-flash-vision-exp。
   const modelAppliedSessions = new Map(); // sessionId -> 已应用的 modelSelectionEpoch
+  // sessionId -> 实际应用的「来源/provider/model/强度」指纹。仅靠 epoch 不够：
+  // 用户在 DSH 里改默认模型时 epoch 不会变，旧会话会一直命中开头的 early return。
+  const modelAppliedKeys = new Map();
+  // 已证实不认 reasoningEffort 的 provider/model：去掉参数重试，本进程内不再带。
+  const modelsWithoutEffort = new Set(); // provider/model
   // 返回 'applied' | 'not-found' | 'failed'。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
   // 本地映射已失效，调用方必须退役重建，否则每条消息都会对着一个不存在的会话重试。
@@ -10283,15 +10525,35 @@ async function main() {
   }
 
   async function ensureChatModel(sessionId) {
-    if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch) return 'applied';
-    const provider = String(cfg.dsh?.provider || 'deepseek-official');
-    const model = String(cfg.dsh?.model || 'deepseek-flash');
-    const effort = String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    // 用哪份模型：默认跟随 DSH 默认模型；读不到或控制台关了跟随才退回 config.json。
+    const followDefault = followsDefaultModel();
+    const followed = followDefault ? await resolveDefaultModel() : null;
+    const chosen = effectiveChatModel({
+      followDefault,
+      config: cfg.dsh,
+      defaultSelection: followed,
+      defaultError: followed === null ? defaultModelCache.error : '',
+    });
+    const selectionKey = `${chosen.source}|${chosen.provider}|${chosen.model}|${chosen.reasoningEffort || ''}`;
+    if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch
+        && modelAppliedKeys.get(sessionId) === selectionKey) {
+      return 'applied';
+    }
+    let provider = chosen.provider;
+    let model = chosen.model;
+    const effort = String(chosen.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    const sourceNote = chosen.source === SOURCE_DSH_DEFAULT ? '（跟随 DSH 默认模型）' : '';
+    let effortKey = `${provider}/${model}`;
     let lastError = null;
+    let fallbackTried = false;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        const result = unwrap(await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort }), 'session.selectModel');
+        const request = { sessionId, provider, model };
+        // 不传 reasoningEffort 时 DSH 用模型自己的默认档位；支持强度的模型照旧带管理员设置。
+        if (!modelsWithoutEffort.has(effortKey)) request.reasoningEffort = effort;
+        const result = unwrap(await api.sessions.selectModel(request), 'session.selectModel');
         modelAppliedSessions.set(sessionId, modelSelectionEpoch);
+        modelAppliedKeys.set(sessionId, selectionKey);
         const selectedProvider = String(result.selected.provider || provider);
         const selectedModel = String(result.selected.model || model);
         imageInputSupport = await detectImageInput(selectedProvider, selectedModel);
@@ -10302,11 +10564,51 @@ async function main() {
             log(`⚠️ 模型 ${key} 未声明 image 输入：图片/表情工具将只回文字标签，避免 ACP 拒绝`);
           }
         }
-        log(`已设置会话模型 ${sessionId} -> ${selectedProvider}/${selectedModel} (${result.selected.reasoningEffort ?? '默认'})`);
+        log(`已设置会话模型 ${sessionId} -> ${selectedProvider}/${selectedModel} (${result.selected.reasoningEffort ?? '默认'})${sourceNote}`);
+        recordModelApplied({
+          ok: true,
+          sessionId,
+          selected: {
+            provider: selectedProvider,
+            model: selectedModel,
+            reasoningEffort: String(result.selected.reasoningEffort ?? effort),
+          },
+          requested: { provider, model, reasoningEffort: effort },
+        });
         return 'applied';
       } catch (error) {
         lastError = error;
-        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${error?.message ?? error}`);
+        const message = String(error?.message ?? error);
+        // 第一次失败若是不支持这个思考强度，去掉该参数重试；模型不认 efforts 时传了只会被拒。
+        if (attempt === 1 && /does not support reasoning effort/i.test(message) && !modelsWithoutEffort.has(effortKey)) {
+          modelsWithoutEffort.add(effortKey);
+          log(`模型 ${effortKey} 不支持思考强度 ${effort}，改用模型默认档位（本进程内不再传 reasoningEffort）`);
+          continue;
+        }
+        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${message}`);
+        // 配置里的默认 provider/model 可能属于旧 DSH（如 deepseek-official 在 rc.5 已不存在）。
+        // 只在 DSH 明确说模型不可用时，从真实目录挑一个可用项重试一次。
+        if (!fallbackTried && /model-unavailable|select an available model|unknown model|model.*(?:not available|not found|unavailable)/i.test(message)) {
+          fallbackTried = true;
+          try {
+            if (!modelCatalogInFlight) {
+              modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
+                .finally(() => { modelCatalogInFlight = null; });
+            }
+            const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            const choices = catalogChoices(catalog, { priceTable: resolvePriceTable(cfg.pricing) });
+            const alt = pickCatalogFallback(choices.models, provider, model);
+            if (alt) {
+              log(`配置模型 ${provider}/${model} 不可用，回退到目录中的 ${alt.provider}/${alt.model}`);
+              provider = alt.provider;
+              model = alt.model;
+              effortKey = `${provider}/${model}`;
+              continue;
+            }
+          } catch (catalogError) {
+            log(`模型不可用，读取 DSH 目录也失败：${String(catalogError?.message ?? catalogError)}`);
+          }
+        }
         if (attempt < 2) await sleep(1000);
       }
     }
@@ -10314,8 +10616,17 @@ async function main() {
     if (/not[- ]?found/i.test(message)) {
       // 终态失败：记下 epoch，避免退役前（或退役失败时）被反复重试刷屏。
       modelAppliedSessions.set(sessionId, modelSelectionEpoch);
+      modelAppliedKeys.delete(sessionId);
+      recordModelApplied({
+        ok: false, sessionId, error: message || 'DSH 会话不存在', code: 'MODEL_SESSION_NOT_FOUND',
+        requested: { provider, model, reasoningEffort: effort },
+      });
       return 'not-found';
     }
+    recordModelApplied({
+      ok: false, sessionId, error: message || 'DSH 拒绝了模型选择', code: 'MODEL_APPLY_FAILED',
+      requested: { provider, model, reasoningEffort: effort },
+    });
     return 'failed';
   }
 
@@ -10661,6 +10972,9 @@ async function main() {
         agentToken: crypto.randomBytes(16).toString('hex'),
         bootstrapSent: false,
         wakeTimes: [],
+        // 只装「计入每天最多醒」的唤醒；回复后回访不进来（见 isFreeWakeReason）。
+        // wakeTimes 仍是全量，用于最小间隔与每分钟/每小时限频。
+        wakeBudgetTimes: [],
         sendTimes: [],
         stickerCollectTimes: [],
         pendingWakeTimer: null,
@@ -10739,6 +11053,10 @@ async function main() {
             agentToken,
             bootstrapSent: !!val.bootstrapSent,
             wakeTimes: Array.isArray(val.wakeTimes) ? val.wakeTimes : [],
+            // 旧状态没有 wakeBudgetTimes：回填成 wakeTimes 快照，升级当天不会凭空多出额度。
+            wakeBudgetTimes: Array.isArray(val.wakeBudgetTimes)
+              ? val.wakeBudgetTimes
+              : (Array.isArray(val.wakeTimes) ? val.wakeTimes.slice(-200) : []),
             sendTimes: Array.isArray(val.sendTimes) ? val.sendTimes : [],
             stickerCollectTimes: Array.isArray(val.stickerCollectTimes) ? val.stickerCollectTimes : [],
             pendingWakeTimer: null,
@@ -10864,6 +11182,7 @@ async function main() {
           agentToken: st.agentToken,
           bootstrapSent: st.bootstrapSent,
           wakeTimes: st.wakeTimes.slice(-200),
+          wakeBudgetTimes: wakeBudgetTimesOf(st).slice(-200),
           sendTimes: st.sendTimes.slice(-500),
           stickerCollectTimes: Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-500) : [],
           lastIncomingAt: st.lastIncomingAt || 0,
@@ -11258,7 +11577,46 @@ async function main() {
     return result;
   }
 
-  function tokenGuardWakeBlock(key, st, { direct = false } = {}) {
+  /** 计入「每天最多醒」的唤醒时间；旧会话没有这个字段时回落到全量 wakeTimes。 */
+  function wakeBudgetTimesOf(st) {
+    if (Array.isArray(st?.wakeBudgetTimes)) return st.wakeBudgetTimes;
+    return Array.isArray(st?.wakeTimes) ? st.wakeTimes : [];
+  }
+
+  /** 这个会话的每日唤醒上限（私聊更紧）。0 = 不限。 */
+  function wakeCapFor(key, guard = tokenGuardCfg()) {
+    const isPrivate = String(key ?? '').startsWith('private:');
+    const raw = isPrivate ? guard.privateMaxWakesPerDay : guard.maxWakesPerDay;
+    const n = Math.round(Number(raw ?? (isPrivate ? 10 : 20)));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  /** 今日唤醒额度快照：给设置页/体检看「还能不能叫醒它」。 */
+  function wakeGuardSnapshot(now = Date.now()) {
+    const g = tokenGuardCfg();
+    const dayStart = localDayStart(now);
+    const enabled = g.enabled !== false;
+    const rows = [];
+    for (const [key, st] of socialV2.conversations) {
+      const maxDay = wakeCapFor(key, g);
+      const dayCount = wakeBudgetTimesOf(st).filter((t) => Number(t) >= dayStart).length;
+      rows.push({
+        key,
+        dayCount,
+        maxDay,
+        blocked: enabled && maxDay > 0 && dayCount >= maxDay,
+        lastBlock: st.lastWakeBlock ?? null,
+      });
+    }
+    return {
+      enabled,
+      day: localDayKey(now),
+      conversations: rows,
+      blocked: rows.filter((row) => row.blocked).map((row) => row.key),
+    };
+  }
+
+  function tokenGuardWakeBlock(key, st, { direct = false, reason = '' } = {}) {
     const g = tokenGuardCfg();
     // 额度是独立的（设置页「Token 额度」），不随「Token 防爆破」总开关一起关掉。
     const usage = bridgeDailyUsage();
@@ -11274,8 +11632,19 @@ async function main() {
       };
     }
     if (g.enabled === false) return null;
-    const r = evaluateWakeBudget({ key, wakeTimes: st?.wakeTimes, now: Date.now(), guard: g, cost: null, direct });
-    return r.blocked ? { error: r.error, retryAfterMs: r.retryAfterMs || 0, reason: r.reason } : null;
+    const r = evaluateWakeBudget({
+      key,
+      wakeTimes: st?.wakeTimes,
+      budgetTimes: wakeBudgetTimesOf(st),
+      reason,
+      now: Date.now(),
+      guard: g,
+      cost: null,
+      direct,
+    });
+    return r.blocked
+      ? { error: r.error, retryAfterMs: r.retryAfterMs || 0, reason: r.reason, dayCount: r.dayCount, maxDay: r.maxDay }
+      : null;
   }
 
   /**
@@ -11923,18 +12292,22 @@ async function main() {
   }
 
   function purposePersonaText() {
+    let core = '';
     const file = activePersonaFile();
     if (file) {
-      try {
-        const text = fs.readFileSync(file, 'utf8').trim();
-        if (text) return text;
-      } catch {}
+      try { core = fs.readFileSync(file, 'utf8').trim(); } catch {}
     }
     // 没有角色包时回退旧布局的人格卡读取（roleRawContent 是桥接已有的缓存实现）。
-    try { return String(roleRawContent() ?? '').trim(); } catch { return ''; }
+    if (!core) {
+      try { core = String(roleRawContent() ?? '').trim(); } catch {}
+    }
+    const coreText = selectRoleText(core, 'v2');
+    const toneText = selectRoleText(readPersonaLayerText('tone'), 'v2');
+    // 目的/主动搭话也要带语气层；tone 与 core 相同则只留一份。
+    return [...new Set([coreText, toneText].filter(Boolean))].join('\n\n');
   }
 
-  function purposeContextBlocks() {
+  function purposeContextBlocks(key = '') {
     const roleState = readRoleState();
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）` : '';
     const identityLine = selfIdentityTextV2();
@@ -11943,7 +12316,7 @@ async function main() {
     const biliBrief = cfg.biliBridge?.enabled !== false && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.briefBlock()
       : '';
-    const memoryCardText = memoryCardPromptBlock();
+    const memoryCardText = memoryCardPromptBlock(key);
     return [
       roleLine,
       // 人格卡是动机的先验：她是什么样的人，决定她更容易被什么打动。
@@ -12151,7 +12524,7 @@ async function main() {
       ownerUin: owner,
       ownerName: String(adminIdentity()?.displayName || '').trim() || '主人',
       token,
-      contextBlocks: purposeContextBlocks(),
+      contextBlocks: purposeContextBlocks(`private:${owner}`),
       materials,
       candidates: selection.candidates,
       selected: selection.purpose,
@@ -12196,6 +12569,10 @@ async function main() {
       st.wakeTimes = Array.isArray(st.wakeTimes) ? st.wakeTimes : [];
       st.wakeTimes.push(now);
       if (st.wakeTimes.length > 200) st.wakeTimes = st.wakeTimes.slice(-200);
+      // 「目的」是真实的一段对话，计入每日唤醒额度（和 message/proactive 一样）。
+      if (!Array.isArray(st.wakeBudgetTimes)) st.wakeBudgetTimes = [];
+      st.wakeBudgetTimes.push(now);
+      if (st.wakeBudgetTimes.length > 200) st.wakeBudgetTimes = st.wakeBudgetTimes.slice(-200);
       st.lastWakeReason = 'purpose';
       saveSocialV2State();
       const result = await deliverPrompt(key, prompt);
@@ -12418,6 +12795,29 @@ async function main() {
    * @param {{manual?:boolean}=} options manual=true（设置页试发）不占用「今天已发」名额
    * @returns {Promise<{ok:boolean, retry?:boolean, reason?:string}>}
    */
+  async function probeOneBotSendable() {
+    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    try {
+      const res = await fetch(`${httpUrl}/get_status`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}),
+        },
+        body: '{}',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) return false;
+      const body = await res.json().catch(() => ({}));
+      if (body?.status !== 'ok' || body?.retcode !== 0) return false;
+      if (body?.data && body.data.online === false) return false;
+      return true;
+    } catch {
+      // HTTP 探活失败但 WS 仍连着：交给 outbox 兜底，不直接把早安判死。
+      return snowlumaHealth.connected === true;
+    }
+  }
+
   async function fireMorningGreeting({ manual = false } = {}) {
     const conf = cfg.greetings?.morning;
     if (!conf) return { ok: false, reason: '未配置' };
@@ -12476,6 +12876,10 @@ async function main() {
     const promptText = buildMorningGreetingPrompt({
       who, uin, time: timeText, theme, mode: currentMode, catchUp, token: greetingToken,
     });
+    if (!(await probeOneBotSendable())) {
+      log('[早安] OneBot 暂不可发送，10 分钟后重试（不写 lastMorningOk）');
+      return { ok: false, retry: true, reason: 'QQ 暂不可发送' };
+    }
     try {
       await deliverPrompt(key, promptText);
       if (!manual) {
@@ -12984,16 +13388,36 @@ async function main() {
     return buildPeerAliasTag({ label, qq: id, isOwner });
   }
 
-  // 记忆卡注入块：插件每次整理后原子写 memory-card-prompt-qq.md，这里按 mtime 缓存读。
-  // 不解析 JSON、不依赖插件代码——桥接和插件是不同进程，文件是唯一契约。
+  // 记忆卡注入块：优先读插件生成的「按会话」块；没有就回退旧的全局块。
+  // 群 key 在 blocks 里查不到 = 这个群没有可注入记忆（默认隔离），不回退全局。
   let memoryCardPromptCache = { key: '', text: '' };
-  function memoryCardPromptBlock() {
+  let memoryCardGroupsCache = { key: '', blocks: null };
+  function memoryCardPromptBlock(key = '') {
+    const target = String(key ?? '').trim();
+    if (target) {
+      let mapFound = false;
+      try {
+        const stat = fs.statSync(MEMORY_CARD_GROUP_PROMPTS);
+        mapFound = true;
+        const sig = `${stat.mtimeMs}:${stat.size}`;
+        if (memoryCardGroupsCache.key !== sig) {
+          const parsed = JSON.parse(fs.readFileSync(MEMORY_CARD_GROUP_PROMPTS, 'utf8'));
+          memoryCardGroupsCache = { key: sig, blocks: parsed?.blocks ?? {} };
+        }
+      } catch {}
+      if (mapFound) {
+        const text = memoryCardGroupsCache.blocks?.[target];
+        return typeof text === 'string' ? text.trim() : '';
+      }
+      // v2 会话在没有按会话 map 时绝不回退全局块：那会把别的群/私聊记忆带进来。
+      if (currentMode === 'reserved2') return '';
+    }
     try {
       const stat = fs.statSync(MEMORY_CARD_PATHS.promptQq);
-      const key = `${stat.mtimeMs}:${stat.size}`;
-      if (memoryCardPromptCache.key === key) return memoryCardPromptCache.text;
+      const sig = `${stat.mtimeMs}:${stat.size}`;
+      if (memoryCardPromptCache.key === sig) return memoryCardPromptCache.text;
       const text = fs.readFileSync(MEMORY_CARD_PATHS.promptQq, 'utf8').trim();
-      memoryCardPromptCache = { key, text };
+      memoryCardPromptCache = { key: sig, text };
       return text;
     } catch {
       return '';
@@ -13030,7 +13454,7 @@ async function main() {
     // 管理员规则放在人格卡之后、记忆之前：优先级高于人格卡，又不会被长记忆挤掉。
     const adminBlock = adminPromptLine(false);
     // 记忆卡：自己的长期记忆（角色卡是人设，记忆卡是经历）。插件已按 QQ 预算裁剪。
-    const memoryBlock = memoryCardPromptBlock();
+    const memoryBlock = memoryCardPromptBlock(key);
     return [base, adminBlock, biliBrief, memoryBlock, voiceStatusLine()].filter(Boolean).join('\n\n');
   }
   function currentRoleHint(key = '', personaMode = 'full') {
@@ -13976,7 +14400,9 @@ async function main() {
         toAt: last?.at ?? last?.time ?? null,
       };
     }
-    const packet = { messages: [], recent: [], unreadCount: st.unread.length, includedUnreadCount: 0, readThroughSeq: readThroughSeqV2(st), partial: st.unread.length > 0, folded };
+    const groupMatch = /^group:(\d+)$/.exec(String(key ?? ''));
+    const groupName = groupMatch ? String(groupProfile(key, st).name || '') : '';
+    const packet = { conversationKey: key, groupName, messages: [], recent: [], unreadCount: st.unread.length, includedUnreadCount: 0, readThroughSeq: readThroughSeqV2(st), partial: st.unread.length > 0, folded };
     const tryAdd = (field, msg) => {
       const previousThrough = packet.readThroughSeq;
       packet[field].push(compactModelMessage(msg));
@@ -14032,6 +14458,22 @@ async function main() {
       ? `消息里出现「@${name}」、有人叫「${name}」、或引用你的消息，指的都是你 —— 不要当成别人`
       : '被 @、被叫到你的昵称、或引用你的消息，指的都是你 —— 不要当成别人';
     return `【你的身份】你在 QQ 上的昵称是${label}${idText}。${callBits}；群名片可能与昵称不同，at/引用段里带${id ? ` ${id} ` : '你的 QQ 号'}就是在叫你。\n\n`;
+  }
+
+  // 每次唤醒都明确告诉模型“这是哪个群/私聊”，避免多群上下文混成一团。
+  function conversationIdentityLineV2(key) {
+    const target = String(key ?? '').trim();
+    if (!target) return '';
+    if (target.startsWith('private:')) {
+      return `【当前会话】QQ 私聊｜private:${target.slice(8)}\n\n`;
+    }
+    const m = /^group:(\d+)$/.exec(target);
+    if (!m) return '';
+    const gid = m[1];
+    const profile = groupProfile(target, getSocialV2State(target));
+    const name = String(profile.name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    const members = Number(profile.memberCount) || 0;
+    return `【当前群】QQ 群${name ? `「${name}」` : '（群名未取到）'}｜group:${gid}${members ? `｜成员 ${members}` : ''}\n\n`;
   }
 
   // 把 QQ 昵称/号落给 B站 侧：B站 会话跑在插件进程里，拿不到网关登录信息，
@@ -14174,13 +14616,15 @@ async function main() {
       : '';
     const biliLine = biliBrief || biliRecall ? `${biliBrief}${biliRecall ? `${biliRecall}\n` : ''}\n` : '';
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
-    const memoryCardText = memoryCardPromptBlock();
+    const memoryCardText = memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
+    const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
+      conversation: conversationLine.length,
       provenance: provenanceLine.length,
       admin: adminLine.length,
       bili: biliLine.length,
@@ -14235,7 +14679,7 @@ async function main() {
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-    return `${roleLine}${identityLine}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
+    return `${roleLine}${identityLine}${conversationIdentityLineV2(key)}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
   }
 
   async function sendWakePromptV2(key, reason) {
@@ -14282,8 +14726,17 @@ async function main() {
     const directWake = groupProfileNow.large
       ? (isHardDirectWakeReason(reason) || hasStrictDirectUnread(st.unread, { selfNickname }))
       : (isSmallGroupDirectWake(reason) || fishGuardDirectUnread(st) || fishGuardOwnerUnread(st) || Boolean(bypass));
-    const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake });
+    const tokenWake = tokenGuardWakeBlock(key, st, { direct: directWake, reason });
     if (tokenWake) {
+      // 记下最近一次硬拦（额度用完这类）：以前只写日志，界面上什么都看不到。
+      st.lastWakeBlock = {
+        at: Date.now(),
+        reason,
+        guardReason: tokenWake.reason ?? 'guard',
+        error: tokenWake.error,
+        dayCount: tokenWake.dayCount ?? null,
+        maxDay: tokenWake.maxDay ?? null,
+      };
       logThrottled(`token-guard:${key}`, 10 * 60_000, `[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
       if (tokenWake.retryAfterMs > 0 && !st.tokenRetryTimer) {
         const cap = tokenWake.reason === 'day' ? 10 * 60_000 : 60_000;
@@ -14359,8 +14812,17 @@ async function main() {
     st.preSleepWaitAccumMs = 0;
     cancelReplyCheckV2(key); // 本次唤醒已接管，清理仍在排队的回复检查
     const wakeTime = now;
+    // 全量时间线（间隔/限频）与计费时间线（每天最多醒）分开记：
+    // 回复后回访要更新间隔，但不能再吃每日额度。
+    const freeWake = isFreeWakeReason(reason, tokenGuardCfg());
     st.wakeTimes.push(wakeTime);
     if (st.wakeTimes.length > 200) st.wakeTimes = st.wakeTimes.slice(-200);
+    if (!freeWake) {
+      if (!Array.isArray(st.wakeBudgetTimes)) st.wakeBudgetTimes = [];
+      st.wakeBudgetTimes.push(wakeTime);
+      if (st.wakeBudgetTimes.length > 200) st.wakeBudgetTimes = st.wakeBudgetTimes.slice(-200);
+    }
+    st.lastWakeBlock = null;
     resetTokenTurn(st);   // 新的一轮醒来，重新给最多 N 条额度
     // 无论提前唤醒还是超时唤醒，都清理有限潜水定时器与 sleepUntil，避免状态残留/重复唤醒
     const prevSleepUntil = st.wakeConfig.sleepUntil;
@@ -14379,6 +14841,10 @@ async function main() {
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
       if (idx >= 0) st.wakeTimes.splice(idx, 1);
+      if (Array.isArray(st.wakeBudgetTimes)) {
+        const bidx = st.wakeBudgetTimes.lastIndexOf(wakeTime);
+        if (bidx >= 0) st.wakeBudgetTimes.splice(bidx, 1);
+      }
       saveSocialV2State();
     };
     try {
@@ -15038,6 +15504,12 @@ async function main() {
     } catch {}
   }
 
+  function groupNameForMemory(key) {
+    const m = /^group:(\d+)$/.exec(String(key ?? ''));
+    if (!m) return '';
+    return String(groupMetaCache.get(m[1])?.name || fishGroupNames.get(m[1]) || '').trim();
+  }
+
   function recordMemoryInboxEvent({ key: conversationKey, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf }) {
     try {
       const text = redactSensitiveText(String(plainContent || textContent || '').trim());
@@ -15054,6 +15526,7 @@ async function main() {
         sender: String(event.sender?.card || event.sender?.nickname || event.user_id || ''),
         senderId: String(event.user_id ?? ''),
         groupId: String(event.group_id ?? ''),
+        groupName: groupNameForMemory(conversationKey),
         isOwner,
         private: kind === 'private',
         direct: direct || isOwner,
@@ -15077,6 +15550,7 @@ async function main() {
         sender: selfNickname || '角色',
         senderId: selfUserId,
         groupId: kind === 'group' ? id : '',
+        groupName: kind === 'group' ? groupNameForMemory(key) : '',
         isSelf: true,
         private: kind === 'private',
         direct: true,
@@ -15190,6 +15664,17 @@ async function main() {
     }
 
     // 静默模式：群友消息不投递给 agent（只记录）；管理员消息照常
+    // 群里被刷屏的 # 短指令（#sl 等）：非主人、非 @/引用，直接不唤醒/不回复。
+    // 不拦 owner，也不拦带明确指代的消息；普通话题标签（#B站#）不匹配。
+    if (kind === 'group' && !isOwner && cfg.socialV2?.ignoreSpamCommands !== false
+        && !quoteTargetIsSelf && !isDirectAddress(plainContent, event, kind)
+        && isSpamCommandText(plainContent)) {
+      if (logThrottled(`ignore-command:${key}`, 10 * 60_000, `[command-spam] 忽略 ${key} 的短指令：${plainContent.slice(0, 40)}`)) {
+        appendActivity(`${key} [忽略指令] ${displayName}：${plainContent.slice(0, 80)}（同类 10 分钟内只记一次）`);
+      }
+      return;
+    }
+
     if (roleState.mode === 'silent' && !isOwner) {
       appendActivity(`${key}（静默模式）群友 ${event.user_id}：${textContent.slice(0, 80)}`);
       log(`静默模式，忽略群友消息 ${key}`);
@@ -15224,6 +15709,7 @@ async function main() {
           sessionEpoch++;
           delete state.sessions[key];
           modelAppliedSessions.delete(old);
+          modelAppliedKeys.delete(old);
           delete state.sessionPolicies[key];
           reverse.delete(old);
           collectors.delete(old);
@@ -15943,11 +16429,17 @@ async function main() {
     // 固定 3 秒重连会以每分钟 20 行的速度刷屏，真正有用的错误反而被淹没。
     let retryMs = 3000;
     let failureStreak = 0;
+    let snapshotNoticeLogged = false;
     for (;;) {
       let framesThisStream = 0;
       try {
         log('连接 DSH 事件流…');
-        for await (const envelope of api.events.mux({})) {
+        const stream = api.events.mux({});
+        if (api.eventTransport === 'snapshot' && !snapshotNoticeLogged) {
+          snapshotNoticeLogged = true;
+          log('⚠️ 宿主没有 /api/remote.mux，已降级为 /api/events 快照轮询：事件最多延迟约 1.5 秒；审批/提问若不在快照里仍可能收不到。');
+        }
+        for await (const envelope of stream) {
           framesThisStream += 1;
           const frame = envelope.payload;
           // 会话开场快照：只喂 token 账本。它含**历史** turn/end，绝不能让它们走
