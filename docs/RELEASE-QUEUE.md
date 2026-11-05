@@ -17,6 +17,58 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-06 01:45 · 记忆强度分（第 3 件：FSRS 形状的 R/S/D）
+<!-- release-batch: start=2026-11-06T01:00+08:00 end=2026-11-06T01:45+08:00 commits=7b7e767 -->
+
+**覆盖提交**：`7b7e767`
+**建议**：**0.9.0（minor）** —— 与下一批一起发；本批是 `/api/brain/*` 的**响应形状变更**
+（`S` 换语义、`D` 从 `null` 变成 1~10），对外可见。
+
+**改了什么**：
+- 新增 `src/memory-strength.js`（271 行纯函数）：FSRS 形状的强度分 —— `S` 稳固度（天）、
+  `D` 难度（1~10）、`R` 可提取性（`R=(1+19/81·t/S)^(-0.5)`，`R(t=S)=0.9`）。`S/D` 初值由
+  重要度/`kind`/`tags`/`pinned` 映射，再按「先遗忘、后复习」重放 `decaySteps` 与 `recallCount`；
+  卡面清晰度只当 R 的**上界**；保护类（钉住/最初/主人重要）不淡忘，也不给「到期/冻结天数」。
+- `src/brain-decay.js`：从「清晰度阶梯」改成接线 —— `shape:'fsrs-strength'`，`S` 变稳固度、
+  `D` 成真值，「第几天跌破冻结线」搬到 `frozenAtDay`，另给 `dueInDays`/`daysToFreeze`/
+  `assumedSpread`；曲线起点与 `strengthOf().R` 严格相等。
+- `src/brain-feed.js`：节点 `decay` 带 `S`/`D`/`label`（原来是 `S:null`）；`public/brain.html`
+  时间推演换成三块瓦片（R / 稳固度 S（天）/ 难度 D）并改掉「这条阶梯」的说明。
+- 测试：`scripts/test-memory-strength.mjs` 8 条；`test-brain-feed` / `test-brain-bridge` 同步改断言；
+  `package.json` 加 `test:memory-strength`；`scripts/test-audit.mjs` 清单加一条。
+
+**没做**：
+- 没改 `memory-card.js` 的降档规则 —— `targetClarity()` 仍是「卡面上写什么」的唯一真相，FSRS 只读数；
+- 没接「按 R 决定复习/整理」的调度；
+- 事件时刻仍是均匀假设（`assumedSpread`），不是记录里的事实；
+- 第 4 件建议候选未开工。
+
+**验证**：
+```text
+node scripts/test-memory-strength.mjs  # 8/8
+npm run test:brain                     # feed 13 / replay 11 / bridge / page 全绿
+npm run test:audit                     # dev 上 151/152（唯一失败 test-release-manifest，
+                                       # 安装清单是「已发布状态」的产物，dev 上必然对不上）
+npm run test:regressions               # 17/17
+npm run test:promise                   # 22 + 18
+node scripts/version.mjs check         # v0.8.8 一致（未 bump）
+```
+反向验证：重放次序反过来 / 去掉 `min(预测, 卡面)` 的 `min` / 让保护类也吃上界 —— 对应用例
+均变红，恢复后复绿。真实档案抽查（最近 30 条）：R/S/D 全有限、曲线单调非增、冻结日与 `exempt`
+自洽，0 异常。
+
+**重启**：需重启 QQ 桥接（响应形状变了，页面与服务端必须同版本）。`cmd.exe //c restart.bat`。
+
+**风险**：
+- **`S` 语义变更**：旧消费方把 `S` 当「冻结天数」，现在它是稳固度；页面与桥接必须同版本发
+  （`docs/PITFALLS.md` 已记）；
+- 静态页面可能被旧桥接服务，出现「没报错但数字错」的漂移 —— 重启后再点一遍页面确认；
+- 唤醒提示词未受影响（本批不碰提示词）。
+
+**case**：`docs/cases/2026-11-06-memory-strength.md`（并更新了 `docs/cases/2026-11-05-brain-live.md`）
+
+---
+
 ### 批次 2026-11-05 23:40 · 记忆能力三件（检索 / 星图 / 约定提醒）+ 表情元数据
 <!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7,671a85b,9cb5013 -->
 
@@ -46,7 +98,7 @@
   `promiseDue` 的唤醒原因按「约定正文在不在」分叉，缺正文时不再让她去「看上面」找一段不存在的话。
 
 **没做**：
-- 第 3 件 FSRS 记忆强度分（`brain-decay` 里 D 恒 null）、第 4 件建议候选，均未开工；
+- 第 3 件 FSRS 记忆强度分当时未开工（**已在下一批 `7b7e767` 完成**）、第 4 件建议候选未开工；
 - 没搬人格成长 / 自主生活 / 每日报表（判定与 SurfCore 自有等价物重复）；
 - RRF 只看排名不看分数；embedding 区分度偏小（同题两条 0.480 vs 0.432）；
 - 真实 QQ 唤醒触发**记忆检索**注入尚未观测到（唤醒路径只在夹具里验过；约定那一路已在真机验过）；
