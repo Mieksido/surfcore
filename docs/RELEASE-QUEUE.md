@@ -14,11 +14,33 @@
 
 ## 待发布
 
-> **2026-11-06 02:45：v0.9.0 已发布（本地）**，覆盖本表截至 02:10 的四个批次（记忆六件 + 表情元数据）。
-> main：`221872c`（release）+ `f5a7e83`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回（`c16325e`）。
-> `npm run test:audit` **156/156**、`test:regressions` 全过、`version.mjs check` 一致。
-> ⚠️ 尚未推送到 GitHub：本机没有 `GH_TOKEN`，且 `github.com:443` 不通 —— 推送要用 `api.github.com`
-> 的 Data API（见 `docs/RELEASE.md` 第三节第 4–6 步），拿到 token 后再补 tag ref + Release。
+### 批次 2026-11-06 03:15 · 唤醒自检脚本（`npm run check:wake`）
+<!-- release-batch: start=2026-11-06T03:05+08:00 end=2026-11-06T03:15+08:00 commits=c0cb9d2 -->
+
+**覆盖提交**：`c0cb9d2`（dev）
+**建议**：**0.9.1（patch）** —— 纯排查工具，不改运行时行为。
+
+**改了什么**：
+- 新增 `scripts/wake-selfcheck.mjs`：从 `state/context-telemetry-bridge.jsonl` 里取最近的
+  `kind:"wake"` 事件，把 `layers` 里四段记忆注入（`memoryRecall` / `associate` / `suggest` / `promise`）
+  和记忆卡正文逐行打出来，0 字节的显式标「—  0」——「没报错」和「真接上了」不是一回事。
+- `package.json` 加 `check:wake`；`--last N`、`--json`、`--file <路径>` 可选。
+- 找不到遥测文件或里面没有唤醒事件时退出码 1，并说清是「还没被叫醒过」而不是「脚本坏了」。
+
+**验证**：对当前真机遥测跑 → 正确指出最近一次唤醒是 00:18（功能上线前），四段全 0、只有记忆卡 983 字；
+  空文件用例退出码 1 且提示正确；`--json` 结构可被脚本消费。
+
+**风险**：无（只读遥测文件，不连桥接、不需要 token）。
+
+> **2026-11-06 04:20：v0.9.0 已发布到 fork `yymk-works-2026/surfcore`**，覆盖本表截至 02:10 的四个批次（记忆六件 + 表情元数据）。
+> 本地 main：`e529fc8`（release 合并）+ `8b07ce2`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回。
+> fork：main `76d585a`（单提交，父 = 上游 `0deb826`，tree `fa66cc6` 与本地 main **逐 blob 一致** 731/731）、
+> tag `v0.9.0`、Release <https://github.com/yymk-works-2026/surfcore/releases/tag/v0.9.0>。
+> 上游：PR <https://github.com/Mieksido/surfcore/pull/70>（1 commit / 49 files / +11598 −840），**等所有者合并**。
+> 之所以走 fork：本机凭据是 `yymk-works-2026`，对 `Mieksido/surfcore` 的 `permissions.push=false`（push 403）；
+> 该账号不能代替所有者登录（设备码流程在这台机器上 404），所以只能发到自己名下 + 开 PR。
+> 校验：`release-manifest --verify-ref v0.9.0` 712/712 问题 0；`version.mjs check` ✅；`test:audit` 在 dev 上
+> **155/156**（唯一红是 `test-release-manifest.mjs`：清单对应 tag，dev 尖端多两个提交，属设计内）。
 > ⚠️ `plugins/surfcore && npm test` 有一条环境性失败：`test-platform-start-host.mjs` 断言
 > 「未运行的服务停止应幂等成功」，本机有 **DSH 宿主托管着的真桥接在 3100**（杀掉会在几秒内被拉起），
 > `stop-qq-bot.ps1` 停不掉它 → `stopped:false`。插件代码与 v0.8.8 **逐字节相同**（只有版本号变了），
@@ -26,6 +48,34 @@
 
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
+
+### 批次 2026-11-06 04:30 · 唤醒自检 + 唤醒注入端到端回归（v0.9.0 之后）
+<!-- release-batch: start=2026-11-06T03:55+08:00 end=2026-11-06T04:30+08:00 commits=c0cb9d2 -->
+
+**覆盖提交**：`c0cb9d2`（check:wake）、`63cf661`（发布记录改记 fork）、`f2ada7c`、`0f9e557`（唤醒注入回归）
+**建议**：**0.9.1（patch）** —— 只有工具与测试，没有运行时行为变化。
+
+**改了什么**：
+- `scripts/test-wake-injection.mjs`：用 VM 夹具驱动**真** `buildWakePromptV2`，一次验完四段注入——
+  检索命中（含「没触发词不注入」反例）、检索与联想互斥、约定到期、私聊忌口进候选，
+  外加「约定连建两遍都带」（回归 2026-11-06 00:01 真机事故）。
+  意义：原来这几段只能等真实 QQ 消息才能观察（P1 遗留），现在变成确定性回归。
+- `scripts/test-release-manifest.mjs`：校验对象从 `HEAD` 改成**发布 tag**（HEAD 就是 tag 时仍用 HEAD），
+  并在 dev 领先时打印一行说明。原因：清单描述的是已发布的那棵树，dev 发布后继续提交是正常的，
+  以前会让整套审计恒红一条，掩盖真正的回归。
+- `scripts/test-audit.mjs` 收录新用例；`package.json` 增 `test:wake-injection`。
+
+**没做**：没有改任何运行时逻辑（`src/` 未动），所以这一批不影响线上行为。
+
+**风险**：低。唯一行为变化是审计脚本的判定口径（更贴近「清单纯粹描述发布树」的原意）。
+
+**验证**：
+```text
+node scripts/test-wake-injection.mjs   # 7/7
+npm run test:audit                     # 157/157（连跑三次一致）
+```
+
+**case**：`docs/cases/2026-11-06-wake-injection.md`
 
 ### 批次 2026-11-06 02:10 · 联想（第 6 件：唤醒时顺带想起一件快淡忘的旧事）· 已发布 v0.9.0
 <!-- release-batch: start=2026-11-06T01:55+08:00 end=2026-11-06T02:10+08:00 commits=6cd8227 -->

@@ -133,6 +133,10 @@ const tests = [
   // 联想：只挑 R 落在中间段的旧事（太牢不用提、太淡提了也白提），提过要冷却；
   // 唤醒里只读缓存，投递接受后才记冷却（和约定/建议/星图同一口径）。
   'test-memory-associate.mjs', 'test-memory-associate-bridge.mjs',
+  // 唤醒注入端到端：用 VM 夹具驱动真 bridge 的 buildWakePromptV2，验证检索 / 联想 /
+  // 约定 / 建议四段按设计进入提示词、检索与联想互斥、没触发词就不注入。
+  // 不需要真实 QQ 消息，也不读真实记忆（全部落在夹具 temp 里）。
+  'test-wake-injection.mjs',
   // 星图：事件与轨迹（编号/载荷白名单/脑区/快照衰减）+ 7 天回放（三路来源合成）+
   // 接线（/api/brain/* 的鉴权、开关落盘、SSE 推送与挂点）。夹具起临时控制台，不连真 QQ。
   'test-brain-feed.mjs', 'test-brain-replay.mjs', 'test-brain-bridge.mjs', 'test-brain-page.mjs',
