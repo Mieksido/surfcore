@@ -17,6 +17,62 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-05 23:40 · 记忆能力三件（检索 / 星图 / 约定提醒）+ 表情元数据
+<!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7 -->
+
+**覆盖提交**：`89f56f7`
+**建议**：**0.9.0（minor）** —— 新增三条对外接口面（`/api/memory/search`、`/api/brain/*`、`/api/promise/*`）与两段唤醒提示词，属于功能性新增。
+
+**改了什么**：
+- **记忆检索（第 1 件）**：`src/memory-index.js`（SQLite FTS5 + `vectors` 表、增量游标、按目录派生索引库）、
+  `src/memory-embed.js`（本地 Qwen3-Embedding 0.6B 回环客户端）、`src/memory-recall.js`（唤醒用同步 BM25 /
+  控制台用异步混合）、`scripts/memory-index.mjs`（CLI）。桥接唤醒注入 `memoryRecallLine`，
+  新增 `POST /api/memory/search`。
+- **星图（第 2 件）**：`src/brain-feed.js` / `brain-replay.js` / `brain-decay.js` + `public/brain.html`，
+  七条 `/api/brain/*` 路由（SSE 实时流、7 天回放、衰减曲线、检索探针、开关）。数据源换成本地文件
+  （记忆卡全量档 / trace / 工具日志），没有 long-memory / people.json 的那几个扇区。
+- **约定提醒（第 5 件）**：`src/promise-watch.js` 纯函数 + 60 秒 tick，认「带到期日」的约定，
+  到期当天经 `scheduleWakeV2` 排一次 `promiseDue` 唤醒。新增 `/api/promise/list|status|tick`。
+  `config.example.json` 加 `promiseWake` 段（`at`/`until` 闭开区间）。
+- **两个既有 bug**：`readBody()` 已 `JSON.parse` 又被解析一次 → `/api/memory-card/notify` 每次 500
+  （容量告警私聊从未发出）；表情「只按文字理解」的短路分支丢了 `emojiId`/`summary`，
+  下游推 CDN 与配收藏失锚。
+- **派生库串档**：`memoryIndexPathFor()` 让非当前角色目录落 `state/memory-rag/archives/<sha1>.db`，
+  测试夹具不再把生产索引重建成 2 条。
+
+**没做**：
+- 第 3 件 FSRS 记忆强度分（`brain-decay` 里 D 恒 null）、第 4 件建议候选，均未开工；
+- 没搬人格成长 / 自主生活 / 每日报表（判定与 SurfCore 自有等价物重复）；
+- RRF 只看排名不看分数；embedding 区分度偏小（同题两条 0.480 vs 0.432）；
+- 真实 QQ 唤醒触发记忆注入尚未观测到（唤醒路径只在夹具里验过）；
+- 明早 10:00 的首次真实约定投递还没发生。
+
+**验证**：
+```text
+npm run test:audit          # 151/151
+npm run test:regressions    # 17/17
+npm run test:brain          # feed / replay / bridge / page 全绿
+npm run test:promise        # 22 + 14
+node scripts/test-media-search.mjs   # 16/16
+node scripts/version.mjs check       # v0.8.8 一致（未 bump）
+```
+反向验证：去掉白名单预检查 / 把 `promiseDue` 移出 `autoWake` / `inReminderWindow` 退回只有下限 /
+回退表情短路分支，对应用例均变红，改回后复绿。
+
+**重启**：需重启 QQ 桥接（新增定时器与路由）。`cmd.exe //c restart.bat`。
+
+**风险**：
+- 唤醒提示词变长（记忆检索 ≤600 字 + 约定段），Token 成本随之上升；
+- 约定提醒是**自己发起的**唤醒，闸门漏一处就会变成「没人说话也能叫醒她」——本次全部走
+  `scheduleWakeV2`，未直连 `deliverPrompt`；
+- 星图默认开（`brain.enabled` 缺省视为 true），多一个 20 秒定时器与本地文件比对；
+- `src/bridge.js` 此前带 skip-worktree，本次提交同时解除了这一标记——之后它会被 git 正常跟踪。
+
+**case**：`docs/cases/2026-11-05-memory-rag-index.md`、`docs/cases/2026-11-05-brain-live.md`、
+`docs/cases/2026-11-05-promise-watch.md`、`docs/cases/2026-11-05-sticker-textonly-meta.md`
+
+---
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 
