@@ -85,6 +85,9 @@ import * as memoryRecall from './memory-recall.js';
 // 只做纯函数与旁挂状态文件；**投递一律走 scheduleWakeV2**，复用它的白名单/暂停/鱼群/
 // Token 额度/繁忙暂存等全套闸门 —— 绝不直接 deliverPrompt（那条路没有闸门）。
 import * as promiseWatch from './promise-watch.js';
+// 建议候选（第 4 件）：把对方随口说的「关于他自己的事」在合适的唤醒里提一句，
+// 让她顺着问、让那句话自然进 inbox（记忆卡仍然自动摄取，候选不写卡）。
+import * as ledgerSuggest from './ledger-suggest.js';
 // 星图（移植自 B 项目）：事件流 + 回放 + 检索索引统计（给「索引涨了」那类事件用）。
 import { createBrainFeed, localDay as brainLocalDay } from './brain-feed.js';
 import { createBrainReplay, shortToolName } from './brain-replay.js';
@@ -9799,6 +9802,52 @@ async function main() {
           sendJson(brainSnapshot(url.searchParams.get('key')));
           return;
         }
+        if (req.method === 'GET' && url.pathname === '/api/memory/suggestions') {
+          // 建议候选（只读，管理端）：池子里有哪些、提过几次、卡在哪。
+          // 这些是对方自己的事，和约定账本同一定位 —— 只给控制台看，不给智能体开接口。
+          const config = ledgerSuggest.normalizeSuggestConfig(cfg.ledgerSuggest ?? {});
+          const days = Number(url.searchParams.get('days'));
+          const today = brainLocalDay(Date.now());
+          sendJson({
+            ok: true,
+            file: suggestFile(),
+            config,
+            today,
+            ...ledgerSuggest.suggestSummary(suggestState(), {
+              days: Number.isFinite(days) ? Math.min(90, Math.max(1, Math.round(days))) : 7,
+              today,
+            }),
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/suggestions/probe') {
+          // 排查用：只跑抽取，不入池、不写盘。改规则时先用它验一句话。
+          const body = await readBody();
+          const text = String(body.text ?? '').slice(0, 500);
+          sendJson({
+            ok: true,
+            text,
+            facts: ledgerSuggest.extractFacts(text, {
+              minChars: ledgerSuggest.normalizeSuggestConfig(cfg.ledgerSuggest ?? {}).minChars,
+            }),
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/suggestions/dismiss') {
+          const body = await readBody();
+          const id = String(body.id ?? '').trim();
+          if (!ledgerSuggest.dismissSuggestion(suggestState(), id)) {
+            sendJson({ ok: false, code: 'suggest.not-found', error: '没有这条候选' }, 404);
+            return;
+          }
+          if (!suggestSave()) {
+            sendJson({ ok: false, code: 'suggest.save-failed', error: '状态写盘失败' }, 500);
+            return;
+          }
+          log(`[候选] 人工作废 ${id}`);
+          sendJson({ ok: true, id });
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/brain/replay') {
           const out = brainReplay.replay({
             day: String(url.searchParams.get('day') ?? ''),
@@ -13226,6 +13275,99 @@ async function main() {
   // 变成「半夜的回复检查里突然冒出上午该说的约定」）。
   const PROMISE_PENDING_TTL_MS = 10 * 60_000;
 
+  /* ── 建议候选（第 4 件） ─────────────────────────────────────────────
+   * 与约定提醒的分工不同：约定是「到期了要说」，候选是「对方刚说的关于他自己的事，
+   * 值得顺口记一句」。候选**不写记忆卡**：她顺着聊、那句话自然进 inbox，插件照常摄取。
+   * 状态文件跟当前角色走（memory/ledger-suggest.json），和账本一样是旁挂的。
+   */
+  let suggestStateCache = null;
+  let suggestStateFile = '';
+  // 这次唤醒挑中了哪几条：buildWakePromptV2 只写计划，投递被接受才计数（同约定/星图）。
+  const suggestLastPlan = new Map(); // key -> { ids, at }
+
+  function suggestFile() {
+    try {
+      const file = ledgerSuggest.suggestPathFor(MEMORY_CARD_PATHS.dir);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      return file;
+    } catch {
+      return path.join(STATE_DIR, 'ledger-suggest.json');
+    }
+  }
+
+  function suggestState() {
+    const file = suggestFile();
+    if (suggestStateCache && suggestStateFile === file) return suggestStateCache;
+    suggestStateCache = ledgerSuggest.loadSuggest(file);
+    suggestStateFile = file;
+    return suggestStateCache;
+  }
+
+  function suggestSave() {
+    try {
+      return ledgerSuggest.saveSuggest(suggestStateFile || suggestFile(), suggestState());
+    } catch (error) {
+      log(`[候选] 状态写盘失败：${error?.message ?? error}`);
+      return false;
+    }
+  }
+
+  /** 入站消息里抽「关于他自己的事」。只收私聊或主人：群聊里那句话不一定是他自己的事。 */
+  function noteSuggestCandidate({ key, text, sender, isOwner }) {
+    const config = ledgerSuggest.normalizeSuggestConfig(cfg.ledgerSuggest ?? {});
+    if (!config.enabled) return;
+    const kind = String(key).startsWith('group:') ? 'group' : 'private';
+    if (kind !== 'private' && !isOwner) return;
+    try {
+      const added = ledgerSuggest.observe(suggestState(), {
+        text, key, sender, at: Date.now(),
+      }, config);
+      if (added.length) {
+        suggestSave();
+        // 正文不进日志：候选里是对方自己的事，写进日志就等于多一份副本。
+        if (shouldAuditKey(key)) log(`[候选] 记下 ${added.length} 条关于对方的事（正文见角色 memory/ledger-suggest.json）`);
+      }
+    } catch (error) {
+      log(`[候选] 入池失败：${error?.message ?? error}`);
+    }
+  }
+
+  /** 唤醒提示词用：只读地挑一次。一次唤醒里本函数会被调两遍，绝不能在这里改状态。 */
+  function planSuggestFor(key, cardText) {
+    const config = ledgerSuggest.normalizeSuggestConfig(cfg.ledgerSuggest ?? {});
+    if (!config.enabled) return '';
+    try {
+      const plan = ledgerSuggest.planSuggest(suggestState(), {
+        key, today: brainLocalDay(Date.now()), config, cardText,
+      });
+      if (!plan.ids.length) {
+        suggestLastPlan.delete(key);
+        return '';
+      }
+      suggestLastPlan.set(key, { ids: plan.ids, at: Date.now() });
+      return plan.text;
+    } catch (error) {
+      log(`[候选] 挑选失败：${error?.message ?? error}`);
+      return '';
+    }
+  }
+
+  /** 投递被接受之后才计数：没投出去的不算「提过了」。 */
+  function settleSuggest(key) {
+    const plan = suggestLastPlan.get(key);
+    if (!plan) return;
+    suggestLastPlan.delete(key);
+    try {
+      const today = brainLocalDay(Date.now());
+      const config = ledgerSuggest.normalizeSuggestConfig(cfg.ledgerSuggest ?? {});
+      ledgerSuggest.pruneSuggest(suggestState(), { today, config });
+      ledgerSuggest.markShown(suggestState(), plan.ids, { today, config });
+      suggestSave();
+    } catch (error) {
+      log(`[候选] 计数失败：${error?.message ?? error}`);
+    }
+  }
+
   /** 账本路径跟着当前角色走（和 purpose-outreach.json 同一层次）。 */
   function promiseLedgerFile() {
     const cur = readCurrentCharacter();
@@ -13711,6 +13853,9 @@ async function main() {
       if (!opts.silent) await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
       return { ok: false, error: safeErrText };
     }
+    // 建议候选：提示词里确实带了这几条，现在才算「提过一次」（被拒/过期的不计数）。
+    // 与约定、星图同一口径，放在接受点之后。
+    settleSuggest(key);
     // 星图：投递被接受之后才算「醒了一次 / 注入了这几条旧记忆」。
     // 特意放在接受点之后：被拒、过期、模式切换拦下的投递在页面上不该显示成发生过的事。
     if (opts.wakeReason) {
@@ -15319,6 +15464,10 @@ async function main() {
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
     const memoryCardText = memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
+    // 建议候选（第 4 件）：对方最近说过、还没进卡、也没提过的「关于他自己的事」。
+    // 只读挑选：一次唤醒里这里会被调两遍，计数放到投递接受点（settleSuggest）。
+    const suggestText = planSuggestFor(key, memoryCardText);
+    const suggestLine = suggestText ? `${suggestText}\n\n` : '';
     // 约定到期（第 5 件）：**只在这个会话确实有到期约定时**才注入。
     // 待提的那几条由 promiseTick 在排唤醒时写进 promiseWakePending —— 这里只读。
     // **不要在这里删**：一次唤醒里 buildWakePromptV2 会被调用两次 —— scheduleWakeV2 先建
@@ -15356,7 +15505,7 @@ async function main() {
     const memoryRecallLine = memoryRecallText ? `${memoryRecallText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + memoryRecallLine + promiseLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + memoryRecallLine + suggestLine + promiseLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15366,6 +15515,7 @@ async function main() {
       bili: biliLine.length,
       memory: memoryCardLine.length,
       memoryRecall: memoryRecallLine.length,
+      suggest: suggestLine.length,
       promise: promiseLine.length,
       voice: voiceLine.length,
       token: tokenLine.length,
@@ -16398,6 +16548,10 @@ async function main() {
     // 记忆卡原料：在静默/审批/命令等分支之前记录，避免「主人说的话没进记忆」。
     noteSecretInInbound(key, plainContent || textContent, isOwner);
     recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
+    // 建议候选（第 4 件）：对方说的「关于他自己的事」入池；只入池，不发消息、不改记忆卡。
+    noteSuggestCandidate({
+      key, text: plainContent || textContent, sender: displayName, isOwner,
+    });
     if (kind === 'group') {
       recordFishWindow(key, displayName, event.user_id, { isOwner });
     }

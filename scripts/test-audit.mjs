@@ -127,6 +127,9 @@ const tests = [
   'test-memory-index.mjs', 'test-memory-recall.mjs',
   // 记忆强度分：FSRS 形状的 R/S/D（曲线性质、重放次序、卡面上界、保护类不淡忘）。
   'test-memory-strength.mjs',
+  // 建议候选：入站消息里抽「关于他自己的事」（精度优先）、去重、每次/每日上限、
+  // 保鲜期、接受后才计数、状态文件容错。
+  'test-ledger-suggest.mjs', 'test-ledger-suggest-bridge.mjs',
   // 星图：事件与轨迹（编号/载荷白名单/脑区/快照衰减）+ 7 天回放（三路来源合成）+
   // 接线（/api/brain/* 的鉴权、开关落盘、SSE 推送与挂点）。夹具起临时控制台，不连真 QQ。
   'test-brain-feed.mjs', 'test-brain-replay.mjs', 'test-brain-bridge.mjs', 'test-brain-page.mjs',

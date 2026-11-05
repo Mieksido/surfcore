@@ -176,6 +176,12 @@
   `maxPerDay`（3，管的是「不同会话」，同一天多条约定合成一条）、`graceDays`（2，当天没提成可顺延，过了标过期）。
   `at` 是下限、`until` 是上限，闭开区间 `[at, until)`；两者相同视为不限结束（想让她半夜也能被约定叫醒才这么配）。
   数据落在**角色目录**的 `promise-due.json`（跟着角色走，不是全局），从哪里认出约定见 `docs/cases/2026-11-05-promise-watch.md`。
+- `ledgerSuggest`：建议候选（第 4 件）。`enabled`（true）、`perWake`（1，一次唤醒最多提几条）、
+  `maxShows`（2，一条提满几次就作废）、`ttlDays`（14，超过就不提了）、`maxPerDay`（3，每会话每日上限）、
+  `minChars`（1，事实正文下限）。只从**私聊/主人**的入站消息里抽，群聊不抽；候选**不写记忆卡**，
+  只是让她在这一轮里自然接一句。数据落在角色目录的 `ledger-suggest.json`；
+  控制台 `GET /api/memory/suggestions` 可看，`POST /api/memory/suggestions/dismiss` 可作废，
+  `POST /api/memory/suggestions/probe` 只跑抽取不入池（改规则时用）。
 - `greetings.morning`：`time`（08:00）、`uin`、`name`；默认整体关。
 
 ### 1.13 ⚠️ 模板缺的四段
