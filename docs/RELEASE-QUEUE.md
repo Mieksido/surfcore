@@ -1,4 +1,4 @@
-﻿# 发布待办队列（编辑会话 → 发布会话）
+# 发布待办队列（编辑会话 → 发布会话）
 
 > 用途：编辑会话每完成一批改动，在这里追加**一个带时间戳的批次**：覆盖到哪个提交、
 > 改了哪些文件/功能、case 路径、建议版本、可直接复制的交接块。
@@ -32,12 +32,15 @@
 
 **风险**：无（只读遥测文件，不连桥接、不需要 token）。
 
-> **2026-11-06 02:45：v0.9.0 已发布（本地）**，覆盖本表截至 02:10 的四个批次（记忆六件 + 表情元数据）。
-> main：`e529fc8`（release 合并）+ `8b07ce2`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回。
-> `npm run test:audit` **156/156**、`test:regressions` 全过、`version.mjs check` 一致。
-> ⚠️ 尚未推送到 GitHub：网络其实是通的（`api.github.com` 200），卡在**凭据**——本机存的是
-> `yymk-works-2026` 的账号，对 `Mieksido/surfcore` 是 403。拿到 Mieksido 名下的 `GH_TOKEN` 后
-> 用 `node scripts/publish-via-api.mjs Mieksido/surfcore <dir> --tag v0.9.0` 即可。
+> **2026-11-06 04:20：v0.9.0 已发布到 fork `yymk-works-2026/surfcore`**，覆盖本表截至 02:10 的四个批次（记忆六件 + 表情元数据）。
+> 本地 main：`e529fc8`（release 合并）+ `8b07ce2`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回。
+> fork：main `76d585a`（单提交，父 = 上游 `0deb826`，tree `fa66cc6` 与本地 main **逐 blob 一致** 731/731）、
+> tag `v0.9.0`、Release <https://github.com/yymk-works-2026/surfcore/releases/tag/v0.9.0>。
+> 上游：PR <https://github.com/Mieksido/surfcore/pull/70>（1 commit / 49 files / +11598 −840），**等所有者合并**。
+> 之所以走 fork：本机凭据是 `yymk-works-2026`，对 `Mieksido/surfcore` 的 `permissions.push=false`（push 403）；
+> 该账号不能代替所有者登录（设备码流程在这台机器上 404），所以只能发到自己名下 + 开 PR。
+> 校验：`release-manifest --verify-ref v0.9.0` 712/712 问题 0；`version.mjs check` ✅；`test:audit` 在 dev 上
+> **155/156**（唯一红是 `test-release-manifest.mjs`：清单对应 tag，dev 尖端多两个提交，属设计内）。
 > ⚠️ `plugins/surfcore && npm test` 有一条环境性失败：`test-platform-start-host.mjs` 断言
 > 「未运行的服务停止应幂等成功」，本机有 **DSH 宿主托管着的真桥接在 3100**（杀掉会在几秒内被拉起），
 > `stop-qq-bot.ps1` 停不掉它 → `stopped:false`。插件代码与 v0.8.8 **逐字节相同**（只有版本号变了），
