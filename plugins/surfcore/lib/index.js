@@ -712,59 +712,8 @@ export function apply(ctx) {
     }
   }
 
-  // 自动拉起桥接（默认关；用户可在设置里开）。
-  // 2026-10-22：除了启动时检查一次，再加一个 2 分钟自愈轮询 ——
-  // DSH 重启后端口会变，桥接如果还连着旧端口，下一次轮询会自动重启它（而不是等用户发现）。
-  let bridgeRepairBusy = false;
-  let bridgeRepairTimer = null;
-  /**
-   * DSH 启动/自愈轮询时顺带把 QQ 拉起来（2026-11-04，用户要求「每次打开 DSH 自动启动」）：
-   *   · 只在 macOS 做：Windows 上 QQ 由 SnowLuma 自己管；
-   *   · 3000/6099 任一在听 = QQ 进程已在（可能停在登录页），不重复拉起、不弹浏览器；
-   *   · 拉起后 NapCat 若要求扫码，用户仍需扫一次（登录态没法代扫）。
-   */
-  async function ensureQqForAutoStart() {
-    if (process.platform !== 'darwin') return { skipped: true };
-    try {
-      if (await portOpen(3000) || await portOpen(6099)) return { skipped: true, reason: 'qq-running' };
-      pluginLog('autoStartBridge：QQ 未运行，按「自动启动」拉起 QQ（macOS）');
-      const result = await launchSnowLuma({ silent: true });
-      pluginLog('autoStartBridge：拉起 QQ 结果：', result?.message || result?.error || result?.skipped ? '已处理' : '未知');
-      return result;
-    } catch (error) {
-      pluginLog('autoStartBridge：拉起 QQ 失败：', error?.message ?? error);
-      return { ok: false, error: String(error?.message ?? error) };
-    }
-  }
-
-  const maybeAutoStartBridge = async () => {
-    if (bridgeRepairBusy) return;
-    bridgeRepairBusy = true;
-    try {
-      if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return;
-      // 新开关是唯一真相；旧 bridge.autoStart 已由 readUnified() 迁移，不再直接读。
-      if (!platformStartEnabled('qq')) return;
-      const status = await bridgeStatus();
-      if (status.running) {
-        const stale = bridgeStaleReason(status);
-        if (stale) {
-          pluginLog(`autoStartBridge：${stale}，自动重启`);
-          const restarted = await restartBridge({ dshWebUrl: currentDshUrl() });
-          pluginLog('autoStartBridge 重启结果：', restarted.message || restarted.error || '');
-        }
-        void ensureQqForAutoStart();
-        return;
-      }
-      pluginLog('autoStartBridge：桥接未运行，尝试启动');
-      const result = await startBridge({ dshWebUrl: currentDshUrl() });
-      pluginLog('autoStartBridge 结果：', result.message || result.error || '');
-      void ensureQqForAutoStart();
-    } catch (error) {
-      pluginLog('autoStartBridge 失败：', error?.message ?? error);
-    } finally {
-      bridgeRepairBusy = false;
-    }
-  };
+  // 手动启动（2026-11-06）：不再在 DSH 启动/定时器里自动拉起任何服务。
+  // 概览页「一键启动全部服务」按钮显式调用 start-everything，未点击就不启动。
 
   const disposers = [];
   function route(kind, pathname, handler) {
@@ -2709,7 +2658,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function startComponent(id, opts = {}) {
     try {
       if (id === 'qq') {
-        if (!platformStartEnabled('qq')) {
+        if (!opts.force && !platformStartEnabled('qq')) {
           return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「启动 QQ」并保存' });
         }
         const status = await bridgeStatus();
@@ -2727,7 +2676,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'bili') {
-        if (!platformStartEnabled('bili')) {
+        if (!opts.force && !platformStartEnabled('bili')) {
           return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'B站 启动开关已关闭', hint: '去「B站」页打开「启动 B站」并保存' });
         }
         const state = startSchedulerNow();
@@ -2890,6 +2839,18 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (action === 'start-selected' || action === 'start-components') {
       json(res, 200, await runLaunchAction('start', body));
+      return;
+    }
+    if (action === 'start-everything') {
+      // 概览页「一键启动全部服务」：不依赖各页的「启动开关」，显式点按钮即启动。
+      const bodyAll = {
+        components: ['qq', 'bili', 'pet', 'voice'],
+        force: true,
+        voicePack: body.voicePack,
+      };
+      const result = await runLaunchAction('start', bodyAll);
+      pluginLog(`[启动] 一键启动全部服务：${result.items.map((x) => `${x.label}${x.ok ? '✓' : '✗'}`).join(' ')}`);
+      json(res, 200, result);
       return;
     }
     if (action === 'stop-selected' || action === 'stop-components') {
@@ -3795,7 +3756,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 启动后异步做的事（不阻塞插件激活）
   void activateExtensions();
   enforceDshFence('插件激活');
-  void maybeAutoStartBridge();
   // 组件更新检查（2026-10-26）：DSH 起来后延迟 20 秒查一次，之后每 6 小时一次。
   // 结果缓存在 updates.json；设置页概览打开时若 showPrompt 就自动弹窗。
   try {
@@ -3808,9 +3768,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   } catch (error) {
     pluginLog('[updates] 启动检查失败：', String(error?.message ?? error));
   }
-  // 端口漂移自愈：每 2 分钟检查一次（内部会判断 autoStart 是否开启、是否有并发）。
-  bridgeRepairTimer = setInterval(() => { enforceDshFence('定时检查'); void maybeAutoStartBridge(); }, 120_000);
-  bridgeRepairTimer.unref?.();
+  // 围栏定时检查：只修 desktop-shell 配置，不自动启动任何服务（服务由概览页按钮手动启动）。
+  const fenceTimer = setInterval(() => { enforceDshFence('定时检查'); }, 120_000);
+  fenceTimer.unref?.();
   startSyncTimer();
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
@@ -3826,7 +3786,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { closeAllQrLogins(); } catch {}
     if (characterTimer) clearInterval(characterTimer);
     if (syncTimer) clearInterval(syncTimer);
-    if (bridgeRepairTimer) clearInterval(bridgeRepairTimer);
     void extensionHost.deactivateAll();
     for (const dispose of disposers) { try { dispose(); } catch {} }
   });

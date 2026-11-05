@@ -2098,6 +2098,32 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           toast(`✗ ${mode === "stop" ? "停止" : "启动"}失败：${e.message}${e.hint ? `；${e.hint}` : ""}`);
         } finally { setBusy(""); }
       };
+      // 一键启动全部服务（2026-11-06，用户要求）：DSH 打开不再自动启动任何服务，
+      // 统一由概览页这个按钮显式启动 QQ（含 SnowLuma）/ 桥接 / B站生物钟 / 桌宠 / 语音。
+      const [allBusy, setAllBusy] = useState(false);
+      const [allResult, setAllResult] = useState(null);
+      const runEverything = async (mode) => {
+        setAllBusy(mode);
+        setLaunchErr(null);
+        try {
+          const res = await api("/bridge", { method: "POST", body: {
+            action: mode === "stop" ? "stop-selected" : "start-everything",
+            components: ["qq", "bili", "pet", "voice"],
+            force: true,
+            voicePack: voiceBranch,
+          } });
+          setAllResult({ ...res, _mode: mode });
+          const bad = (res.items ?? []).filter((x) => !x.ok);
+          toast(bad.length
+            ? `✗ ${bad.length} 项失败：${bad.map((x) => x.label).join("、")}`
+            : `✓ 全部服务${mode === "stop" ? "已停止" : "已启动"}：${(res.items ?? []).map((x) => x.label).join("、")}`);
+          await reload();
+        } catch (e) {
+          setLaunchErr({ message: e.message, code: e.code, hint: e.hint });
+          toast(`✗ ${mode === "stop" ? "停止" : "启动"}失败：${e.message}${e.hint ? `；${e.hint}` : ""}`);
+        } finally { setAllBusy(false); }
+      };
+
       const muteLimit = async (ev) => {
         try {
           const code = ev.reason?.code || ev.event;
@@ -2111,6 +2137,25 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
       const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
       return h("div", null,
+        // ── 服务控制（置顶）：手动一键启动全部，替代以前的 DSH 启动自启 ──
+        h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+          h("h4", null, "服务控制 ",
+            h(StatusDot, { ok: bridge.running && bridge.ok, warn: bridge.running && !bridge.ok },
+              bridge.running ? (bridge.ok ? "QQ 桥接运行中" : "QQ 桥接异常") : "QQ 桥接未运行")),
+          h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
+            "打开 DSH 不会自动启动任何服务；点下面按钮一次性启动：QQ（含 SnowLuma 二维码）、QQ 桥接、B站生物钟、桌宠、语音。"),
+          h("div", { className: "qbw-actions" },
+            h(Btn, { onClick: () => runEverything("start"), disabled: !!busy || !!allBusy },
+              allBusy === "start" ? "启动中…" : "🚀 一键启动全部服务"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => runEverything("stop"), disabled: !!busy || !!allBusy || !bridge.running },
+              allBusy === "stop" ? "停止中…" : "一键停止全部"),
+            h(Btn, { kind: "qbw-btn3", onClick: () => act("status"), disabled: !!busy || !!allBusy }, "刷新状态")),
+          (allResult?.items ?? []).length ? h("div", { style: { marginTop: "6px" } },
+            ...(allResult.items).map((it) => h("div", { className: "qbw-kv", key: `all-${it.id}` },
+              h("span", null, `${it.ok ? "✓" : "✗"} ${it.label}`),
+              h("span", null, it.ok ? (it.message || (allResult?._mode === "stop" ? "已停止" : "已启动")) : `${it.error || "失败"}${it.hint ? `；${it.hint}` : ""}`)))) : null,
+          launchErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } },
+            `${launchErr.message}`, launchErr.hint ? h("div", { className: "qbw-hint" }, `建议：${launchErr.hint}`) : null) : null),
         h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
         // 今日唤醒额度用完 = 它不回消息的最常见原因；以前只在 state/bridge.log 里写一行。
         (() => {
