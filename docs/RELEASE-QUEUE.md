@@ -18,9 +18,9 @@
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
 ### 批次 2026-11-05 23:40 · 记忆能力三件（检索 / 星图 / 约定提醒）+ 表情元数据
-<!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7 -->
+<!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7,671a85b -->
 
-**覆盖提交**：`89f56f7`
+**覆盖提交**：`89f56f7`、`671a85b`
 **建议**：**0.9.0（minor）** —— 新增三条对外接口面（`/api/memory/search`、`/api/brain/*`、`/api/promise/*`）与两段唤醒提示词，属于功能性新增。
 
 **改了什么**：
@@ -39,20 +39,24 @@
   下游推 CDN 与配收藏失锚。
 - **派生库串档**：`memoryIndexPathFor()` 让非当前角色目录落 `state/memory-rag/archives/<sha1>.db`，
   测试夹具不再把生产索引重建成 2 条。
+- **约定提醒的第二个 bug（`671a85b`，端到端才暴露）**：一次唤醒里 `buildWakePromptV2` 会被调两次，
+  待提条目「读时即删」被第一次调用吃掉 → 真机 `layers.promise=0`：收到 `promiseDue` 却没有约定正文。
+  改成「只读不删 + 投递接受后才删」，并加 10 分钟过期窗口。
 
 **没做**：
 - 第 3 件 FSRS 记忆强度分（`brain-decay` 里 D 恒 null）、第 4 件建议候选，均未开工；
 - 没搬人格成长 / 自主生活 / 每日报表（判定与 SurfCore 自有等价物重复）；
 - RRF 只看排名不看分数；embedding 区分度偏小（同题两条 0.480 vs 0.432）；
-- 真实 QQ 唤醒触发记忆注入尚未观测到（唤醒路径只在夹具里验过）；
-- 明早 10:00 的首次真实约定投递还没发生。
+- 真实 QQ 唤醒触发**记忆检索**注入尚未观测到（唤醒路径只在夹具里验过；约定那一路已在真机验过）；
+- 首次真实约定投递已在 2026-11-06 00:13 观测到并通过（详见 case 文档）。
 
 **验证**：
 ```text
-npm run test:audit          # 151/151
+npm run test:audit          # 151/151（main 上；dev 上 150/151 —— 唯一一条是 test-release-manifest，
+                            # 安装清单按「已发布状态」生成，dev 上必然对不上，不是回归）
 npm run test:regressions    # 17/17
 npm run test:brain          # feed / replay / bridge / page 全绿
-npm run test:promise        # 22 + 14
+npm run test:promise        # 22 + 16
 node scripts/test-media-search.mjs   # 16/16
 node scripts/version.mjs check       # v0.8.8 一致（未 bump）
 ```
