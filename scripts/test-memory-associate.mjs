@@ -12,7 +12,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import {
   DEFAULT_ASSOCIATE_CONFIG, associatePathFor, associateWakeText, emptySeen, loadSeen,
-  markSeen, normalizeAssociateConfig, pickAssociations, saveSeen, seenRecently,
+  markSeen, normalizeAssociateConfig, pickAssociations, pruneSeen, saveSeen, seenRecently,
 } from '../src/memory-associate.js';
 
 const NOW = Date.parse('2026-11-06T12:00:00+08:00');
@@ -112,6 +112,21 @@ test('文案：带【忽然想起】、带「搭不上别硬提」的出口；�
   assert.ok(text.includes('别硬提'));
   assert.equal(associateWakeText([]), '');
   assert.equal(associateWakeText(null), '');
+});
+
+test('冷却记录会自清理：超过 60 天的旧行在写盘时丢掉，新行保留', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'assoc-prune-'));
+  const file = associatePathFor(dir);
+  const state = { version: 1, seen: { ancient: '2026-01-01', recent: '2026-11-01' } };
+  const saved = saveSeen(file, state);
+  assert.equal(saved.seen.ancient, undefined, '半年前的冷却记录已经没有意义了');
+  assert.equal(saved.seen.recent, '2026-11-01');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(raw.seen.ancient, undefined, '写进文件的也不能留');
+  // 基准是「现有记录里最新的一天」，所以不依赖今天，结果可复现。
+  const kept = pruneSeen({ version: 1, seen: { a: '2026-09-01', b: '2026-11-01' } }, { keepDays: 30 });
+  assert.equal(kept, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('状态文件：坏 JSON 当空、只留合法日期、路径跟角色目录', () => {

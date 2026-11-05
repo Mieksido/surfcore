@@ -78,7 +78,32 @@ export function loadSeen(file) {
   }
 }
 
+/**
+ * 清掉太老的冷却记录：`seen` 只增不减，一条记忆提过就留一行；
+ * 冷却最长 7 天，所以超过 60 天的记录已经没有任何判断价值，留着只是让文件慢慢变大。
+ *
+ * 不用 `now`，用现有记录里最新的那一天当基准 —— 这样「今天」无关，结果可复现、好测。
+ * 返回删掉的条数（原地改 state）。
+ */
+export const SEEN_KEEP_DAYS = 60;
+
+export function pruneSeen(state, { keepDays = SEEN_KEEP_DAYS } = {}) {
+  const seen = state?.seen && typeof state.seen === 'object' ? state.seen : null;
+  if (!seen) return 0;
+  const days = Object.values(seen).filter((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  if (!days.length) return 0;
+  const newest = days[days.length - 1];
+  const keep = Math.max(0, Number(keepDays) || 0);
+  let removed = 0;
+  for (const [id, day] of Object.entries(seen)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day))) { delete seen[id]; removed += 1; continue; }
+    if (daysBetween(day, newest) > keep) { delete seen[id]; removed += 1; }
+  }
+  return removed;
+}
+
 export function saveSeen(file, state) {
+  pruneSeen(state);
   const out = { version: ASSOCIATE_VERSION, seen: { ...(state?.seen ?? {}) } };
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });

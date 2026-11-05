@@ -1,4 +1,4 @@
-﻿# 数据与配置（DATA-AND-CONFIG）
+# 数据与配置（DATA-AND-CONFIG）
 
 > 这份文档回答：**配置写在哪、每个键管什么、改了什么时候生效**；**运行时数据存在哪、谁写谁读、能不能删**。
 >
@@ -164,7 +164,7 @@
 | `tts.route` + `tts.endpoints` | `local` / 8765+8767 | **本地 / 云端切换**；桌宠每次合成前重读磁盘，**桥接要重启才生效**（见 §1.11.1 末注） |
 | `trigger.who` / `groups` / `members` | `owner` / `[]` / `[]` | 谁能触发语音（默认只主人） |
 
-### 1.12 联网搜索 / 目的 / 约定提醒 / 问候
+### 1.12 联网搜索 / 目的 / 记忆（检索 · 候选 · 约定 · 联想）/ 问候
 
 - `webSearch`：`provider`（`auto` → DeepSeek 优先、Bing 兜底）、`apiKey` / `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`）、
   `model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs`。
@@ -172,6 +172,15 @@
   `quietStart/quietEnd`（23:30–08:30）、`idleThresholdMs`（主人空闲 30 分钟）、`materialWindowHours`、
   `biliWindowDays`、`maxMaterials`、`minMaterials`、`retryMs`、`maxAttempts`、`maxCandidates`、`promptMaxChars`。
   ⚠️ 新版本还有 `carrier`（qq/pet）、`petModality`、`petFallbackToQQ`，**模板里没有**。
+- `memoryRecall`：记忆检索（第 1 件）。对方提到「上次那件事」时，先从记忆库里把相关旧事捞出来，
+  再拼进唤醒提示词。目前只有一个开关 `enabled`（默认 `true`，写 `false` 就完全不做检索注入）；
+  条数/字数/触发词都在代码里的默认值上（`src/memory-recall.js`：`limit 3`、`maxChars 600`、
+  相对截断 0.45、触发词表见该文件顶部）。
+  向量服务地址是写死的 `http://127.0.0.1:8091/v1`（`src/memory-embed.js` 的 `DEFAULT_EMBED_URL`，
+  模型 `Qwen3-Embedding-0.6B`、1024 维），**不读 config** —— 换端口要改那一行；
+  `npm run memory-rag:serve` / `memory-rag:stop` / `memory-rag:probe` 是配套的三个命令。
+  服务没起时自动降级成纯关键词（`mode: 'bm25'`，`reason: 'embed-failed: …'`），检索照常但语义相近的会漏。
+  控制台 `POST /api/memory/search {query, limit, scope, maxChars, hybrid}` 可手工查。
 - `promiseWake`：约定提醒（第 5 件记忆能力的最后一块）。`enabled`（true）、`at`（10:00）、`until`（22:00）、
   `maxPerDay`（3，管的是「不同会话」，同一天多条约定合成一条）、`graceDays`（2，当天没提成可顺延，过了标过期）。
   `at` 是下限、`until` 是上限，闭开区间 `[at, until)`；两者相同视为不限结束（想让她半夜也能被约定叫醒才这么配）。

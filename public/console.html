@@ -250,6 +250,12 @@ button.planned {
   color:var(--text-secondary);
   white-space:nowrap
 }
+/* 星图是本控制台之外的一张独立页面（/brain），用 <a> 走新标签打开；
+   不挂 data-view，避免被下面的页签切换逻辑当成一个空视图。 */
+a.nav-item {
+  text-decoration:none;
+  cursor:pointer
+}
 .nav-item:hover {
   background:var(--surface-hover)
 }
@@ -1767,6 +1773,7 @@ button:active:not(:disabled) {
       <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>运行总览</button>
       <button data-view="sessions" class="nav-item"><span class="nav-icon" aria-hidden="true">☷</span>会话与审批<span class="nav-count" id="pendingCount">—</span></button>
       <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>人格与角色</button>
+      <a href="/brain" class="nav-item" target="_blank" rel="noopener"><span class="nav-icon" aria-hidden="true">✦</span>星图<span class="nav-note">记忆</span></a>
       <div class="nav-label">聊天行为</div>
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>二代仿真<span class="nav-note">V2</span></button>
       <button data-view="social-v1" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>一代仿真<span class="nav-note">V1</span></button>
