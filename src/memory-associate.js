@@ -22,7 +22,9 @@ export const DEFAULT_ASSOCIATE_CONFIG = Object.freeze({
   maxPerWake: 1,
   cooldownDays: 7,
   rMin: 0.2,
-  rMax: 0.65,
+  // 上限取 0.7 而不是更高：卡面档位本身就把 R 压在「牢 0.9 / 稳 0.8 / 差 0.7」这几档上，
+  // 只有开始真正衰减的（fuzzy 及以下）才落到 0.7 以内。0.7 正好是「开始模糊」的那一档。
+  rMax: 0.7,
   minAgeDays: 2,
   maxChars: 120,
 });
