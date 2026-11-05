@@ -405,6 +405,13 @@
     "maxCandidates": 6,
     "promptMaxChars": 16000
   },
+  "promiseWake": {
+    "enabled": true,
+    "at": "10:00",
+    "until": "22:00",
+    "maxPerDay": 3,
+    "graceDays": 2
+  },
   "greetings": {
     "enabled": false,
     "morning": {

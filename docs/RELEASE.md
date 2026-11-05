@@ -116,6 +116,7 @@ cd plugins/surfcore && npm test # 必须 0 失败
 
 | 版本 | 日期 | 仓库 | main | Release |
 | --- | --- | --- | --- | --- |
+| v0.9.0 | 2026-11-06 | surfcore（本地已发，**未推远端**） | 221872c → f5a7e83（清单） | 待推（缺 GH_TOKEN） |
 | v0.6.22 | 2026-10-28 | surfcore / surfvoicelocal / surfvoicecloud | d7f6b33 / d739c30 / f0d94d7 | https://github.com/Mieksido/surfcore/releases/tag/v0.6.22 |
 | v0.6.21 | 2026-10-28 | surfcore / surfvoicelocal / surfvoicecloud | e2bae36 / a1e24be / e914462 | https://github.com/Mieksido/surfcore/releases/tag/v0.6.21 |
 | v0.6.20 | 2026-10-28 | surfcore | 12975a3 | https://github.com/Mieksido/surfcore/releases/tag/v0.6.20 |
