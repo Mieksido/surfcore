@@ -17,6 +17,44 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-06 02:10 · 联想（第 6 件：唤醒时顺带想起一件快淡忘的旧事）
+<!-- release-batch: start=2026-11-06T01:55+08:00 end=2026-11-06T02:10+08:00 commits=6cd8227 -->
+
+**覆盖提交**：`6cd8227`
+**建议**：**0.9.0（minor）** —— 与上面两批一起发；新增一条管理端接口与一段唤醒提示词。
+
+**改了什么**：
+- 新模块 `src/memory-associate.js`：从检索命中里挑 **R 落在中间段**的旧事（间隔重复），
+  保护类不参与，同一会话 5 分钟节流，同一条记忆冷却 7 天。
+- 唤醒提示词新增【忽然想起】：只说一件事，并明确「搭不上就别硬提」。
+- 唤醒路径同步：预取在 `scheduleWakeV2` 异步踢一脚，`buildWakePromptV2` 只读缓存（10 分钟）；
+  记冷却在 `api.sessions.prompt` 被接受之后（同约定/建议/星图口径）。
+- 对方正在回忆时由第 1 件检索负责，两边不同时注入。
+- 状态落角色目录 `memory-associate.json`（原子写 0600）。
+- 控制台：`POST /api/memory/associate/preview {key}` 立刻跑一次预取看会想起什么（不写冷却）。
+- 配置段 `memoryAssociate`（enabled/maxPerWake/cooldownDays/rMin/rMax/minAgeDays/maxChars），
+  `docs/guides/DATA-AND-CONFIG.md` 已写。
+
+**没做**：
+- B 的「定时联想 + 主动发消息」：那是自主生活，本仓库刻意不搬（`purpose-engine` 已有近似）。
+- 联想不走「最相关」而是「快淡忘」，所以偶尔会想起一条和当前话题无关的旧事 ——
+  设计上就是这样（间隔重复），文案里给了「搭不上就别硬提」的出口。
+
+**风险**：
+- 预取依赖向量服务；服务没起时降级 BM25，联想仍工作但语义相近的旧事会挑不到（不报错）。
+- 提示词通常不加字（没挑到时整段不出现）；挑到时约 100 字。
+- 真机完整链路（预取 → 注入 → 接受 → 冷却）尚未观测，发布后查 `[联想]` 日志与 `memory-associate.json`。
+
+**验证**：
+```text
+npm run test:associate    # 10 + 5
+npm run test:regressions  # 全部通过
+npm run test:audit        # 155/156（唯一失败 test-release-manifest：dev 分支清单必然对不上，非回归）
+node scripts/version.mjs check   # v0.8.8 一致（未 bump）
+```
+
+**case**：`docs/cases/2026-11-06-memory-associate.md`。
+
 ### 批次 2026-11-06 01:50 · 建议候选（第 4 件：入站抽「关于他自己的事」）
 <!-- release-batch: start=2026-11-06T01:40+08:00 end=2026-11-06T01:50+08:00 commits=9ef389d -->
 
