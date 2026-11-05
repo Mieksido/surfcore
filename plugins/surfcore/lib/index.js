@@ -2056,15 +2056,16 @@ ${body}`;
       return { ok: true, already: true, opened: false, message: 'SnowLuma 已在运行且已登录' };
     }
 
-    // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
+    // 进程在、但 OneBot 没起 → 多半停在登录页：打开我们自己的扫码页（不需要 WebUI token）。
     if (await portOpen(webui.port)) {
-      const opened = openLocalUrl(webui.url);
+      const qrUrl = `${currentDshUrl()}/dsh-surfcore/qr`;
+      const opened = openLocalUrl(qrUrl);
       return {
         ok: true,
         needsLogin: true,
         opened,
-        webui: webui.url,
-        message: opened ? `SnowLuma 在登录页，已打开控制台 ${webui.url}` : `SnowLuma 在登录页：请打开 ${webui.url} 扫码`,
+        webui: qrUrl,
+        message: opened ? `QQ 在登录页，已打开扫码页 ${qrUrl}` : `QQ 在登录页：请打开 ${qrUrl} 扫码`,
       };
     }
 
@@ -2095,14 +2096,15 @@ ${body}`;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (await portOpen(webui.port)) {
-          const opened = silent ? false : openLocalUrl(webui.url);
+          const qrUrl = `${currentDshUrl()}/dsh-surfcore/qr`;
+          const opened = silent ? false : openLocalUrl(qrUrl);
           return {
             ok: true,
             started: true,
             opened,
-            webui: webui.url,
+            webui: qrUrl,
             launcher,
-            message: opened ? `已启动 SnowLuma 并打开控制台 ${webui.url}` : `已启动 SnowLuma：${webui.url}`,
+            message: opened ? `QQ 已启动，扫码页：${qrUrl}` : `QQ 已启动：${qrUrl}`,
           };
         }
       }
@@ -3741,6 +3743,59 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       }
     },
   }));
+
+  // ── 扫码登录页（2026-11-06）：不经过 NapCat WebUI 的 token 登录，直接展示 QQ 二维码。
+  // 背景：NapCat WebUI 6099 要求输入 token（登录页），用户不想每次手输；
+  // 而 NapCat 会把二维码写进 cache/qrcode.png，这里直接读它并自动刷新。
+  function napcatQrCachePath() {
+    if (process.platform !== 'darwin') return '';
+    return path.join(process.env.HOME || os.homedir(), 'Library', 'Containers', 'com.tencent.qq',
+      'Data', 'Library', 'Application Support', 'QQ', 'NapCat', 'cache', 'qrcode.png');
+  }
+  route('exact', '/dsh-surfcore/qr-image', async (req, res) => {
+    const f = napcatQrCachePath();
+    try {
+      if (!f || !fs.existsSync(f)) { res.statusCode = 404; res.end('no qr'); return; }
+      const buf = fs.readFileSync(f);
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+      res.end(buf);
+    } catch { res.statusCode = 500; res.end('qr read failed'); }
+  });
+  route('exact', '/dsh-surfcore/qr-status', async (req, res) => {
+    const loggedIn = await portOpen(3000).catch(() => false);
+    json(res, 200, { ok: true, loggedIn });
+  });
+  route('exact', '/dsh-surfcore/qr', async (req, res) => {
+    const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QQ 扫码登录</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+ .card{background:#fff;border-radius:16px;padding:28px 32px;box-shadow:0 8px 30px rgba(0,0,0,.08);text-align:center;max-width:420px}
+ h1{font-size:20px;margin:0 0 6px} p{color:#666;font-size:13px;margin:6px 0}
+ img{width:320px;height:320px;image-rendering:pixelated;border-radius:12px;border:1px solid #eee;margin:14px 0}
+ .ok{color:#16a34a;font-weight:600}
+ .tip{color:#999;font-size:12px;margin-top:10px}
+</style></head><body><div class="card" id="card">
+ <h1>用手机 QQ 扫一扫</h1>
+ <p id="msg">二维码每 3 秒自动刷新；扫码确认后本页会自动提示登录成功。</p>
+ <img id="qr" src="/dsh-surfcore/qr-image" alt="QQ 登录二维码">
+ <p class="tip">这个页面直接读 NapCat 的二维码，不需要 WebUI token。</p>
+</div>
+<script>
+ const img=document.getElementById('qr'), msg=document.getElementById('msg'), card=document.getElementById('card');
+ setInterval(()=>{ img.src='/dsh-surfcore/qr-image?t='+Date.now(); },3000);
+ setInterval(async()=>{
+   try{
+     const r=await fetch('/dsh-surfcore/qr-status',{cache:'no-store'}); const d=await r.json();
+     if(d.loggedIn){ card.innerHTML='<h1 class="ok">✅ 已登录</h1><p>QQ 已上线，本页可以关闭了。</p>'; clearInterval(window.__poll); }
+   }catch(e){}
+ },3000);
+ img.onerror=()=>{ msg.textContent='还没生成二维码：请确认 QQ 已启动（可在概览页点「一键启动全部服务」）。'; };
+</script></body></html>`;
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(html);
+  });
 
   route('exact', '/dsh-surfcore/health', async (req, res) => {
     json(res, 200, { ok: true, name, version: VERSION, privacyPolicyVersion: PRIVACY_POLICY_VERSION });
