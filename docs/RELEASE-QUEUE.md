@@ -20,7 +20,7 @@
 ### 批次 2026-11-06 02:10 · 联想（第 6 件：唤醒时顺带想起一件快淡忘的旧事）
 <!-- release-batch: start=2026-11-06T01:55+08:00 end=2026-11-06T02:10+08:00 commits=6cd8227 -->
 
-**覆盖提交**：`6cd8227`
+**覆盖提交**：`6cd8227`（+ `8c43e03` R 上限 0.65→0.70、`c9438fc` 文档同步）
 **建议**：**0.9.0（minor）** —— 与上面两批一起发；新增一条管理端接口与一段唤醒提示词。
 
 **改了什么**：
@@ -52,6 +52,10 @@ npm run test:regressions  # 全部通过
 npm run test:audit        # 155/156（唯一失败 test-release-manifest：dev 分支清单必然对不上，非回归）
 node scripts/version.mjs check   # v0.8.8 一致（未 bump）
 ```
+
+**补充（`8c43e03`）**：R 上限从 0.65 调到 0.70。原因：卡面档位本身就是 R 的上界
+（`vivid 1 / clear 0.75 / fuzzy 0.5 / trace 0.25 / forgotten 0.05`），0.65 会把「clear 档刚开始衰减」
+的那一段整个跳过，年轻档案会长期一条都挑不出来。0.70 正好落在「clear 已衰减 / fuzzy 档」上。
 
 **case**：`docs/cases/2026-11-06-memory-associate.md`。
 
