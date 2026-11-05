@@ -1,26 +1,25 @@
 // brain-decay.js · 「这条记忆接下来一年会怎么淡」的只读投影（星图的时间推演用）
 //
-// 为什么单独一个文件：星图要画 R 曲线，但 SurfCore 里没有 FSRS 那套
-// （可提取性 R / 稳固度 S / 难度 D）——那是移植计划的第 3 件。这里先用现成的
-// 清晰度阶梯反推一条等价曲线：把 vivid/clear/fuzzy/trace/forgotten 映射成保真度
-// 1 / 0.75 / 0.5 / 0.25 / 0.05，再按 applyDailyDecay 的真实规则往后推 365 天
-// （每天最多朝 targetClarity 移一档，掉了就回不来）。
+// 为什么单独一个文件：星图要画 R 曲线，而 R/S/D 这套算在 src/memory-strength.js 里
+// （移植计划第 3 件：FSRS 形状的强度分）。这个文件负责把强度分接到「记忆卡记录」上，
+// 并提供星图认识的那几个名词：清晰度档、保真度、冻结线、ltm: 编号。
 //
 // 只读：不改卡、不写盘、不联网。调用方给记录，这里只算数——所以它可以在测试里直接跑。
-import {
-  CLARITY_LABEL, CLARITY_ORDER, DAY_MS, normalizeMemoryCardConfig, targetClarity
-} from './memory-card.js';
+import { CLARITY_LABEL, CLARITY_ORDER } from './memory-card.js';
+import { CLARITY_RETRIEVABILITY, protectedRecord, retrievabilityInDays, strengthOf } from './memory-strength.js';
 
-/** 清晰度档 → 保真度。数值只用于画曲线和比较，不代表真实概率。 */
-export const R_OF_CLARITY = Object.freeze({ vivid: 1, clear: 0.75, fuzzy: 0.5, trace: 0.25, forgotten: 0.05 });
+/** 清晰度档 → 保真度。数值只用于画曲线和比较，不代表真实概率；在强度模型里它是「卡面承认的上界」。 */
+export const R_OF_CLARITY = CLARITY_RETRIEVABILITY;
 
-/** 冻结线：保真度跌破它就算「想不起来了」（fuzzy 之下）。 */
+/** 冻结线：R 跌破它就算「想不起来了」（fuzzy 之下）。 */
 export const FREEZE_BELOW = 0.5;
 
 /** 星图里的记忆节点编号前缀。全量档的 id 直接跟在后面（ltm:mem_xxx）。 */
 export const UNIT_PREFIX = 'ltm:';
 
 const DAY_CAP = 365;
+
+export { protectedRecord };
 
 export function clarityOf(record) {
   const c = record?.clarity;
@@ -36,18 +35,6 @@ export function clarityLabelOf(clarity) {
   return CLARITY_LABEL[clarity] ?? String(clarity ?? '');
 }
 
-/**
- * 这条记忆是不是「保底」的：钉住 / 标记为最初 / 主人重要。
- * 与 memory-card.js 的 targetClarity 判据保持一致，否则曲线会和实际降档对不上。
- */
-export function protectedRecord(record, config = {}) {
-  if (!record) return false;
-  if (record.pinned || record.isInitial) return true;
-  const cfg = normalizeMemoryCardConfig(config);
-  const tags = Array.isArray(record.tags) ? record.tags : [];
-  return tags.includes('owner') && (Number(record.importance) || 0) >= cfg.minOwnerImportance;
-}
-
 export function memoryUnitId(id) {
   const s = String(id ?? '');
   return s ? `${UNIT_PREFIX}${s}` : '';
@@ -61,51 +48,53 @@ export function recordIdOfUnit(unit) {
   return /^[A-Za-z0-9:_.\-]{1,80}$/.test(id) ? id : null;
 }
 
-/** 现在的保真度（按记录当前的清晰度档，不看未来）。 */
+/** 卡面档位对应的保真度（不算时间；要「现在有多牢」请用 strengthOf 的 R）。 */
 export function recordFidelity(record) {
   return fidelityOf(clarityOf(record));
 }
 
 /**
- * 往后推 days 天，按 applyDailyDecay 的规则模拟清晰度档的移动。
- * 返回 { R0, S, D, clarity, clarityLabel, freezeBelow, exempt, frozenAtDay, points }。
- * S = 保真度跌破冻结线还需要的天数（null = 一年内不会掉）；D 恒为 null（没有 FSRS 的难度维度）。
+ * 往后推 days 天：这条记忆的 R 会怎么走。
+ *
+ * 返回 `{ R0, S, D, clarity, clarityLabel, freezeBelow, exempt, frozenAtDay, dueInDays, daysToFreeze, points }`：
+ *   · `R0` 现在的可提取性（= `points[0].R`）；
+ *   · `S` 稳固度（天，FSRS 的 S；越大越经放）；`D` 难度（1~10，FSRS 的 D）；
+ *   · `frozenAtDay` 第几天跌破冻结线（**0 = 现在就在线下**，null = 这一年里不会掉）；
+ *   · `exempt` 受保护（钉住 / 最初 / 主人重要）——它们的曲线不掉到线下，`frozenAtDay` 恒为 null；
+ *   · `dueInDays` 按预测曲线算的「该再看一眼」，和 `frozenAtDay` 的口径不同（后者看卡面承认到哪一步）。
  */
-export function decayCurveFor(record, { now = Date.now(), config = {}, days = DAY_CAP, freezeBelow = FREEZE_BELOW } = {}) {
+export function decayCurveFor(record, { now = Date.now(), config = {}, days = DAY_CAP, freezeBelow = FREEZE_BELOW, targetRetention } = {}) {
   const raw = Number(days);
   const total = Number.isFinite(raw) ? Math.max(0, Math.min(DAY_CAP, Math.round(raw))) : DAY_CAP;
+  const strength = strengthOf(record, { now, config, freezeBelow, targetRetention });
+  const exempt = strength.protected === true;
   const startClarity = clarityOf(record);
-  const exempt = protectedRecord(record, config);
-  const cfg = normalizeMemoryCardConfig(config);
-  let index = Math.max(0, CLARITY_ORDER.indexOf(startClarity));
   const points = [];
   let frozenAtDay = null;
   for (let d = 0; d <= total; d += 1) {
-    const clarity = CLARITY_ORDER[index] ?? 'forgotten';
-    const R = fidelityOf(clarity);
-    points.push({ day: d, R: Math.round(R * 10000) / 10000 });
+    const R = Math.round(retrievabilityInDays(strength, d) * 10000) / 10000;
+    points.push({ day: d, R });
     if (frozenAtDay === null && !exempt && R < freezeBelow) frozenAtDay = d;
-    // 明天怎么走：目标档由 targetClarity 在「未来那一刻」算出来，我们只朝它挪一档。
-    let target;
-    try {
-      target = targetClarity(record, cfg, now + d * DAY_MS);
-    } catch {
-      target = clarity;
-    }
-    const tIndex = CLARITY_ORDER.indexOf(target);
-    if (tIndex > index) index += 1;
-    else if (tIndex >= 0 && tIndex < index) index -= 1;
   }
   return {
     ok: true,
-    R0: fidelityOf(startClarity),
-    S: frozenAtDay,
-    D: null,
+    shape: 'fsrs-strength',
+    R0: points[0]?.R ?? strength.R,
+    S: strength.S,
+    D: strength.D,
+    label: strength.label,
+    observedR: strength.observedR,
     clarity: startClarity,
     clarityLabel: clarityLabelOf(startClarity),
     freezeBelow,
     exempt,
     frozenAtDay,
+    dueInDays: strength.dueInDays,
+    daysToFreeze: strength.daysToFreeze,
+    elapsedDays: strength.elapsedDays,
+    reviews: strength.reviews,
+    lapses: strength.lapses,
+    assumedSpread: strength.assumedSpread,
     points
   };
 }

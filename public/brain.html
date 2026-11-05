@@ -385,7 +385,7 @@ const REGIONS = [
  fns:[
   {name:'每日衰减',desc:'每天算一次目标清晰度，往目标挪一档（不是一次跌到底）。',src:'src/memory-card.js · applyDailyDecay'},
   {name:'冻结与豁免',desc:'R < 0.5 冻结；钉住的、初次见面的、主人条目不会淡忘。',params:[['冻结线','R < 0.5']],src:'src/brain-decay.js'},
-  {name:'曲线推演',desc:'「时间推演」页的曲线就是这条阶梯往后推一年，不是 FSRS 的 S/D。',src:'src/brain-decay.js · decayCurveFor'}]},
+  {name:'曲线推演',desc:'「时间推演」页的 R 来自强度分（R/S/D）：随时间按幂律衰减，卡面清晰度只当上界。',src:'src/brain-decay.js · decayCurveFor'}]},
 {id:'limbic',name:'情绪',color:'#d77bff',c:[255,95,150],r:[78,55,60],fill:40,
  desc:'人格层（底子 / 语气 / 场景）在这一格：图中只显示层名和字数，正文不上图。',
  fns:[
@@ -920,7 +920,7 @@ function mutate(ev){
     const n = NODE.get(d.node); if(n) setTimeout(() => removeNode(n), 1600);
   } else if(ev.type === 'decay.review' && typeof d.unit === 'string'){
     const n = NODE.get(d.unit);
-    if(n && n.rec && d.after){ n.rec.decay = Object.assign({}, n.rec.decay || {}, { R: d.after.R, S: d.after.S, frozen: false }); const keep = n.alpha; restyle(n); n.alpha = keep; }
+    if(n && n.rec && d.after){ const merged = Object.assign({}, n.rec.decay || {}, { R: d.after.R, frozen: false }); if(typeof d.after.S === 'number') merged.S = d.after.S; if(typeof d.after.D === 'number') merged.D = d.after.D; n.rec.decay = merged; const keep = n.alpha; restyle(n); n.alpha = keep; }
   } else if(ev.type === 'suggest.adopted' && typeof d.node === 'string'){
     const n = NODE.get(d.node); if(n && n.rec){ n.rec.state = 'adopted'; restyle(n); }
   }
@@ -1695,7 +1695,7 @@ function drawCurveView(n){
   timeBody.append(
     el('div', {class:'eyebrow'}, el('i', {c:n.statusColor || n.color}), '记忆卡条目'),
     el('h2', {text: short(n.rec.text || n.rec.title || n.name, 60), style:'font-size:17px'}),
-    el('div', {class:'tiles'}, el('div', {class:'tile'}, el('b', {text: num(d.R0)}), el('span', {text:'现在的 R'})), el('div', {class:'tile'}, el('b', {text: d.exempt ? '—' : (typeof d.S === 'number' ? String(d.S) : '—')}), el('span', {text:'降到冻结线（第几天）'})), el('div', {class:'tile'}, el('b', {text: num(d.freezeBelow, 2)}), el('span', {text:'冻结线 R'}))),
+    el('div', {class:'tiles'}, el('div', {class:'tile'}, el('b', {text: num(d.R0)}), el('span', {text:'现在的 R'})), el('div', {class:'tile'}, el('b', {text: num(d.S, 1)}), el('span', {text:'稳固度 S（天）'})), el('div', {class:'tile'}, el('b', {text: num(d.D, 1)}), el('span', {text:'难度 D'})), el('div', {class:'tile'}, el('b', {text: num(d.freezeBelow, 2)}), el('span', {text:'冻结线 R'}))),
     el('p', {class: d.exempt ? 'hint' : 'warn', style:'margin:0 0 6px', text: verdict}));
   const cv = el('canvas', {id:'curve', role:'img', 'aria-label': 'R 随时间变化的曲线：' + verdict});
   timeBody.append(cv);
@@ -1704,7 +1704,7 @@ function drawCurveView(n){
   rg.addEventListener('input', () => { curveDay = +rg.value; paintCurve(cv, d, fb); setOut(); });
   const setOut = () => { const p = d.points[Math.min(d.points.length - 1, curveDay)] || {}; out.textContent = `第 ${curveDay} 天 · R ${num(p.R, 3)}${typeof p.R === 'number' && p.R < fb && !d.exempt ? ' · 已冻结' : ''}`; };
   timeBody.append(el('div', {class:'dayrow'}, out), rg,
-    el('p', {class:'hint', text:`红色虚线是冻结线 R = ${fb}。被想起一次 R 回到 1、S 变大，曲线会整体变平。只读：这里不会改变任何记忆。`}));
+    el('p', {class:'hint', text:`红色虚线是冻结线 R = ${fb}。被想起一次 S 变大（曲线整体变平）；卡面清晰度只是 R 的上界。只读：这里不会改变任何记忆。`}));
   setOut();
   requestAnimationFrame(() => paintCurve(cv, d, fb));
 }

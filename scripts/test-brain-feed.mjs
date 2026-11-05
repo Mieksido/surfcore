@@ -142,13 +142,15 @@ const rec = (id, extra = {}) => ({
   tags: [], importance: 10, clarity: 'clear', createdAt: at(0), lastSeenAt: at(0), ...extra,
 });
 
-test('snapshot：记忆卡条目变成 ltm 节点，衰减只给 R/frozen/exempt', () => {
+test('snapshot：记忆卡条目变成 ltm 节点，衰减给 R/S/D', () => {
   const dir = tempDir();
   const f = feed(dir);
   const out = f.snapshot({
     records: [
       rec('mem_owner', { kind: 'owner', speaker: '主人', importance: 70, tags: ['owner'], clarity: 'vivid', conversationKey: 'private:3532251800' }),
+      // 夹具里的 at(0) 是 2026-05-20，对「现在」来说已经是半年前：没再提过的 fuzzy 早该掉下去了。
       rec('mem_old', { clarity: 'fuzzy', conversationKey: 'private:3532251800' }),
+      rec('mem_fresh', { clarity: 'fuzzy', createdAt: Date.now() - 60000, lastSeenAt: Date.now() - 60000, conversationKey: 'private:3532251800' }),
       rec('mem_gone', { clarity: 'forgotten', conversationKey: 'desktop:coo' }),
     ],
     keys: ['private:3532251800', 'desktop:coo', 'private:3532251800'],
@@ -157,13 +159,19 @@ test('snapshot：记忆卡条目变成 ltm 节点，衰减只给 R/frozen/exempt
   assert.equal(out.ok, true);
   const byId = new Map(out.nodes.map((n) => [n.id, n]));
   assert.equal(byId.get('ltm:mem_owner').decay.exempt, true, '主人 + 高重要度是免衰减的');
-  assert.equal(byId.get('ltm:mem_owner').decay.R, 1);
+  assert.equal(byId.get('ltm:mem_owner').decay.R, 1, '免衰减的记忆就报卡面档位（vivid）');
   assert.equal(byId.get('ltm:mem_owner').cat, 'owner');
-  assert.equal(byId.get('ltm:mem_old').decay.R, 0.5);
-  assert.equal(byId.get('ltm:mem_old').decay.frozen, false, '0.5 还没到冻结线（冻结线是「低于 0.5」）');
+  // 刚提过的 fuzzy：卡面上界 0.5，正好压在线上（冻结线是「低于 0.5」）
+  assert.equal(byId.get('ltm:mem_fresh').decay.R, 0.5);
+  assert.equal(byId.get('ltm:mem_fresh').decay.frozen, false, '0.5 还没到冻结线');
+  // 半年前就没再提过的 fuzzy：预测已经低于卡面，按预测算 —— 已经在线下
+  assert.ok(byId.get('ltm:mem_old').decay.R < 0.5, `久没提过的该掉到线下：R=${byId.get('ltm:mem_old').decay.R}`);
+  assert.equal(byId.get('ltm:mem_old').decay.frozen, true);
   assert.equal(byId.get('ltm:mem_gone').decay.frozen, true);
   assert.equal(byId.get('ltm:mem_gone').clarityLabel, '已遗忘');
-  assert.equal(byId.get('ltm:mem_old').decay.S, null, '阶梯模型没有 FSRS 的 S：给 null 比编一个数字诚实');
+  // S/D 是真的数字了（第 3 件：强度分），不再是「阶梯模型没有 S」的 null
+  assert.ok(byId.get('ltm:mem_old').decay.S > 0 && byId.get('ltm:mem_old').decay.D >= 1, 'S/D 要给真数字');
+  assert.match(byId.get('ltm:mem_old').decay.label, /^(牢|稳|松|摇|将忘)$/);
   assert.deepEqual(out.keys.map((k) => k.key), ['desktop:coo', 'private:3532251800'], '会话键去重并排序');
   assert.equal(out.keys.find((k) => k.key === 'private:3532251800').label, '主人');
   assert.equal(out.keys.find((k) => k.key === 'desktop:coo').label, 'desktop:coo', '没有名字就退回键本身');
@@ -204,18 +212,33 @@ test('snapshot：超过上限只留最新的那批，并如实报告砍掉多少
 });
 
 // ── 遗忘曲线 ────────────────────────────────────────────────────────────────
-test('decayCurve：按清晰度阶梯逐日推，冻结线是「低于 0.5」', () => {
+test('decayCurve：R 走强度分曲线（不是那条清晰度阶梯），冻结线是「低于 0.5」', () => {
   const dir = tempDir();
   const f = feed(dir);
-  const record = rec('mem_old', { clarity: 'fuzzy', lastSeenAt: at(0), createdAt: at(0) });
-  const curve = f.decayCurve({ unit: 'ltm:mem_old', findRecord: () => record, days: 5 });
+  // 刚提过的 fuzzy：卡面上界 0.5，这 5 天里预测还没追平它 —— 曲线是条平台，不该给冻结日
+  const fresh = rec('mem_fresh', { clarity: 'fuzzy', createdAt: Date.now() - 60000, lastSeenAt: Date.now() - 60000 });
+  const curve = f.decayCurve({ unit: 'ltm:mem_fresh', findRecord: () => fresh, days: 5 });
   assert.equal(curve.ok, true);
-  assert.equal(curve.shape, 'clarity-ladder', '页面上要说明白：这不是 FSRS');
-  assert.equal(curve.R0, 0.5);
-  assert.equal(curve.D, null);
+  assert.equal(curve.shape, 'fsrs-strength', '页面要据此说明：R 来自强度分');
+  assert.equal(curve.R0, 0.5, '卡面 fuzzy 是上界');
+  assert.ok(curve.S > 0 && curve.D >= 1 && curve.D <= 10, `S/D 要是真数字：S=${curve.S} D=${curve.D}`);
   assert.equal(curve.points.length, 6, '0..5 天都给点');
-  assert.deepEqual(curve.points.map((p) => p.R), [0.5, 0.25, 0.05, 0.05, 0.05, 0.05]);
-  assert.equal(curve.frozenAtDay, 1);
+  assert.equal(curve.points[0].R, curve.R0, '推演曲线的起点必须等于 R0');
+  assert.equal(curve.frozenAtDay, null, '0.5 正好在线上（冻结线是「低于 0.5」）');
+  // 卡面已经认了遗忘的：现在就在线下 → 冻结日 0
+  const gone = rec('mem_gone', { clarity: 'forgotten', createdAt: Date.now() - 60000, lastSeenAt: Date.now() - 60000 });
+  assert.equal(f.decayCurve({ unit: 'ltm:mem_gone', findRecord: () => gone, days: 5 }).frozenAtDay, 0);
+  // 五天前提过、卡面 clear：现在被上界压在 0.75，但预测再过二十多天会掉到线下
+  const seen = rec('mem_seen', { clarity: 'clear', createdAt: Date.now() - 60 * 86400000, lastSeenAt: Date.now() - 5 * 86400000 });
+  const seenCurve = f.decayCurve({ unit: 'ltm:mem_seen', findRecord: () => seen, days: 365 });
+  assert.equal(seenCurve.R0, 0.75, '卡面 clear 是上界');
+  assert.ok(seenCurve.frozenAtDay > 0 && seenCurve.frozenAtDay <= 365, `该在一年内给出冻结日：${seenCurve.frozenAtDay}`);
+  assert.equal(seenCurve.dueInDays, 0, '预测已经过了 0.9，就是「现在该看一眼」');
+  // 半年前就没再提过的 clear：预测早就低于卡面了 —— 现在就在线下
+  const stale = rec('mem_stale', { clarity: 'clear', createdAt: at(0), lastSeenAt: at(0) });
+  const staleCurve = f.decayCurve({ unit: 'ltm:mem_stale', findRecord: () => stale, days: 365 });
+  assert.ok(staleCurve.R0 < 0.5, `久没提过的现在就在线下：R0=${staleCurve.R0}`);
+  assert.equal(staleCurve.frozenAtDay, 0, '已经在线下就没有「第几天」可言');
   f.closeAll();
 });
 

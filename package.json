@@ -43,6 +43,7 @@
     "test:memory-card-wiring": "node scripts/test-memory-card-wiring.mjs",
     "memory-index": "node scripts/memory-index.mjs",
     "test:memory-index": "node scripts/test-memory-index.mjs",
+    "test:memory-strength": "node scripts/test-memory-strength.mjs",
     "test:brain": "node scripts/test-brain-feed.mjs && node scripts/test-brain-replay.mjs && node scripts/test-brain-bridge.mjs && node scripts/test-brain-page.mjs",
     "memory-rag:serve": "powershell -NoProfile -ExecutionPolicy Bypass -File ../memory-rag/start-embed.ps1",
     "memory-rag:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File ../memory-rag/stop-embed.ps1",

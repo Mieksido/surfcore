@@ -146,9 +146,11 @@ await test('页面与三条只读接口：形状对得上页面要的东西', as
     assert.equal(curve.status, 200);
     const curveBody = JSON.parse(curve.body);
     assert.equal(curveBody.ok, true);
-    assert.equal(curveBody.shape, 'clarity-ladder', '页面要据此说明这不是 FSRS');
-    assert.equal(curveBody.points.length, 366, '一年 365 天 + 第 0 天');
-    assert.equal(curveBody.D, null);
+    assert.equal(curveBody.shape, 'fsrs-strength', '页面要据此说明：R 来自强度分');
+    assert.ok(curveBody.points.length === 366, '一年 365 天 + 第 0 天');
+    assert.ok(curveBody.S > 0 && curveBody.S <= 3650, `稳固度要是真数字：S=${curveBody.S}`);
+    assert.ok(curveBody.D >= 1 && curveBody.D <= 10, `难度要是 1~10：D=${curveBody.D}`);
+    assert.equal(curveBody.R0, curveBody.points[0].R, '推演曲线的起点必须等于 R0');
 
     const missing = await call('GET', `/api/brain/decay-curve?unit=${encodeURIComponent('ltm:mem_不存在')}`);
     assert.equal(missing.status, 404);

@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   FREEZE_BELOW, clarityLabelOf, clarityOf, decayCurveFor, memoryUnitId, protectedRecord, recordFidelity, recordIdOfUnit
 } from './brain-decay.js';
+import { strengthOf } from './memory-strength.js';
 
 const DAY = 86400000;
 
@@ -441,7 +442,13 @@ export function createBrainFeed({
         if (k && ck !== k) continue;
         let exempt = false;
         let R = 1;
-        try { exempt = protectedRecord(r, config); R = recordFidelity(r); } catch { exempt = false; R = 1; }
+        let strength = null;
+        try {
+          strength = strengthOf(r, { now: nowMs(), config, freezeBelow });
+          exempt = strength.protected === true;
+          R = strength.R;
+        } catch { strength = null; exempt = false; R = 1; }
+        if (!strength) { try { exempt = protectedRecord(r, config); R = recordFidelity(r); } catch { exempt = false; R = 1; } }
         all.push({
           id: memoryUnitId(r.id), kind: 'ltm', key: ck,
           at: firstTime(r.lastSeenAt, r.createdAt),
@@ -455,8 +462,15 @@ export function createBrainFeed({
           createdAt: r.createdAt ?? null, lastSeenAt: r.lastSeenAt ?? null,
           tags: Array.isArray(r.tags) ? r.tags.slice(0, 8).map(String) : [],
           pinned: !!r.pinned, initial: !!r.isInitial, archived: !!r.archivedAt,
-          // 页面只读 decay.R / frozen / exempt 来定大小和亮度，S 留给时间推演面板单独算
-          decay: { R, S: null, frozen: R < freezeBelow && !exempt, exempt }
+          // 页面只读 decay.R / frozen / exempt 来定大小和亮度；S/D 给时间推演面板和悬浮提示用
+          decay: {
+            R,
+            S: strength ? strength.S : null,
+            D: strength ? strength.D : null,
+            label: strength ? strength.label : null,
+            frozen: R < freezeBelow && !exempt,
+            exempt
+          }
         });
       }
       const c = capLatest(all);
@@ -489,7 +503,7 @@ export function createBrainFeed({
   // ── 遗忘曲线（/api/brain/decay-curve） ─────────────────────────────────────
   /**
    * unit：ltm:<记忆 id>。findRecord(id) → 全量档里的那条记录；找不到返回 null（调用方回 404）。
-   * 曲线按 memory-card 的清晰度阶梯推，不是 FSRS 的 R/S/D；FSRS 是移植计划后面的事。
+   * R/S/D 走 src/memory-strength.js 的强度分（卡面清晰度只当上界用），曲线见 decayCurveFor。
    */
   function decayCurve({ unit, findRecord = null, config = {}, days = 365 } = {}) {
     const id = recordIdOfUnit(unit);
@@ -498,7 +512,7 @@ export function createBrainFeed({
     try { record = findRecord ? findRecord(id) : null; } catch { record = null; }
     if (!record) return null;
     const curve = decayCurveFor(record, { now: nowMs(), config, days });
-    return Object.assign({ unit: memoryUnitId(id), shape: 'clarity-ladder' }, curve);
+    return Object.assign({ unit: memoryUnitId(id) }, curve);
   }
 
   loadTodayCounts();

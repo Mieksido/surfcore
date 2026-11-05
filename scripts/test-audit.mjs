@@ -125,6 +125,8 @@ const tests = [
   'test-memory-card.mjs', 'test-memory-card-wiring.mjs', 'test-memory-sharing.mjs',
   // 记忆检索：分词/增量/换档重建/BM25 排序 + 向量混合/降级；唤醒注入的触发词与阈值。
   'test-memory-index.mjs', 'test-memory-recall.mjs',
+  // 记忆强度分：FSRS 形状的 R/S/D（曲线性质、重放次序、卡面上界、保护类不淡忘）。
+  'test-memory-strength.mjs',
   // 星图：事件与轨迹（编号/载荷白名单/脑区/快照衰减）+ 7 天回放（三路来源合成）+
   // 接线（/api/brain/* 的鉴权、开关落盘、SSE 推送与挂点）。夹具起临时控制台，不连真 QQ。
   'test-brain-feed.mjs', 'test-brain-replay.mjs', 'test-brain-bridge.mjs', 'test-brain-page.mjs',
