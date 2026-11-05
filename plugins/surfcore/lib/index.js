@@ -678,15 +678,35 @@ export function apply(ctx) {
     try {
       if (!fs.existsSync(DSH_FENCE_PROFILE)) return;
       const text = fs.readFileSync(DSH_FENCE_PROFILE, 'utf8');
-      if (/openBrowser:[ \t]*true/.test(text)) return;
+      // DSH 2.0.18 约束：openBrowser=true 只在 mode=compatibility 合法。
+      // 非法组合（extended+true）会让 DSH 启动失败进入安全模式，所以这里只修 openBrowser、绝不改 mode。
+      const block = text.match(/- id: desktop-shell[\s\S]*?(?=\n- id:|$)/);
+      const blockText = block ? block[0] : '';
+      const modeMatch = blockText.match(/mode:\s*(\w+)/);
+      const mode = modeMatch ? modeMatch[1] : 'compatibility';
+      const obMatch = blockText.match(/openBrowser:\s*(true|false)/);
+      const current = obMatch ? obMatch[1] : '';
+      const want = mode === 'compatibility' ? 'true' : 'false';
+      if (current === want) return;
       const stamp = Date.now();
       if (stamp - lastFenceFixAt < 30_000) return;
       lastFenceFixAt = stamp;
       fs.copyFileSync(DSH_FENCE_PROFILE, `${DSH_FENCE_PROFILE}.plugin-bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-      let next = text.replace(/(openBrowser:[ \t]*)false/, '$1true');
-      if (next === text) next = `${text}\n- id: desktop-shell\n  config:\n    openBrowser: true\n    networkExposure: loopback\n`;
+      let next;
+      if (blockText && obMatch) {
+        next = text.replace(/(openBrowser:\s*)(true|false)/, `$1${want}`);
+      } else if (blockText) {
+        next = text.replace(/(mode:\s*\w+)/, `$1\n    openBrowser: ${want}`);
+      } else {
+        next = `${text}\n- id: desktop-shell\n  config:\n    openBrowser: ${want}\n`;
+      }
+      if (next === text) return;
       fs.writeFileSync(DSH_FENCE_PROFILE, next);
-      pluginLog(`[围栏] desktop-shell.openBrowser 被改坏，已自动修回 true${reason ? `（${reason}）` : ''}`);
+      if (mode === 'compatibility') {
+        pluginLog(`[围栏] 兼容模式缺少 openBrowser=true，已补上，桥接才能访问 DSH${reason ? `（${reason}）` : ''}`);
+      } else {
+        pluginLog(`[围栏] ${mode} 模式下 openBrowser=true 非法（会导致 DSH 启动失败进入安全模式），已改为 false；此模式桥接会 403${reason ? `（${reason}）` : ''}`);
+      }
     } catch (error) {
       pluginLog('[围栏] 自动修复失败：', error?.message ?? error);
     }
