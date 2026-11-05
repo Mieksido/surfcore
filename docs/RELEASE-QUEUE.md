@@ -18,9 +18,9 @@
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
 ### 批次 2026-11-05 23:40 · 记忆能力三件（检索 / 星图 / 约定提醒）+ 表情元数据
-<!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7,671a85b -->
+<!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7,671a85b,9cb5013 -->
 
-**覆盖提交**：`89f56f7`、`671a85b`
+**覆盖提交**：`89f56f7`、`671a85b`、`9cb5013`
 **建议**：**0.9.0（minor）** —— 新增三条对外接口面（`/api/memory/search`、`/api/brain/*`、`/api/promise/*`）与两段唤醒提示词，属于功能性新增。
 
 **改了什么**：
@@ -42,6 +42,8 @@
 - **约定提醒的第二个 bug（`671a85b`，端到端才暴露）**：一次唤醒里 `buildWakePromptV2` 会被调两次，
   待提条目「读时即删」被第一次调用吃掉 → 真机 `layers.promise=0`：收到 `promiseDue` 却没有约定正文。
   改成「只读不删 + 投递接受后才删」，并加 10 分钟过期窗口。
+- **约定提醒的复核收口（`9cb5013`）**：悬空待提条目加保鲜期并在 tick 里清理 + 留日志（丢件必须说出来）；
+  `promiseDue` 的唤醒原因按「约定正文在不在」分叉，缺正文时不再让她去「看上面」找一段不存在的话。
 
 **没做**：
 - 第 3 件 FSRS 记忆强度分（`brain-decay` 里 D 恒 null）、第 4 件建议候选，均未开工；
@@ -56,12 +58,12 @@ npm run test:audit          # 151/151（main 上；dev 上 150/151 —— 唯一
                             # 安装清单按「已发布状态」生成，dev 上必然对不上，不是回归）
 npm run test:regressions    # 17/17
 npm run test:brain          # feed / replay / bridge / page 全绿
-npm run test:promise        # 22 + 16
+npm run test:promise        # 22 + 18
 node scripts/test-media-search.mjs   # 16/16
 node scripts/version.mjs check       # v0.8.8 一致（未 bump）
 ```
 反向验证：去掉白名单预检查 / 把 `promiseDue` 移出 `autoWake` / `inReminderWindow` 退回只有下限 /
-回退表情短路分支，对应用例均变红，改回后复绿。
+去掉待提条目的保鲜期判断 / 去掉 tick 里的过期清理 / 回退表情短路分支，对应用例均变红，改回后复绿。
 
 **重启**：需重启 QQ 桥接（新增定时器与路由）。`cmd.exe //c restart.bat`。
 
