@@ -1,4 +1,4 @@
-# 发布待办队列（编辑会话 → 发布会话）
+﻿# 发布待办队列（编辑会话 → 发布会话）
 
 > 用途：编辑会话每完成一批改动，在这里追加**一个带时间戳的批次**：覆盖到哪个提交、
 > 改了哪些文件/功能、case 路径、建议版本、可直接复制的交接块。
@@ -15,7 +15,7 @@
 ## 待发布
 
 > **2026-11-06 02:45：v0.9.0 已发布（本地）**，覆盖本表截至 02:10 的四个批次（记忆六件 + 表情元数据）。
-> main：`221872c`（release）+ `f5a7e83`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回（`c16325e`）。
+> main：`e529fc8`（release 合并）+ `8b07ce2`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回。
 > `npm run test:audit` **156/156**、`test:regressions` 全过、`version.mjs check` 一致。
 > ⚠️ 尚未推送到 GitHub：本机没有 `GH_TOKEN`，且 `github.com:443` 不通 —— 推送要用 `api.github.com`
 > 的 Data API（见 `docs/RELEASE.md` 第三节第 4–6 步），拿到 token 后再补 tag ref + Release。
