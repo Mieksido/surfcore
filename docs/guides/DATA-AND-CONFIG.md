@@ -164,7 +164,7 @@
 | `tts.route` + `tts.endpoints` | `local` / 8765+8767 | **本地 / 云端切换**；桌宠每次合成前重读磁盘，**桥接要重启才生效**（见 §1.11.1 末注） |
 | `trigger.who` / `groups` / `members` | `owner` / `[]` / `[]` | 谁能触发语音（默认只主人） |
 
-### 1.12 联网搜索 / 目的 / 问候
+### 1.12 联网搜索 / 目的 / 记忆（检索 · 候选 · 约定 · 联想）/ 问候
 
 - `webSearch`：`provider`（`auto` → DeepSeek 优先、Bing 兜底）、`apiKey` / `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`）、
   `model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs`。
@@ -172,6 +172,33 @@
   `quietStart/quietEnd`（23:30–08:30）、`idleThresholdMs`（主人空闲 30 分钟）、`materialWindowHours`、
   `biliWindowDays`、`maxMaterials`、`minMaterials`、`retryMs`、`maxAttempts`、`maxCandidates`、`promptMaxChars`。
   ⚠️ 新版本还有 `carrier`（qq/pet）、`petModality`、`petFallbackToQQ`，**模板里没有**。
+- `memoryRecall`：记忆检索（第 1 件）。对方提到「上次那件事」时，先从记忆库里把相关旧事捞出来，
+  再拼进唤醒提示词。目前只有一个开关 `enabled`（默认 `true`，写 `false` 就完全不做检索注入）；
+  条数/字数/触发词都在代码里的默认值上（`src/memory-recall.js`：`limit 3`、`maxChars 600`、
+  相对截断 0.45、触发词表见该文件顶部）。
+  向量服务地址是写死的 `http://127.0.0.1:8091/v1`（`src/memory-embed.js` 的 `DEFAULT_EMBED_URL`，
+  模型 `Qwen3-Embedding-0.6B`、1024 维），**不读 config** —— 换端口要改那一行；
+  `npm run memory-rag:serve` / `memory-rag:stop` / `memory-rag:probe` 是配套的三个命令。
+  服务没起时自动降级成纯关键词（`mode: 'bm25'`，`reason: 'embed-failed: …'`），检索照常但语义相近的会漏。
+  控制台 `POST /api/memory/search {query, limit, scope, maxChars, hybrid}` 可手工查。
+- `promiseWake`：约定提醒（第 5 件记忆能力的最后一块）。`enabled`（true）、`at`（10:00）、`until`（22:00）、
+  `maxPerDay`（3，管的是「不同会话」，同一天多条约定合成一条）、`graceDays`（2，当天没提成可顺延，过了标过期）。
+  `at` 是下限、`until` 是上限，闭开区间 `[at, until)`；两者相同视为不限结束（想让她半夜也能被约定叫醒才这么配）。
+  数据落在**角色目录**的 `promise-due.json`（跟着角色走，不是全局），从哪里认出约定见 `docs/cases/2026-11-05-promise-watch.md`。
+- `ledgerSuggest`：建议候选（第 4 件）。`enabled`（true）、`perWake`（1，一次唤醒最多提几条）、
+  `maxShows`（2，一条提满几次就作废）、`ttlDays`（14，超过就不提了）、`maxPerDay`（3，每会话每日上限）、
+  `minChars`（1，事实正文下限）。只从**私聊/主人**的入站消息里抽，群聊不抽；候选**不写记忆卡**，
+  只是让她在这一轮里自然接一句。数据落在角色目录的 `ledger-suggest.json`；
+  控制台 `GET /api/memory/suggestions` 可看，`POST /api/memory/suggestions/dismiss` 可作废，
+  `POST /api/memory/suggestions/probe` 只跑抽取不入池（改规则时用）。
+- `memoryAssociate`：联想（第 6 件）。唤醒时顺带注入一条**快淡忘的旧事**（`【忽然想起】`），
+  不是最相关的、而是可提取性 R 落在中间段的 —— 间隔重复：太牢不用提，太淡提了也白提。
+  `enabled`（true）、`maxPerWake`（1）、`cooldownDays`（7，提过一次就按日历日冷却）、
+  `rMin`（0.2）/`rMax`（0.70，区间写反会自动交换）、`minAgeDays`（2，刚聊过的不算旧事）、
+  `maxChars`（120）。状态落角色目录 `memory-associate.json`。
+  预取在排唤醒时异步踢一脚（5 分钟节流），提示词只读缓存（10 分钟有效）；
+  对方正在「回忆」时由第 1 件检索负责，两边不同时注入。
+  控制台 `POST /api/memory/associate/preview {key}` 可立刻跑一次并看会想起什么（不写冷却）。
 - `greetings.morning`：`time`（08:00）、`uin`、`name`；默认整体关。
 
 ### 1.13 ⚠️ 模板缺的四段
@@ -350,3 +377,4 @@ snapshots/             自动存档（每 6 小时一份，滚动保留）
 `token-*.json`（删了当日额度重置，会重复花钱）。
 
 **判断原则**：**删之前问一句"重建它要不要重新登录/重新教她一遍/重新花钱"**——要，就别删。
+

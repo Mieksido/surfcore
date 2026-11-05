@@ -17,6 +17,201 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-06 02:10 · 联想（第 6 件：唤醒时顺带想起一件快淡忘的旧事）
+<!-- release-batch: start=2026-11-06T01:55+08:00 end=2026-11-06T02:10+08:00 commits=6cd8227 -->
+
+**覆盖提交**：`6cd8227`（+ `8c43e03` R 上限 0.65→0.70、`c9438fc` 文档同步）
+**建议**：**0.9.0（minor）** —— 与上面两批一起发；新增一条管理端接口与一段唤醒提示词。
+
+**改了什么**：
+- 新模块 `src/memory-associate.js`：从检索命中里挑 **R 落在中间段**的旧事（间隔重复），
+  保护类不参与，同一会话 5 分钟节流，同一条记忆冷却 7 天。
+- 唤醒提示词新增【忽然想起】：只说一件事，并明确「搭不上就别硬提」。
+- 唤醒路径同步：预取在 `scheduleWakeV2` 异步踢一脚，`buildWakePromptV2` 只读缓存（10 分钟）；
+  记冷却在 `api.sessions.prompt` 被接受之后（同约定/建议/星图口径）。
+- 对方正在回忆时由第 1 件检索负责，两边不同时注入。
+- 状态落角色目录 `memory-associate.json`（原子写 0600）。
+- 控制台：`POST /api/memory/associate/preview {key}` 立刻跑一次预取看会想起什么（不写冷却）。
+- 配置段 `memoryAssociate`（enabled/maxPerWake/cooldownDays/rMin/rMax/minAgeDays/maxChars），
+  `docs/guides/DATA-AND-CONFIG.md` 已写。
+
+**没做**：
+- B 的「定时联想 + 主动发消息」：那是自主生活，本仓库刻意不搬（`purpose-engine` 已有近似）。
+- 联想不走「最相关」而是「快淡忘」，所以偶尔会想起一条和当前话题无关的旧事 ——
+  设计上就是这样（间隔重复），文案里给了「搭不上就别硬提」的出口。
+
+**风险**：
+- 预取依赖向量服务；服务没起时降级 BM25，联想仍工作但语义相近的旧事会挑不到（不报错）。
+- 提示词通常不加字（没挑到时整段不出现）；挑到时约 100 字。
+- 真机完整链路（预取 → 注入 → 接受 → 冷却）尚未观测，发布后查 `[联想]` 日志与 `memory-associate.json`。
+
+**验证**：
+```text
+npm run test:associate    # 10 + 5
+npm run test:regressions  # 全部通过
+npm run test:audit        # 155/156（唯一失败 test-release-manifest：dev 分支清单必然对不上，非回归）
+node scripts/version.mjs check   # v0.8.8 一致（未 bump）
+```
+
+**补充（`8c43e03`）**：R 上限从 0.65 调到 0.70。原因：卡面档位本身就是 R 的上界
+（`vivid 1 / clear 0.75 / fuzzy 0.5 / trace 0.25 / forgotten 0.05`），0.65 会把「clear 档刚开始衰减」
+的那一段整个跳过，年轻档案会长期一条都挑不出来。0.70 正好落在「clear 已衰减 / fuzzy 档」上。
+
+**case**：`docs/cases/2026-11-06-memory-associate.md`。
+
+### 批次 2026-11-06 01:50 · 建议候选（第 4 件：入站抽「关于他自己的事」）
+<!-- release-batch: start=2026-11-06T01:40+08:00 end=2026-11-06T01:50+08:00 commits=9ef389d -->
+
+**覆盖提交**：`9ef389d`
+**建议**：**0.9.0（minor）** —— 与上一批一起发；新增三条对外接口面（`/api/memory/suggestions` 的 GET /
+probe / dismiss）与一段唤醒提示词。
+
+**改了什么**：
+- 新模块 `src/ledger-suggest.js`：从入站消息按 8 类高精度规则抽「关于他自己的事」
+  （称呼/生日/忌口/过敏/喜好/住处/工作/宠物），只收私聊与主人，群聊不抽。
+- 唤醒提示词新增【可能值得记住的】一段：只递由头、不带 id/日期；已在记忆卡里的不再提；
+  每条 `maxShows` 次、`ttlDays` 天、每会话每日 `maxPerDay` 条。
+- 状态落角色目录 `ledger-suggest.json`（原子写 0600，坏 JSON 当空）。
+- 控制台：`GET /api/memory/suggestions`、`POST /api/memory/suggestions/probe`（只抽取不入池）、
+  `POST /api/memory/suggestions/dismiss`。
+- 配置段 `ledgerSuggest`（enabled/perWake/maxShows/ttlDays/maxPerDay/minChars），
+  `docs/guides/DATA-AND-CONFIG.md` 已写。
+
+**没做**：
+- 照抄 B 的「采用/作废」状态机：本仓库没有「她决定要记」这个动作，采用与否只靠次数上限自然过期，
+  控制台可手工作废（详见 case 文档「遗留」）。
+- 群聊不做候选（开了容易像查户口，等真机跑一段再定）。
+- 抽取是规则的，不懂上下文：`我对香菜无感` 这类否定表达会漏，这是精度优先的取舍。
+
+**风险**：
+- 提示词多一段，token 成本很小（通常 0 段；有候选时约 120 字）。
+- 候选只在唤醒路径出现，不额外发消息，不会打扰；最坏情况是「她提了一句对方早说过的事」，
+  由 `maxShows=2` 与 `ttlDays=14` 兜住。
+
+**验证**：
+```text
+npm run test:suggest      # 17 + 5（抽取精度 / 通路安全：两遍都带、接受后才计数、不串会话）
+npm run test:regressions  # 全部通过
+npm run test:audit        # 153/154（唯一失败 test-release-manifest：dev 分支清单必然对不上，非回归）
+node scripts/version.mjs check   # v0.8.8 一致（未 bump）
+```
+
+**case**：`docs/cases/2026-11-06-ledger-suggest.md`；`docs/PITFALLS.md` 新增「移植前先找它依赖的通路」。
+
+### 批次 2026-11-06 01:45 · 记忆强度分（第 3 件：FSRS 形状的 R/S/D）
+<!-- release-batch: start=2026-11-06T01:00+08:00 end=2026-11-06T01:45+08:00 commits=7b7e767 -->
+
+**覆盖提交**：`7b7e767`
+**建议**：**0.9.0（minor）** —— 与下一批一起发；本批是 `/api/brain/*` 的**响应形状变更**
+（`S` 换语义、`D` 从 `null` 变成 1~10），对外可见。
+
+**改了什么**：
+- 新增 `src/memory-strength.js`（271 行纯函数）：FSRS 形状的强度分 —— `S` 稳固度（天）、
+  `D` 难度（1~10）、`R` 可提取性（`R=(1+19/81·t/S)^(-0.5)`，`R(t=S)=0.9`）。`S/D` 初值由
+  重要度/`kind`/`tags`/`pinned` 映射，再按「先遗忘、后复习」重放 `decaySteps` 与 `recallCount`；
+  卡面清晰度只当 R 的**上界**；保护类（钉住/最初/主人重要）不淡忘，也不给「到期/冻结天数」。
+- `src/brain-decay.js`：从「清晰度阶梯」改成接线 —— `shape:'fsrs-strength'`，`S` 变稳固度、
+  `D` 成真值，「第几天跌破冻结线」搬到 `frozenAtDay`，另给 `dueInDays`/`daysToFreeze`/
+  `assumedSpread`；曲线起点与 `strengthOf().R` 严格相等。
+- `src/brain-feed.js`：节点 `decay` 带 `S`/`D`/`label`（原来是 `S:null`）；`public/brain.html`
+  时间推演换成三块瓦片（R / 稳固度 S（天）/ 难度 D）并改掉「这条阶梯」的说明。
+- 测试：`scripts/test-memory-strength.mjs` 8 条；`test-brain-feed` / `test-brain-bridge` 同步改断言；
+  `package.json` 加 `test:memory-strength`；`scripts/test-audit.mjs` 清单加一条。
+
+**没做**：
+- 没改 `memory-card.js` 的降档规则 —— `targetClarity()` 仍是「卡面上写什么」的唯一真相，FSRS 只读数；
+- 没接「按 R 决定复习/整理」的调度；
+- 事件时刻仍是均匀假设（`assumedSpread`），不是记录里的事实；
+- 第 4 件建议候选未开工。
+
+**验证**：
+```text
+node scripts/test-memory-strength.mjs  # 8/8
+npm run test:brain                     # feed 13 / replay 11 / bridge / page 全绿
+npm run test:audit                     # dev 上 151/152（唯一失败 test-release-manifest，
+                                       # 安装清单是「已发布状态」的产物，dev 上必然对不上）
+npm run test:regressions               # 17/17
+npm run test:promise                   # 22 + 18
+node scripts/version.mjs check         # v0.8.8 一致（未 bump）
+```
+反向验证：重放次序反过来 / 去掉 `min(预测, 卡面)` 的 `min` / 让保护类也吃上界 —— 对应用例
+均变红，恢复后复绿。真实档案抽查（最近 30 条）：R/S/D 全有限、曲线单调非增、冻结日与 `exempt`
+自洽，0 异常。
+
+**重启**：需重启 QQ 桥接（响应形状变了，页面与服务端必须同版本）。`cmd.exe //c restart.bat`。
+
+**风险**：
+- **`S` 语义变更**：旧消费方把 `S` 当「冻结天数」，现在它是稳固度；页面与桥接必须同版本发
+  （`docs/PITFALLS.md` 已记）；
+- 静态页面可能被旧桥接服务，出现「没报错但数字错」的漂移 —— 重启后再点一遍页面确认；
+- 唤醒提示词未受影响（本批不碰提示词）。
+
+**case**：`docs/cases/2026-11-06-memory-strength.md`（并更新了 `docs/cases/2026-11-05-brain-live.md`）
+
+---
+
+### 批次 2026-11-05 23:40 · 记忆能力三件（检索 / 星图 / 约定提醒）+ 表情元数据
+<!-- release-batch: start=2026-11-05T14:00+08:00 end=2026-11-05T23:40+08:00 commits=89f56f7,671a85b,9cb5013 -->
+
+**覆盖提交**：`89f56f7`、`671a85b`、`9cb5013`
+**建议**：**0.9.0（minor）** —— 新增三条对外接口面（`/api/memory/search`、`/api/brain/*`、`/api/promise/*`）与两段唤醒提示词，属于功能性新增。
+
+**改了什么**：
+- **记忆检索（第 1 件）**：`src/memory-index.js`（SQLite FTS5 + `vectors` 表、增量游标、按目录派生索引库）、
+  `src/memory-embed.js`（本地 Qwen3-Embedding 0.6B 回环客户端）、`src/memory-recall.js`（唤醒用同步 BM25 /
+  控制台用异步混合）、`scripts/memory-index.mjs`（CLI）。桥接唤醒注入 `memoryRecallLine`，
+  新增 `POST /api/memory/search`。
+- **星图（第 2 件）**：`src/brain-feed.js` / `brain-replay.js` / `brain-decay.js` + `public/brain.html`，
+  七条 `/api/brain/*` 路由（SSE 实时流、7 天回放、衰减曲线、检索探针、开关）。数据源换成本地文件
+  （记忆卡全量档 / trace / 工具日志），没有 long-memory / people.json 的那几个扇区。
+- **约定提醒（第 5 件）**：`src/promise-watch.js` 纯函数 + 60 秒 tick，认「带到期日」的约定，
+  到期当天经 `scheduleWakeV2` 排一次 `promiseDue` 唤醒。新增 `/api/promise/list|status|tick`。
+  `config.example.json` 加 `promiseWake` 段（`at`/`until` 闭开区间）。
+- **两个既有 bug**：`readBody()` 已 `JSON.parse` 又被解析一次 → `/api/memory-card/notify` 每次 500
+  （容量告警私聊从未发出）；表情「只按文字理解」的短路分支丢了 `emojiId`/`summary`，
+  下游推 CDN 与配收藏失锚。
+- **派生库串档**：`memoryIndexPathFor()` 让非当前角色目录落 `state/memory-rag/archives/<sha1>.db`，
+  测试夹具不再把生产索引重建成 2 条。
+- **约定提醒的第二个 bug（`671a85b`，端到端才暴露）**：一次唤醒里 `buildWakePromptV2` 会被调两次，
+  待提条目「读时即删」被第一次调用吃掉 → 真机 `layers.promise=0`：收到 `promiseDue` 却没有约定正文。
+  改成「只读不删 + 投递接受后才删」，并加 10 分钟过期窗口。
+- **约定提醒的复核收口（`9cb5013`）**：悬空待提条目加保鲜期并在 tick 里清理 + 留日志（丢件必须说出来）；
+  `promiseDue` 的唤醒原因按「约定正文在不在」分叉，缺正文时不再让她去「看上面」找一段不存在的话。
+
+**没做**：
+- 第 3 件 FSRS 记忆强度分当时未开工（**已在下一批 `7b7e767` 完成**）、第 4 件建议候选未开工；
+- 没搬人格成长 / 自主生活 / 每日报表（判定与 SurfCore 自有等价物重复）；
+- RRF 只看排名不看分数；embedding 区分度偏小（同题两条 0.480 vs 0.432）；
+- 真实 QQ 唤醒触发**记忆检索**注入尚未观测到（唤醒路径只在夹具里验过；约定那一路已在真机验过）；
+- 首次真实约定投递已在 2026-11-06 00:13 观测到并通过（详见 case 文档）。
+
+**验证**：
+```text
+npm run test:audit          # 151/151（main 上；dev 上 150/151 —— 唯一一条是 test-release-manifest，
+                            # 安装清单按「已发布状态」生成，dev 上必然对不上，不是回归）
+npm run test:regressions    # 17/17
+npm run test:brain          # feed / replay / bridge / page 全绿
+npm run test:promise        # 22 + 18
+node scripts/test-media-search.mjs   # 16/16
+node scripts/version.mjs check       # v0.8.8 一致（未 bump）
+```
+反向验证：去掉白名单预检查 / 把 `promiseDue` 移出 `autoWake` / `inReminderWindow` 退回只有下限 /
+去掉待提条目的保鲜期判断 / 去掉 tick 里的过期清理 / 回退表情短路分支，对应用例均变红，改回后复绿。
+
+**重启**：需重启 QQ 桥接（新增定时器与路由）。`cmd.exe //c restart.bat`。
+
+**风险**：
+- 唤醒提示词变长（记忆检索 ≤600 字 + 约定段），Token 成本随之上升；
+- 约定提醒是**自己发起的**唤醒，闸门漏一处就会变成「没人说话也能叫醒她」——本次全部走
+  `scheduleWakeV2`，未直连 `deliverPrompt`；
+- 星图默认开（`brain.enabled` 缺省视为 true），多一个 20 秒定时器与本地文件比对；
+- `src/bridge.js` 此前带 skip-worktree，本次提交同时解除了这一标记——之后它会被 git 正常跟踪。
+
+**case**：`docs/cases/2026-11-05-memory-rag-index.md`、`docs/cases/2026-11-05-brain-live.md`、
+`docs/cases/2026-11-05-promise-watch.md`、`docs/cases/2026-11-05-sticker-textonly-meta.md`
+
+---
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 

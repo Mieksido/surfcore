@@ -123,6 +123,19 @@ const tests = [
   'test-bili-interact.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。
   'test-memory-card.mjs', 'test-memory-card-wiring.mjs', 'test-memory-sharing.mjs',
+  // 记忆检索：分词/增量/换档重建/BM25 排序 + 向量混合/降级；唤醒注入的触发词与阈值。
+  'test-memory-index.mjs', 'test-memory-recall.mjs',
+  // 记忆强度分：FSRS 形状的 R/S/D（曲线性质、重放次序、卡面上界、保护类不淡忘）。
+  'test-memory-strength.mjs',
+  // 建议候选：入站消息里抽「关于他自己的事」（精度优先）、去重、每次/每日上限、
+  // 保鲜期、接受后才计数、状态文件容错。
+  'test-ledger-suggest.mjs', 'test-ledger-suggest-bridge.mjs',
+  // 联想：只挑 R 落在中间段的旧事（太牢不用提、太淡提了也白提），提过要冷却；
+  // 唤醒里只读缓存，投递接受后才记冷却（和约定/建议/星图同一口径）。
+  'test-memory-associate.mjs', 'test-memory-associate-bridge.mjs',
+  // 星图：事件与轨迹（编号/载荷白名单/脑区/快照衰减）+ 7 天回放（三路来源合成）+
+  // 接线（/api/brain/* 的鉴权、开关落盘、SSE 推送与挂点）。夹具起临时控制台，不连真 QQ。
+  'test-brain-feed.mjs', 'test-brain-replay.mjs', 'test-brain-bridge.mjs', 'test-brain-page.mjs',
   // 角色人格：多角色目录隔离 / 切换 epoch / 快照回档 / 旧数据迁移（含凭证不进角色包）。
   'test-character-store.mjs',
   // B站 工具链路径：有角色时行为账本进角色包，cookie/表情包仍在账号目录。
@@ -285,6 +298,10 @@ const tests = [
   'test-bili-share-dedup.mjs',
   // 唤醒人格卡注入：二代唤醒必须带人格卡正文，且与 qq_get_prompt 同源（2026-11-01 A1）。
   'test-persona-wake-injection.mjs',
+  // 约定提醒（第 5 件）：到期日解析与旁挂账本（纯函数，不碰桥接）。
+  'test-promise-watch.mjs',
+  // 约定提醒接线：promiseDue 走 scheduleWakeV2 的全套闸门，绝不绕过去直接 deliverPrompt。
+  'test-promise-bridge.mjs',
 ];
 let failed = 0;
 for (const test of tests) {
