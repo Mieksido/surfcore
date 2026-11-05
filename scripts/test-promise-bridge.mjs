@@ -111,6 +111,43 @@ await test('投递被接受之后才清掉待提条目；投递失败则留着�
   files: { 'dsh/surfcore/memory/memory-card-full.jsonl': memoryFile([dueTodayRecord()]) },
 });
 
+await test('保鲜期内的待提条目：先来一次别的唤醒也照带上（还没说出口就不算提过）', async (h) => {
+  h.promiseTick();
+  assert.ok(h.promiseWakePending.get('private:123'), '第一遍应该排上');
+  // 约定唤醒排上了，但先到的是别的唤醒（回复检查/主动机会/概率）。
+  // 这时约定还没被说出口，就该跟着这次唤醒一起说出去 —— 而不是白等一个更晚的时点。
+  const prompt = h.buildWakePromptV2('private:123', 'replyCheck');
+  assert.match(prompt, /【到期的约定】/, '还没投递过的约定要跟着别的唤醒一起带上');
+  assert.match(prompt, /猫咪小镇/);
+  await h.deliverPrompt('private:123', prompt, { wakeReason: 'replyCheck' });
+  assert.equal(h.promiseWakePending.get('private:123'), undefined, '说出口了才清掉');
+}, {
+  config: ALWAYS,
+  files: { 'dsh/surfcore/memory/memory-card-full.jsonl': memoryFile([dueTodayRecord()]) },
+});
+
+await test('超过保鲜期的待提条目：不塞进提示词，并由 tick 清掉（账本仍是「今天提过」）', async (h) => {
+  h.promiseTick();
+  const pending = h.promiseWakePending.get('private:123');
+  assert.ok(pending);
+  // 把这条待提条目人为变旧：模拟「排了唤醒但一直没走到发送」（通道被拦/额度/鱼群）。
+  pending.at = Date.now() - 11 * 60_000;
+  const prompt = h.buildWakePromptV2('private:123', 'promiseDue');
+  // 注意别拿【到期的约定】判：promiseDue 的唤醒原因里本来就会提到这五个字（「见上面的…」）。
+  // 要判的是**约定正文**在不在。
+  assert.ok(!prompt.includes('猫咪小镇'), '过期条目不许挂到后面的无关唤醒上');
+  assert.match(prompt, /约定正文没能带上/, '没有正文时要改口径，别让她去「看上面」找一段不存在的话');
+  assert.equal(h.promiseWakePending.get('private:123'), undefined, '过期就该清掉，不留悬空条目');
+  // tick 也会顺手清理（清掉会话后再也不唤醒的那种悬空条目）。
+  h.promiseWakePending.set('private:123', { at: Date.now() - 11 * 60_000, ids: ['mem_promise_today'], items: [] });
+  h.promiseTick();
+  assert.equal(h.promiseWakePending.size, 0, 'tick 要把过期条目清干净');
+  assert.equal(h.promiseLedger(true).items.mem_promise_today.firedDay, TODAY, '先记后投：今天不再重提，明天还在缓冲期内再试');
+}, {
+  config: ALWAYS,
+  files: { 'dsh/surfcore/memory/memory-card-full.jsonl': memoryFile([dueTodayRecord()]) },
+});
+
 await test('同一会话同一天不重复提：第二遍 tick 不再产生待提条目', async (h) => {
   h.promiseTick();
   const first = h.promiseWakePending.get('private:123');

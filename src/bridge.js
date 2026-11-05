@@ -13222,6 +13222,9 @@ async function main() {
   // 本次唤醒该提哪些约定（tick 写入、buildWakePromptV2 消费、投递后清掉）。
   // 用 Map 而不是塞进 st：唤醒提示词是纯读的，不该为了读一段文本去改会话状态。
   const promiseWakePending = new Map(); // key -> { at, ids, items }
+  // 待提条目的保鲜期：过了就不再往提示词里塞（免得挂到一次无关的后续唤醒上，
+  // 变成「半夜的回复检查里突然冒出上午该说的约定」）。
+  const PROMISE_PENDING_TTL_MS = 10 * 60_000;
 
   /** 账本路径跟着当前角色走（和 purpose-outreach.json 同一层次）。 */
   function promiseLedgerFile() {
@@ -13272,6 +13275,24 @@ async function main() {
   }
 
   /**
+   * 丢弃过期的待提条目（超过 `PROMISE_PENDING_TTL_MS` 没被投出去）。
+   *
+   * 为什么要有这一步：账本是**先记后投**（排唤醒前就写 `firedDay`，防的是一个坏通道
+   * 每 60 秒重试），所以「排了却没走到发送」的约定今天不会再来一轮。那条约定就成了
+   * 一个只存在于内存 Map 里的悬空条目 —— 会话可能再也不唤醒，它就一直挂着。
+   * 这里删掉它，并且**留一句日志**：丢了就要说出来，别让「记了没说」变成静默丢件
+   * （2026-11-06 00:01 那次事故正是这种静默：账本记了，人没听到）。
+   */
+  function promisePrunePending(now = Date.now()) {
+    for (const [key, pending] of promiseWakePending) {
+      if (now - Number(pending?.at || 0) <= PROMISE_PENDING_TTL_MS) continue;
+      promiseWakePending.delete(key);
+      const count = Array.isArray(pending?.items) ? pending.items.length : 0;
+      promiseLogThrottled(`[约定] ${key} 这次没投出去：已排唤醒但没走到发送（${count} 条约定），今天不再重提，明天还在缓冲期内会再试`);
+    }
+  }
+
+  /**
    * 一遍：扫档 → 并账本 → 对每个会话挑今天该提的 → 交给 scheduleWakeV2。
    *
    * 注意几个「宁可漏」的选择：
@@ -13285,6 +13306,9 @@ async function main() {
     if (currentMode !== 'reserved2') return;
     if (cfg.socialV2?.enabled === false || socialV2.paused) return;
     const now = Date.now();
+    // 先清掉上一轮没投出去的悬空条目（并记一句日志）：这件事跟窗口无关，
+    // 放在 inReminderWindow 之前 —— 过期往往正是因为窗口关着的时候没人唤醒。
+    promisePrunePending(now);
     let ledger = promiseLedger();
     // 扫档节流：60 秒一次 tick，但记忆档 5 分钟扫一次就够。
     if (now - promiseLastScanAt >= 5 * 60_000) {
@@ -15305,7 +15329,7 @@ async function main() {
     // 过期窗口兜住「排了但一直投不出去」：10 分钟外的旧条目不再注入，免得挂到无关唤醒上。
     const promisePending = promiseWakePending.get(key);
     let promiseLine = '';
-    const promiseFresh = !!promisePending && Date.now() - Number(promisePending.at || 0) <= 10 * 60_000;
+    const promiseFresh = !!promisePending && Date.now() - Number(promisePending.at || 0) <= PROMISE_PENDING_TTL_MS;
     if (promisePending && !promiseFresh) promiseWakePending.delete(key);
     if (promiseFresh && Array.isArray(promisePending.items) && promisePending.items.length) {
       const promiseText = promiseWatch.promiseWakeText(promisePending.items, {
@@ -15371,7 +15395,7 @@ async function main() {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n先看有没有人回。如果没人回，这段对话可能已经自然结束：不用硬补一句，也不用为了收尾去等 5 分钟沉睡前观察——直接判断，还有想说的就回，没有就 qq_close_conversation 自然收尾（不是潜水，唤醒配置不变）。如果有人回你，先看【对话收尾判断】再决定接不接；需要确认对方是否说完，用 qq_wait_for_messages(purpose="reply")。`;
     }
     if (reason === 'promiseDue') {
-      return `${base}【唤醒】${key}\n原因：今天是某条约定的日子，你之前和对方说好的事到期了（见上面的【到期的约定】）。\n这不是对方的消息，是你自己的记事本响了。先看这个会话最近有没有人在说话：有人正在聊就顺着聊、自然地把约定点出来；没人说话再考虑要不要为这件事开一句。已经办完了/对方说不做了，用 qq_mark_read 安静收尾即可，账本那边不用你管。别像闹钟一样念日期。`;
+      return `${base}【唤醒】${key}\n原因：${promiseLine ? '今天是某条约定的日子，你之前和对方说好的事到期了（见上面的【到期的约定】）。' : '今天是某条约定的日子，你之前和对方说好的事到期了，但这次的约定正文没能带上（桥接刚重启过，或这条排得太久）。先看这个会话最近的对话，想得起是哪件事就自然点一句；想不起来就别硬编。'}\n这不是对方的消息，是你自己的记事本响了。先看这个会话最近有没有人在说话：有人正在聊就顺着聊、自然地把约定点出来；没人说话再考虑要不要为这件事开一句。已经办完了/对方说不做了，用 qq_mark_read 安静收尾即可，账本那边不用你管。别像闹钟一样念日期。`;
     }
     if (reason === 'proactiveCheck') {
       return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
