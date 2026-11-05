@@ -41,6 +41,12 @@
     "test:role-card": "node scripts/test-role-card.mjs",
     "test:memory-card": "node scripts/test-memory-card.mjs",
     "test:memory-card-wiring": "node scripts/test-memory-card-wiring.mjs",
+    "memory-index": "node scripts/memory-index.mjs",
+    "test:memory-index": "node scripts/test-memory-index.mjs",
+    "test:brain": "node scripts/test-brain-feed.mjs && node scripts/test-brain-replay.mjs && node scripts/test-brain-bridge.mjs && node scripts/test-brain-page.mjs",
+    "memory-rag:serve": "powershell -NoProfile -ExecutionPolicy Bypass -File ../memory-rag/start-embed.ps1",
+    "memory-rag:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File ../memory-rag/stop-embed.ps1",
+    "memory-rag:probe": "node scripts/memory-index.mjs embed-probe",
     "test:admin": "node scripts/test-admin-identity.mjs && node scripts/test-admin-prompt-wiring.mjs",
     "preview:console": "node scripts/console-ui-fixture.mjs",
     "verify:adaptation": "node scripts/verify-dsh-020-adaptation.mjs",
@@ -75,7 +81,8 @@
     "version:check": "node scripts/version.mjs check",
     "version:bump": "node scripts/version.mjs bump",
     "version:tag": "node scripts/version.mjs tag",
-    "test:version": "node scripts/test-version.mjs"
+    "test:version": "node scripts/test-version.mjs",
+    "test:promise": "node scripts/test-promise-watch.mjs && node scripts/test-promise-bridge.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh-host-apiproxy": "0.1.1-rc.2",

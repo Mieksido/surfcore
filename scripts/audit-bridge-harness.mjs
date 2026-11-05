@@ -49,6 +49,17 @@ import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
 import * as conversationClosure from '../src/conversation-closure.js';
+// 记忆检索胶水层：桥接在唤醒提示词里调 `memoryRecall.recallBlock()`。
+// VM 夹具里它指向 temp 记忆目录（没有档案就返回空串，不会读真实记忆）。
+import * as memoryRecall from '../src/memory-recall.js';
+// 约定提醒：桥接的 tick 与唤醒提示词都调 `promiseWatch.*`。夹具里账本落在 temp
+// 角色目录下，不会读到真实 promise-due.json。
+import * as promiseWatch from '../src/promise-watch.js';
+// 星图（实时脑图）：桥接顶层 import 了这四个绑定，VM 里必须同名字注入，
+// 否则剥掉 import 之后 `createBrainFeed is not defined` 会让整份夹具起不来。
+import * as brainFeed from '../src/brain-feed.js';
+import * as brainReplay from '../src/brain-replay.js';
+import { memoryIndexStats, vectorIndexStats } from '../src/memory-index.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import * as qqAt from '../src/qq-at.js';
@@ -197,6 +208,10 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
+    // auditAndSend：出站审计 + 发送，星图的 msg.out 事件挂在它里面（见 test-brain-bridge.mjs）
+    auditAndSend,
+    // brainTick：星图的 20 秒记账定时器，测试直接手动推进它（见 test-brain-bridge.mjs 的 rag.index 用例）
+    brainTick,
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
     fishChatWindows, evaluateConversationFishGuard, fishGuardSendBlock, recordFishWindow,
     tokenGuardWakeBlock, tokenGuardSendBlock, bridgeDailyUsage, learnerBudgetBlock,
@@ -207,6 +222,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 人的黑名单（deny.users）：入站按发送者拦截，见 test-blacklist.mjs
     senderBlocked, handlePokeNotice,
     collectors, setupSleepTimerV2,
+    // 约定提醒：tick 需要手动推进（测试里不想等 60 秒），账本与待提队列也要能读。
+    promiseTick, promiseLedgerFile, promiseLedger, promiseWakePending, startPromiseLoop,
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
     initialPrompts, initialPromptMaxChars,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
@@ -274,6 +291,12 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...conversationClosure,
+    memoryRecall,
+    promiseWatch,
+    ...brainFeed, ...brainReplay,
+    memoryIndexStats, vectorIndexStats,
+    // 桥接里把它重命名成 brainLocalDay（避免和本地同名函数打架），这里跟着给同一个函数。
+    brainLocalDay: brainFeed.localDay,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
     readCurrentCharacter: () => null,

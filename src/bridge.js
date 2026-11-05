@@ -78,8 +78,17 @@ import {
 } from './token-budget.js';
 import { createBiliMemory } from './bili-memory.js';
 import {
-  appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
+  DEFAULT_MEMORY_CARD_CONFIG, appendMemoryInboxEvent, looksNoteworthyMessage, readAllFullRecords, resolveMemoryCardPaths,
 } from './memory-card.js';
+import * as memoryRecall from './memory-recall.js';
+// 约定提醒（第 5 件）：把「带到期日的约定」在到期那天提一句。
+// 只做纯函数与旁挂状态文件；**投递一律走 scheduleWakeV2**，复用它的白名单/暂停/鱼群/
+// Token 额度/繁忙暂存等全套闸门 —— 绝不直接 deliverPrompt（那条路没有闸门）。
+import * as promiseWatch from './promise-watch.js';
+// 星图（移植自 B 项目）：事件流 + 回放 + 检索索引统计（给「索引涨了」那类事件用）。
+import { createBrainFeed, localDay as brainLocalDay } from './brain-feed.js';
+import { createBrainReplay, shortToolName } from './brain-replay.js';
+import { memoryIndexStats, vectorIndexStats } from './memory-index.js';
 import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
   readPersonaLayerText,
@@ -1324,6 +1333,11 @@ function loadConfig() {
   // 定期主动私聊主人，分享所想（🧀）或提出索取。默认开，但受安静时段/每日上限/token 额度约束。
   cfg.purpose = normalizePurposeConfig(file.purpose, { ownerQQ: cfg.ownerQQ });
 
+  // 约定提醒（第 5 件）：从记忆档里认出「带到期日的约定」，到期那天提一句。
+  // 默认开 —— 但它**必须**过 scheduleWakeV2 的全套闸门（白名单/暂停/鱼群/Token 额度），
+  // 绝不直接 deliverPrompt。config.json 里写 promiseWake 段即可调。
+  cfg.promiseWake = promiseWatch.normalizePromiseConfig(file.promiseWake ?? {});
+
   // B站记忆 / 动态同步 / 每日分享（config.json → biliBridge，全部可选，默认开启）。
   {
     const b = file.biliBridge && typeof file.biliBridge === 'object' && !Array.isArray(file.biliBridge) ? file.biliBridge : {};
@@ -1628,8 +1642,23 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** 本地补丁：从分享卡片（json 段）里取出可访问的链接。 */
+function cardUrlFromSegment(d) {
+  const raw = typeof d?.data === 'string' ? d.data : (d?.data && typeof d.data === 'object' ? JSON.stringify(d.data) : '');
+  if (!raw) return '';
+  const flat = raw.split('\/').join('/');
+  const i = flat.indexOf('http');
+  if (i < 0) return '';
+  let out = '';
+  for (let k = i; k < flat.length && out.length < 500; k += 1) {
+    const ch = flat[k];
+    if (ch === '"' || ch === "'" || ch === ' ' || ch === '\n' || ch === '\t') break;
+    out += ch;
+  }
+  return out;
+}
 async function segmentsToText(segments, options = {}) {
-  const { resolveAtName, resolveReply, includeReply = true } = options ?? {};
+  const { resolveAtName, resolveReply, includeReply = true, cardUrl = false } = options ?? {};
   // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
   if (typeof segments === 'string') return segments.trim();
   const out = [];
@@ -1653,7 +1682,7 @@ async function segmentsToText(segments, options = {}) {
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
       case 'image': out.push('[图片]'); break;
       case 'record': out.push('[语音]'); break;
-      case 'video': out.push('[视频]'); break;
+      case 'video': out.push(cardUrl && d?.url ? `[视频 ${String(d.url).slice(0, 300)}]` : '[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
       case 'reply': {
         // 引用/回复段：默认解析成「被引用人 + 原文」，让 AI 能判断这句话是对谁说的；
@@ -1674,7 +1703,13 @@ async function segmentsToText(segments, options = {}) {
         out.push(replyText || '[引用消息]');
         break;
       }
-      case 'json': out.push('[卡片消息]'); break;
+      case 'json': {
+        // 本地补丁（2026-11-05）：私聊里把分享卡片的链接抠出来，让 AI 能抓页面；
+        // 群聊保持占位，避免在群里抓任意链接。
+        const u = cardUrl ? cardUrlFromSegment(d) : '';
+        out.push(u ? `[卡片消息 ${u}]` : '[卡片消息]');
+        break;
+      }
       // markdown：SnowLuma 1.14.9 的线上段落是 `{type:'markdown',data:{content}}`。
       // 上游 1.14.17+（commit 1934e4e7「include text alongside received markdown」）
       // 起还会带上 `data.text`。两个形状都读，这样将来升级 SnowLuma 运行时不会退化成
@@ -3278,6 +3313,15 @@ async function main() {
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
   const v2TurnStartAt = new Map(); // sessionId -> timestamp：reserved2 turn 开始时间，用于判断是否“无行动”
   const toolCallNames = new Map(); // sessionId -> Map<callId, toolName>：用于结果日志关联工具名
+  // 星图用：调用时先把参数存起来，等 tool/result 到了再连同成败一起发事件
+  // （事件只在结果落定时发一次，页面的「成功 / 失败」才有依据）。
+  const brainToolArgs = new Map(); // `${sessionId}:${callId}` -> 脱敏后的参数
+  // 会话退役、状态清空时跟着清掉：一次没等到结果的调用（回合被打断、桥接重启）会留下孤儿参数。
+  function forgetBrainToolArgs(sessionId) {
+    if (sessionId == null) { brainToolArgs.clear(); return; }
+    const prefix = `${sessionId}:`;
+    for (const k of brainToolArgs.keys()) if (k.startsWith(prefix)) brainToolArgs.delete(k);
+  }
   const pendingSendToolCalls = new Map(); // sessionId -> Set<callId>：等待 tool/result 的发送类调用
   // reserved2 防“忘记设置唤醒条件”：key -> 当前是否等待 AI 处理唤醒回合 / 本回合已更新唤醒配置 / 连续未设置次数
   const pendingWakeKeys = new Set();
@@ -3711,6 +3755,7 @@ async function main() {
     v2TurnStartAt.delete(sessionId);
     turnLeaseNoted.delete(sessionId);
     toolCallNames.delete(sessionId);
+    forgetBrainToolArgs(sessionId);
     social.silentTurns.delete(sessionId);
     social.exitingSessions.delete(sessionId);
     // 退役的会话要退订：否则 _desiredFollows 只增不减，每次重连都会为它重开一条
@@ -3846,6 +3891,11 @@ async function main() {
         // 目的机制：定期从近期记忆里提炼目的，主动私聊主人（默认开，可关）。
         if (cfg.purpose?.enabled !== false) {
           try { startPurposeLoop(); } catch (error) { log(`[目的] 启动失败：${error?.message ?? error}`); }
+        }
+        // 约定提醒（第 5 件）：到期那天提一句。默认开；config.json 的 promiseWake 可关。
+        // 只做「排一次 scheduleWakeV2」，所有投递闸门都在那边。
+        if (cfg.promiseWake?.enabled !== false) {
+          try { startPromiseLoop(); } catch (error) { log(`[约定] 启动失败：${error?.message ?? error}`); }
         }
         if (currentMode === 'reserved2') {
           // 首次确定模式为 reserved2 后再恢复持久化的有限睡眠定时器，
@@ -4362,6 +4412,188 @@ async function main() {
     // 边沿告警的兜底心跳：主信号（心跳 status.good）到达时会立刻评估，这里只防"心跳也没了"
     setInterval(reportSnowlumaHealth, 30_000);
   }
+
+  // ── 星图（实时脑图） ──────────────────────────────────────────────────────
+  // 从 B 项目（tmp/ref-b）移植过来的三件套：brain-feed（事件流 + 轨迹 + SSE）、
+  // brain-replay（回放）、public/brain.html（页面）。数据源换成本地真实存在的文件：
+  //   记忆卡全量档 memory-card-full.jsonl（节点）、state/brain/trace（事件骨架）、
+  //   tool-calls.jsonl 与 qq-activity.log（回放填充）。B 的 long-memory / people.json /
+  //   life-loop / own-life / 账本建议在 SurfCore 都没有，对应扇区已从页面上删掉。
+  //
+  // 开关写在 config.json 的 brain.enabled（缺省开，与 memoryRecall 的写法一致）：
+  // 页面上的开关、控制台接口改的都是这一个键，2 秒内生效，不需要重启桥接。
+  const BRAIN_CONFIG_FILE = path.join(ROOT, 'config.json');
+  let brainEnabledCache = { at: 0, value: true };
+  function brainEnabled() {
+    const at = Date.now();
+    if (at - brainEnabledCache.at < 2000) return brainEnabledCache.value;
+    let value = true;
+    try {
+      const raw = readJsonSafe(BRAIN_CONFIG_FILE, null);
+      // 只把明确的 false 当关闭：配置读坏时按「开」处理 —— 星图是只读观测面，
+      // 静默失效比多显示几个点更难排查。
+      if (raw && typeof raw === 'object' && raw.brain && raw.brain.enabled === false) value = false;
+    } catch { value = true; }
+    brainEnabledCache = { at, value };
+    return value;
+  }
+  function setBrainEnabled(enabled) {
+    const raw = readJsonSafe(BRAIN_CONFIG_FILE, null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const brain = raw.brain && typeof raw.brain === 'object' && !Array.isArray(raw.brain) ? raw.brain : {};
+    atomicWriteJson(BRAIN_CONFIG_FILE, { ...raw, brain: { ...brain, enabled: enabled === true } });
+    brainEnabledCache = { at: Date.now(), value: enabled === true };
+    return true;
+  }
+  const brainFeed = createBrainFeed({
+    stateDir: STATE_DIR,
+    isEnabled: brainEnabled,
+    // 事件里可能带着刚发出的消息正文（tool 参数、msg 事件）：过一遍已登记的会话令牌，
+    // 与 appendActivity 用的是同一把刷子。
+    redact: (value) => redactKnownTokensOnly(value),
+    log: (msg) => log(`星图：${msg}`),
+  });
+  const brainReplay = createBrainReplay({
+    stateDir: STATE_DIR,
+    // 每次回放现读全量档：回放是低频操作，缓存反而容易和刚发生的写入错开一拍。
+    records: () => {
+      try { return readAllFullRecords(MEMORY_CARD_PATHS) ?? []; } catch { return []; }
+    },
+  });
+  // 本次唤醒注入了哪几条旧记忆：buildWakePromptV2 记下、deliverPromptNow 投递成功后才发事件。
+  const brainLastInject = new Map(); // key -> { at, ltm: [], chars }
+  // 探针打的是真检索（含向量），按时间节流，免得页面按住回车把本地服务打满。
+  let brainProbeAt = 0;
+  function brainEmit(type, payload = {}) {
+    // feed.emit 本身不抛、关着就返回 null；这里再兜一层，调用方不必写 try。
+    try { return brainFeed.emit(type, payload); } catch { return null; }
+  }
+  /** 会话键 → 给人看的名字（星图上那些小标签）。 */
+  function brainLabelFor(key) {
+    try {
+      const [kind, id] = String(key).split(':');
+      if (kind === 'group') return fishGroupNames.get(id) || `群 ${id}`;
+      if (kind === 'private') return String(id) === String(cfg.ownerQQ ?? '') ? '主人' : `私聊 ${id}`;
+      if (kind === 'desktop') return `工作区 ${id}`;
+      if (kind === 'pet') return '宠物';
+    } catch { /* 表还没建好就当没有名字 */ }
+    return String(key);
+  }
+  /** 快照：把记忆档读成节点 + 人格层（只给层名和字数）。key 只影响过滤。 */
+  function brainSnapshot(key = null) {
+    let records = [];
+    try { records = readAllFullRecords(MEMORY_CARD_PATHS) ?? []; } catch { records = []; }
+    const keys = new Set();
+    try { for (const k of socialV2.conversations.keys()) keys.add(k); } catch {}
+    for (const r of records) {
+      if (typeof r?.conversationKey === 'string' && r.conversationKey) keys.add(r.conversationKey);
+    }
+    const layers = [];
+    try {
+      for (const [id, name] of [['core', '人格核心'], ['tone', '人格语气'], ['daily', '人格日常']]) {
+        const text = readPersonaLayerText(id);
+        if (text) layers.push({ key: id, name, chars: [...text].length, updatedAt: Date.now() });
+      }
+      // 当前这个会话用的是哪一层场景人格，也画出来（其它场景层没在用的不占位置）。
+      const scene = key ? personaSceneFromKey(key) : '';
+      if (scene) {
+        const text = readPersonaLayerText('scene', scene);
+        if (text) layers.push({ key: `scene:${scene}`, name: `场景人格·${scene}`, chars: [...text].length, updatedAt: Date.now() });
+      }
+    } catch { /* 人格层读不到只是这一块空着 */ }
+    let rag = 'off';
+    try {
+      const vectors = vectorIndexStats();
+      rag = vectors?.exists && (vectors.count ?? 0) > 0 ? 'ok' : 'off';
+    } catch { rag = 'off'; }
+    return brainFeed.snapshot({
+      records, config: DEFAULT_MEMORY_CARD_CONFIG, persona: { layers },
+      rag, keys: [...keys], labelFor: brainLabelFor, key,
+    });
+  }
+  // 星图的后台动作合成一个 20 秒的定时器（不额外起线程，也不做重活）：
+  //   1) 记忆档变了 → 比对出「记下 / 改了 / 淡忘」三类事件（这几种在桥接里没有写入点，
+  //      记忆卡是 DSH 侧的插件在维护，只能靠比对文件变化来发现）；
+  //   2) 检索索引条数变了 → 发 rag.index（页面统计那行跟着动）；
+  //   3) 顺手清理过期轨迹（每天最多真扫一次）。
+  let brainArchiveSig = '';
+  let brainArchiveMap = new Map();
+  let brainArchiveSeeded = false;
+  let brainIndexTotal = -1;
+  let brainIndexPrev = -1; // 上一拍的条数：只有连着两拍相同，才拿它当可信基线
+  let brainTraceDay = '';
+  function brainTick() {
+    try {
+      const file = MEMORY_CARD_PATHS.fullJsonl;
+      let sig = '';
+      try { const st = fs.statSync(file); sig = `${st.size}:${Math.round(st.mtimeMs)}`; } catch { sig = ''; }
+      if (sig && sig !== brainArchiveSig) {
+        brainArchiveSig = sig;
+        const records = readAllFullRecords(MEMORY_CARD_PATHS) ?? [];
+        const next = new Map();
+        for (const r of records) {
+          if (!r?.id) continue;
+          const id = String(r.id);
+          // 指纹只取「会让人在图上看出变化」的几个字段：清晰度、最近看过、条数、正文长度。
+          const fingerprint = `${r.clarity ?? ''}|${r.lastSeenAt ?? ''}|${r.recallCount ?? 0}|${String(r.text ?? '').length}`;
+          next.set(id, { fingerprint, record: r });
+          if (!brainArchiveSeeded) continue; // 第一轮只建立基线，不然一开机就是上百条「记下」
+          const prev = brainArchiveMap.get(id);
+          const unit = `ltm:${id}`;
+          const key = typeof r.conversationKey === 'string' && r.conversationKey ? r.conversationKey : null;
+          if (!prev) {
+            brainEmit('remember', {
+              key, nodes: [unit], e: { kind: String(r.kind ?? '') },
+              data: () => ({ node: unit, cat: String(r.kind ?? ''), clarityLabel: r.clarity ?? null, title: String(r.title ?? ''), text: String(r.text ?? ''), source: 'archive' }),
+            });
+          } else if (prev.fingerprint !== fingerprint) {
+            brainEmit('update', {
+              key, nodes: [unit], e: { kind: String(r.kind ?? '') },
+              data: () => ({ node: unit, cat: String(r.kind ?? ''), clarityLabel: r.clarity ?? null, title: String(r.title ?? ''), text: String(r.text ?? ''), source: 'archive' }),
+            });
+          }
+        }
+        for (const [id, prev] of brainArchiveMap) {
+          if (next.has(id)) continue;
+          const r = prev.record ?? {};
+          const key = typeof r.conversationKey === 'string' && r.conversationKey ? r.conversationKey : null;
+          brainEmit('forget', {
+            key, nodes: [`ltm:${id}`], e: { reason: 'archived' },
+            data: () => ({ node: `ltm:${id}`, deleted: true, title: String(r.title ?? ''), text: String(r.text ?? ''), source: 'archive' }),
+          });
+        }
+        brainArchiveMap = next;
+        brainArchiveSeeded = true;
+      }
+    } catch (error) {
+      log('星图：比对记忆档失败:', error?.message ?? error);
+    }
+    try {
+      const total = memoryIndexStats()?.total ?? 0;
+      // 只有「连着两拍条数一样」才敢把它当基线：整库重建的几个 tick 里条数会忽大忽小，
+      // 拿中途的数字去比，会把重建报成「刚索引了 N 条」。基线稳住之后再只报「变多」——
+      // 变少通常也是重建的中间态，真删除有档案比对得到的 forget 兜着。
+      if (brainIndexTotal >= 0 && brainIndexPrev === brainIndexTotal && total > brainIndexTotal) {
+        const added = total - brainIndexTotal;
+        // 数字放 data：页面的事件条读 d.added / d.total（n 只进轨迹，给回放用）。
+        brainEmit('rag.index', { nodes: [], n: { total, items: added }, data: () => ({ added, total }) });
+        brainIndexTotal = total;
+      } else if (brainIndexPrev === total) {
+        brainIndexTotal = total;
+      }
+      brainIndexPrev = total;
+    } catch { /* 索引还没建好：下一轮再报 */ }
+    try {
+      const day = brainLocalDay(Date.now());
+      if (day !== brainTraceDay) {
+        brainTraceDay = day;
+        brainFeed.cleanupTrace();
+      }
+    } catch { /* 清理失败不影响其它两件 */ }
+  }
+  const brainTimer = setInterval(brainTick, 20_000);
+  // 不把进程钉在事件循环上：桥接真正活着靠的是 QQ 长连接，这个定时器只是清理和记账。
+  brainTimer.unref?.();
 
   // ── 本地控制台（独立 Web 面板，不依赖 DSH WebUI） ───────────────────────────
   // 模式/角色/静默状态都存 state/*.json，桥接即时感知；此服务只读写这些文件。
@@ -6251,6 +6483,7 @@ async function main() {
               v2TurnStartAt.delete(sid);
               turnLeaseNoted.delete(sid);
               toolCallNames.delete(sid);
+              forgetBrainToolArgs(sid);
               pendingSendToolCalls.delete(sid);
               sendToolSucceededSessions.delete(sid);
               // 订阅也要退掉，否则它会在每次重连时被重新 follow 并重发整份快照。
@@ -9306,6 +9539,7 @@ async function main() {
           v2TurnStartAt.delete(oldSessionId);
           turnLeaseNoted.delete(oldSessionId);
           toolCallNames.delete(oldSessionId);
+          forgetBrainToolArgs(oldSessionId);
           const pe = pending.get(key);
           if (pe) {
             clearTimeout(pe.timer);
@@ -9405,10 +9639,24 @@ async function main() {
           pendingSendToolCalls.clear();
           v2TurnStartAt.clear();
           toolCallNames.clear();
+          forgetBrainToolArgs(null);
           saveState();
           try { fs.writeFileSync(ACTIVITY_LOG, ''); } catch {}
           log(`控制台：已清空 QQ 聊天工作区（停止 ${stoppedCount} 个、归档 ${archivedCount} 个会话，映射与活动日志已清空）`);
           sendJson({ ok: true, archivedCount, stoppedCount });
+          return;
+        }
+        // ── 记忆检索：控制台搜全量记忆（BM25 + 向量混合），替代逐行 substring ──────
+        if (req.method === 'POST' && url.pathname === '/api/memory/search') {
+          const body = await readBody();  // readBody() 已经 JSON.parse 过，且空体返回 {}
+          const out = await memoryRecall.searchMemoryAsync(MEMORY_CARD_PATHS.dir, String(body.query ?? ''), {
+            limit: Math.max(1, Math.min(20, Number(body.limit) || 8)),
+            scope: String(body.scope ?? ''),
+            maxChars: Math.max(80, Math.min(2000, Number(body.maxChars) || 400)),
+            hybrid: body.hybrid !== false,
+          });
+          // sendJson(obj, status)：成功直接回结果，失败按 §1.7 给 code/error/hint。
+          sendJson(out.ok ? out : { ok: false, code: out.code, error: out.error, hint: out.hint }, out.ok ? 200 : 400);
           return;
         }
         // ── 重启桥接（守护模式下 5 秒后自动拉起） ──────────────────────────────
@@ -9427,7 +9675,7 @@ async function main() {
         }
         // ── 记忆卡容量告警：只私聊管理员本人，不发群、不接受任意收件人 ──────────
         if (req.method === 'POST' && url.pathname === '/api/memory-card/notify') {
-          const body = JSON.parse(await readBody() || '{}');
+          const body = await readBody();  // readBody() 已经 JSON.parse 过，且空体返回 {}
           if (!cfg.ownerQQ) { sendJson({ ok: false, error: '未配置管理员 QQ（ownerQQ）' }, 400); return; }
           const level = Math.max(1, Math.min(3, Number(body.level) || 1));
           const now = Date.now();
@@ -9454,6 +9702,206 @@ async function main() {
             sendJson({ ok: false, error: `发送失败：${error?.message ?? error}` }, 502);
           }
           return;
+        }
+        // ── 星图：页面与数据面 ────────────────────────────────────────────────
+        // 全部只读，唯一的写操作是改 config.json 的 brain.enabled（页面上的开关）。
+        // 智能体调用在外层关卡已经被拦下（/api/brain/* 不在 agent 白名单里 → CONSOLE_ONLY），
+        // 这里不再重复判定：星图是给人看的管理面，不是给会话主体用的面。
+        if (req.method === 'GET' && (url.pathname === '/brain' || url.pathname === '/brain.html')) {
+          try {
+            const html = fs.readFileSync(path.join(ROOT, 'public', 'brain.html'), 'utf8');
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+            res.end(html);
+          } catch {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
+            res.end('星图页面缺失：surfcore/public/brain.html');
+          }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/brain/events') {
+          // SSE：这一条不能再走 sendJson（它写完就 end，长连接会被立刻掐掉）。
+          const client = brainFeed.handleEvents(req, res, {
+            key: url.searchParams.get('key'),
+            lastEventId: req.headers['last-event-id'] ?? url.searchParams.get('lastId'),
+            headers: SECURITY_HEADERS,
+          });
+          // client 为 null 时 handleEvents 已经自己回过 429（连接数满），这里不能补写。
+          if (!client) log('星图：实时连接已达上限，拒绝了一个新连接');
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/promise/list') {
+          // 约定账本（只读）：控制台看到「记着哪些事、哪条提过、哪天到期」。
+          // 不给智能体开放 —— 里面有别人会话的约定，属于管理端视图。
+          const config = promiseWatch.normalizePromiseConfig(cfg.promiseWake ?? {});
+          const ledger = promiseLedger(true);
+          const today = brainLocalDay(Date.now());
+          sendJson({
+            ok: true,
+            file: promiseLedgerFile(),
+            config,
+            inWindow: promiseWatch.inReminderWindow(Date.now(), config),
+            today,
+            ...promiseWatch.ledgerSummary(ledger, { today }),
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/promise/status') {
+          // 人工确认一条约定：办完了标 done，不做了标 cancelled，撤回确认回 pending。
+          // 只能改状态，不能改到期日和正文 —— 那些是从记忆档里解析出来的，手改会被下次扫档覆盖，
+          // 与其让用户以为改成功了，不如直接不允许。
+          const body = await readBody();
+          const id = String(body.id ?? '').trim();
+          const status = String(body.status ?? '').trim();
+          const ledger = promiseLedger(true);
+          const updated = promiseWatch.setStatus(ledger, id, status, {
+            note: String(body.note ?? '').slice(0, 200),
+          });
+          if (!updated) {
+            sendJson({ ok: false, code: 'promise.not-found', error: '没有这条约定，或状态值不合法（只能是 done / missed / cancelled / pending）' }, 404);
+            return;
+          }
+          if (!promiseSaveLedger(ledger)) {
+            sendJson({ ok: false, code: 'promise.save-failed', error: '账本写盘失败' }, 500);
+            return;
+          }
+          log(`[约定] 人工把 ${id} 标为 ${updated.status}${updated.note ? `（${updated.note}）` : ''}`);
+          sendJson({ ok: true, item: updated });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/promise/tick') {
+          // 手动跑一遍检查（排查用）：不投递，只把「现在跑会认到几条、会给哪个会话排唤醒」讲清楚。
+          // 故意不复用 promiseTick：那个函数有 5 分钟扫档节流，手动跑一次看不出真结果。
+          const now = Date.now();
+          const config = promiseWatch.normalizePromiseConfig(cfg.promiseWake ?? {});
+          let records = [];
+          try { records = readAllFullRecords(MEMORY_CARD_PATHS) ?? []; } catch { records = []; }
+          const ledger = promiseLedger(true);
+          const synced = promiseWatch.syncLedger(ledger, records, { now });
+          const today = brainLocalDay(now);
+          const due = promiseWatch.dueItems(synced.ledger, { today, graceDays: config.graceDays, now });
+          sendJson({
+            ok: true,
+            today,
+            records: records.length,
+            candidates: promiseWatch.promiseCandidates(records, { now }).length,
+            ledgerItems: Object.keys(synced.ledger.items).length,
+            dueNow: due.length,
+            inWindow: promiseWatch.inReminderWindow(now, config),
+            allowed: due.filter((it) => isSessionAllowedInCurrentMode(it.key)).length,
+            items: due.slice(0, 20).map((it) => ({ id: it.id, key: it.key, dueDate: it.dueDate, text: it.text })),
+            hint: config.enabled === false ? 'promiseWake.enabled=false：关着，不会提'
+              : (!promiseWatch.inReminderWindow(now, config) ? `现在不在提醒窗口 [${config.at}, ${config.until}) 内`
+                : (currentMode !== 'reserved2' ? '当前不是 reserved2 模式，不会提' : '')),
+          });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/brain/snapshot') {
+          sendJson(brainSnapshot(url.searchParams.get('key')));
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/brain/replay') {
+          const out = brainReplay.replay({
+            day: String(url.searchParams.get('day') ?? ''),
+            key: url.searchParams.get('key'),
+          });
+          sendJson(out.ok ? out : { ok: false, code: 'brain.bad-day', error: out.error, hint: '页面上的日期只在最近 7 天里可选' }, out.ok ? 200 : 400);
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/brain/decay-curve') {
+          let records = [];
+          try { records = readAllFullRecords(MEMORY_CARD_PATHS) ?? []; } catch { records = []; }
+          const out = brainFeed.decayCurve({
+            unit: String(url.searchParams.get('unit') ?? ''),
+            config: DEFAULT_MEMORY_CARD_CONFIG,
+            findRecord: (id) => records.find((r) => String(r?.id) === String(id)) ?? null,
+          });
+          if (!out) {
+            sendJson({ ok: false, code: 'brain.unit-missing', error: '找不到这条记忆：它可能已经被压缩掉或改了编号', hint: '重新打开一次星图就能拿到最新的节点列表' }, 404);
+            return;
+          }
+          sendJson(out);
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/brain/probe') {
+          const body = await readBody();
+          const query = String(body.query ?? '').trim().slice(0, 200);
+          // 检索演示面板还能单独填关键词（比如「看海 周五」）：并进查询串一起打，
+          // 否则那两格在页面上就是装饰 —— 用户填了却不起作用比没有更糟。
+          const keywords = (Array.isArray(body.keywords) ? body.keywords : [])
+            .map((k) => String(k ?? '').trim()).filter(Boolean).slice(0, 12);
+          const probeQuery = (keywords.length ? [query, ...keywords].join(' ') : query).slice(0, 200);
+          const now = Date.now();
+          if (now - brainProbeAt < 2000) {
+            sendJson({ ok: false, code: 'brain.probe-throttled', error: '探针 2 秒只能打一次', hint: '它真的会跑一次检索（含向量），别按着回车不放' }, 429);
+            return;
+          }
+          brainProbeAt = now;
+          const started = Date.now();
+          const out = await memoryRecall.searchMemoryAsync(MEMORY_CARD_PATHS.dir, probeQuery, { limit: 8, hybrid: true });
+          const items = Array.isArray(out.items) ? out.items : [];
+          // 页面原本画「五路检索各找到什么」，SurfCore 只有两路：关键词（BM25）与向量。
+          const viaOf = (item) => (Array.isArray(item?.via) ? item.via : []);
+          const routes = { bm25: 0, vector: 0 };
+          for (const item of items) {
+            for (const via of viaOf(item)) {
+              if (via === 'bm25') routes.bm25 += 1;
+              else if (String(via).startsWith('vec')) routes.vector += 1;
+            }
+          }
+          const ms = Date.now() - started;
+          if (out.ok) {
+            // items / ranked 给页面画粒子用：页面的检索动画读的是「命中了哪几条、各自从哪一路来」，
+            // 只给条数的话它会以为一条都没找到（Array.isArray(d.items) 为假）。
+            const top = items.slice(0, 20);
+            const dataset = {
+              query,
+              ms,
+              source: out.mode === 'bm25' ? 'keyword' : 'hybrid',
+              semantic: out.mode === 'bm25' ? 'off' : 'ok',
+              items: top.map((item) => ({ node: `ltm:${item.id}`, title: String(item.title ?? ''), summary: String(item.text ?? '') })),
+              ranked: top.map((item) => ({ node: `ltm:${item.id}`, sources: viaOf(item) })),
+            };
+            brainEmit('search', {
+              key: null,
+              nodes: top.map((item) => `ltm:${item.id}`),
+              n: { ms, items: items.length },
+              e: { source: 'probe', semantic: dataset.semantic },
+              data: () => dataset,
+            });
+          }
+          sendJson(out.ok ? {
+            ok: true, query, ms,
+            items: items.map((item) => ({
+              node: `ltm:${item.id}`, title: String(item.title ?? ''), summary: String(item.text ?? ''),
+              line: String(item.lastSeenAt ?? item.createdAt ?? ''), day: String(item.createdAt ?? '').slice(0, 10),
+              score: Number(item.score) || 0, via: viaOf(item),
+            })),
+            ranked: items.map((item) => ({ node: `ltm:${item.id}`, score: Number(item.score) || 0, sources: viaOf(item) })),
+            routes,
+            source: out.mode === 'bm25' ? 'keyword' : 'hybrid',
+            semantic: out.mode === 'bm25' ? 'off' : 'ok',
+          } : { ok: false, code: out.code, error: out.error, hint: out.hint }, out.ok ? 200 : 400);
+          return;
+        }
+        if (url.pathname === '/api/brain/control') {
+          if (req.method === 'GET') {
+            // clients 是函数不是 Set：feed 只把「有几个页面连着」这个数交出来。
+            sendJson({ ok: true, enabled: brainEnabled(), clients: brainFeed.clients() });
+            return;
+          }
+          if (req.method === 'POST') {
+            const body = await readBody();
+            const enabled = body.enabled === true;
+            if (!setBrainEnabled(enabled)) {
+              sendJson({ ok: false, code: 'brain.config', error: `读不到或写不了 ${BRAIN_CONFIG_FILE}`, hint: '确认 config.json 是合法的 JSON 对象' }, 500);
+              return;
+            }
+            // 关掉时直接断开所有页面连接：让它们立刻知道「实时流停了」，而不是安静地收不到东西。
+            if (!enabled) brainFeed.closeAll();
+            log(`星图：已${enabled ? '开启' : '关闭'}（config.json 的 brain.enabled）`);
+            sendJson({ ok: true, enabled });
+            return;
+          }
         }
         sendJson({ ok: false, error: 'not found' }, 404);
       } catch (error) {
@@ -10151,6 +10599,15 @@ async function main() {
     return { text: fallbackText };
   }
 
+  /** 本地补丁（2026-11-05）：表情包只按文字标签理解，默认不加载原图。 */
+  function stickerTextOnly() {
+    try {
+      return String(cfg.socialV2?.vision?.stickerTextOnly ?? 'true').toLowerCase() !== 'false';
+    } catch {
+      return true;
+    }
+  }
+
   function stickerMetaFor(media) {
     const id = String(media?.emojiId || media?.stickerId || '').trim();
     const entry = id && Array.isArray(stickerEntries)
@@ -10186,6 +10643,12 @@ async function main() {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
         parts.push({ type: 'text', text: `[图片/表情 ${index}（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）]` });
+        continue;
+      }
+      if (media.kind === 'sticker' && stickerTextOnly()) {
+        // 表情包：只用文字标签，原图不下载、不送模型。
+        const label = stickerMetaFor(media);
+        parts.push({ type: 'text', text: label ? `【表情：${label}】` : '【表情】（未加载原图）' });
         continue;
       }
       if (!media || typeof media !== 'object') continue;
@@ -10253,6 +10716,22 @@ async function main() {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
         out.push({ index, kind: media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : 'image'), text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
+        continue;
+      }
+      if (media.kind === 'sticker' && stickerTextOnly()) {
+        // 表情包：原图不下载、不送模型；但「这是什么表情」的定位字段要留着——
+        // 同函数其它分支（模型不支持图片 / 取图失败）都带 summary 与 emojiId，
+        // 只有这条丢，会让下游（emojiCdnCandidates 按 id 推 CDN、stickerMetaFor 按 id
+        // 配收藏列表备注）失去锚点。summary 已 sanitize 并限长 60。
+        const label = stickerMetaFor(media);
+        out.push({
+          index,
+          kind: 'sticker',
+          imageOmitted: true,
+          ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
+          ...(media.summary ? { summary: sanitizeMediaSummary(media.summary) } : {}),
+          text: label ? `【表情：${label}】` : '【表情】（未加载原图）',
+        });
         continue;
       }
       if (!media || typeof media !== 'object') continue;
@@ -10478,6 +10957,14 @@ async function main() {
     }
     await sendToQQ(key, text);
     if (lastSendSucceeded(key)) recordSelfMemoryEvent(key, text);
+    // 星图：只有真的发出去了才算「说了话」。lastSendSucceeded 是唯一的成功凭据 ——
+    // sendToQQ 失败时只打一行日志、照样 resolve，用它兜住才不会在图上画出没发生的话。
+    if (lastSendSucceeded(key)) {
+      brainEmit('msg.out', {
+        key, nodes: [], e: { dir: 'out' },
+        data: () => ({ dir: 'out', name: '', text: String(text ?? '') }),
+      });
+    }
     return true;
   }
 
@@ -12716,6 +13203,175 @@ async function main() {
     setTimeout(() => { void purposeTick(); }, 8000).unref?.();
   }
 
+  // ── 约定提醒（第 5 件） ────────────────────────────────────────────────
+  //
+  // 目标：记忆档里「明天一起去猫咪小镇」「下周五见面」这类带明确日期的约定，到期那天提一句。
+  //
+  // 三层分工，别混：
+  //   · `promise-watch.js` —— 纯函数：解析到期日、维护旁挂账本。不碰桥接、不发消息。
+  //   · 这里（tick）—— 扫档 → 并账本 → 挑出这个会话今天该提的 → **交给 scheduleWakeV2**。
+  //   · `scheduleWakeV2` —— 模式/白名单/暂停/通道/鱼群/Token 额度/繁忙暂存，七道闸。
+  //
+  // 为什么要绕这么一圈而不是直接 deliverPrompt：deliverPrompt 只有会话 busy 判定，
+  // 没有白名单、没有暂停、没有每日额度。约定提醒是**自己发起的**唤醒，一旦绕过闸门，
+  // 就等于开了一条"没有人的消息也能叫醒她"的旁路。这是本次接线的全部重点。
+  let promiseTimer = null;
+  let promiseLedgerCache = { file: '', ledger: null, mtime: 0 };
+  let promiseLastScanAt = 0;   // 扫档节流：记忆档不会一秒一变，扫太勤只是白读 109 条。
+  let promiseLastLogAt = 0;
+  // 本次唤醒该提哪些约定（tick 写入、buildWakePromptV2 消费、投递后清掉）。
+  // 用 Map 而不是塞进 st：唤醒提示词是纯读的，不该为了读一段文本去改会话状态。
+  const promiseWakePending = new Map(); // key -> { at, ids, items }
+
+  /** 账本路径跟着当前角色走（和 purpose-outreach.json 同一层次）。 */
+  function promiseLedgerFile() {
+    const cur = readCurrentCharacter();
+    if (cur?.id) {
+      try {
+        const dir = characterPaths(cur.id).dir;
+        fs.mkdirSync(dir, { recursive: true });
+        return promiseWatch.ledgerPathFor(dir);
+      } catch (error) {
+        log(`[约定] 角色目录不可写，回退到 state/promise-due.json：${error?.message ?? error}`);
+      }
+    }
+    return path.join(STATE_DIR, 'promise-due.json');
+  }
+
+  /** 读账本（按 mtime 缓存：控制台/人工改过就重读，否则用内存里的）。 */
+  function promiseLedger(force = false) {
+    const file = promiseLedgerFile();
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs || 0; } catch {}
+    const cached = promiseLedgerCache;
+    if (!force && cached.ledger && cached.file === file && cached.mtime === mtime) return cached.ledger;
+    const ledger = promiseWatch.loadLedger(file);
+    promiseLedgerCache = { file, ledger, mtime };
+    return ledger;
+  }
+
+  function promiseSaveLedger(ledger) {
+    const file = promiseLedgerFile();
+    try {
+      const saved = promiseWatch.saveLedger(file, ledger);
+      let mtime = 0;
+      try { mtime = fs.statSync(file).mtimeMs || 0; } catch {}
+      // 存完就把缓存对齐到磁盘，否则下一次 tick 会因为 mtime 变了而重读一遍。
+      promiseLedgerCache = { file, ledger: saved, mtime };
+      return true;
+    } catch (error) {
+      log(`[约定] 写账本失败：${error?.message ?? error}`);
+      return false;
+    }
+  }
+
+  function promiseLogThrottled(message) {
+    if (Date.now() - promiseLastLogAt < 10 * 60_000) return;
+    promiseLastLogAt = Date.now();
+    log(message);
+  }
+
+  /**
+   * 一遍：扫档 → 并账本 → 对每个会话挑今天该提的 → 交给 scheduleWakeV2。
+   *
+   * 注意几个「宁可漏」的选择：
+   *   · 不知道发给谁（key 猜不出来）的约定不入账 —— 不能发给错的人；
+   *   · 会话不在白名单 / 不在当前模式 → 不提醒（账本留着，不标已提，明天还能提）；
+   *   · 账本写失败 → 这一轮整个不发（先记后投，记不住就不投，免得每 60 秒重复提醒）。
+   */
+  function promiseTick() {
+    const config = promiseWatch.normalizePromiseConfig(cfg.promiseWake ?? {});
+    if (config.enabled === false) return;
+    if (currentMode !== 'reserved2') return;
+    if (cfg.socialV2?.enabled === false || socialV2.paused) return;
+    const now = Date.now();
+    let ledger = promiseLedger();
+    // 扫档节流：60 秒一次 tick，但记忆档 5 分钟扫一次就够。
+    if (now - promiseLastScanAt >= 5 * 60_000) {
+      promiseLastScanAt = now;
+      let records = [];
+      try { records = readAllFullRecords(MEMORY_CARD_PATHS) ?? []; } catch { records = []; }
+      if (records.length) {
+        const synced = promiseWatch.syncLedger(ledger, records, { now });
+        if (synced.added.length) {
+          // syncLedger 返回的是**新**对象（items 是副本），必须把局部变量指过去，
+          // 否则这一轮的 expireStale/dueItems 还在读旧账本，新认出的约定要等下一轮才生效。
+          // 这里刻意不用 promiseLedgerCache.ledger 回读：markFired 后面会原地改这个局部账本，
+          // 让它和缓存共用同一个对象的话，一旦写盘失败，缓存里就是「已提」的假状态，
+          // 下一轮 tick 会以为今天提过了而不再补 —— 等于静默吞掉一条提醒。
+          ledger = synced.ledger;
+          promiseSaveLedger(ledger);
+          log(`[约定] 新认出 ${synced.added.length} 条带日期的约定（合计 ${Object.keys(ledger.items).length} 条）`);
+        }
+      }
+    }
+    // 过了「到期 + 缓冲」的标成 expired，不再打扰。
+    // 用和星图同一个本地日期函数：promise-watch 里的 dateKey 没导出，两边口径必须一致。
+    const today = brainLocalDay(now);
+    const expired = promiseWatch.expireStale(ledger, { today, graceDays: config.graceDays, now });
+    if (expired.length) {
+      promiseSaveLedger(ledger);
+      log(`[约定] ${expired.length} 条过了缓冲期，标记为过期不再提`);
+    }
+    // 到点闸门：只在 [at, until) 这个窗口里才发起约定提醒。
+    // 以前只有下限（at），深夜 tick 照样会弹「今天到期」—— 那是闹钟不是记事本。
+    if (!promiseWatch.inReminderWindow(now, config)) return;
+
+    // 谁今天有到期约定：按会话分组，一个会话最多一次唤醒（多条合成一段）。
+    const byKey = new Map();
+    for (const item of promiseWatch.dueItems(ledger, { today, graceDays: config.graceDays, now })) {
+      if (!byKey.has(item.key)) byKey.set(item.key, []);
+      byKey.get(item.key).push(item);
+    }
+    if (!byKey.size) return;
+
+    for (const [key, items] of byKey) {
+      // 白名单 / 模式 / 暂停：都在 scheduleWakeV2 里再查一遍，但这里先挡掉，
+      // 免得把一个注定被丢弃的唤醒排进定时器、还占掉当天的 maxPerDay 名额。
+      if (!isSessionAllowedInCurrentMode(key)) {
+        promiseLogThrottled(`[约定] 跳过 ${key}：会话不在当前模式的白名单里（账本保留，明天还能提）`);
+        continue;
+      }
+      // 今天这个会话已经提过几条了？maxPerDay 管的是「不同会话」，同一会话合并成一条。
+      const firedTodayInKey = Object.values(ledger.items)
+        .filter((it) => it.key === key && it.firedDay === today).length;
+      if (firedTodayInKey >= Math.max(1, config.maxPerDay)) {
+        promiseLogThrottled(`[约定] 跳过 ${key}：今天已经提过 ${firedTodayInKey} 次（上限 ${config.maxPerDay}）`);
+        continue;
+      }
+      // 先记后投：投递失败也不重来（否则一个坏通道会每 60 秒刷一次）。
+      // 顺序：markFired 改内存 → 写盘成功才发唤醒；写盘失败就撤销标记、本轮不发。
+      const ids = items.map((it) => it.id);
+      const previous = ids.map((id) => ({ id, ...ledger.items[id] }));
+      if (!promiseWatch.markFired(ledger, ids, { now }).length) continue;
+      if (!promiseSaveLedger(ledger)) {
+        // 没写进账本 = 这条约定没被记成「已提」；发出去的话下一轮 tick 还会再提一次。
+        for (const item of previous) ledger.items[item.id] = item;
+        log('[约定] 账本写盘失败，本轮不发（改了内存也要撤回，免得下次重复提醒）');
+        continue;
+      }
+      // 记下这一轮该提哪些：buildWakePromptV2 从 wallet 里取（它只能拿到 key 和 reason）。
+      promiseWakePending.set(key, { at: now, ids, items });
+      try {
+        scheduleWakeV2(key, 'promiseDue');
+        log(`[约定] ${key} 有 ${items.length} 条到期约定，已排一次唤醒（不保证投递：还要过白名单/额度/鱼群）`);
+      } catch (error) {
+        log(`[约定] 排唤醒失败 ${key}：${error?.message ?? error}`);
+      }
+    }
+  }
+
+  function startPromiseLoop() {
+    if (promiseTimer) return;
+    promiseTimer = setInterval(promiseTick, 60 * 1000);
+    promiseTimer.unref?.();
+    let count = 0;
+    try { count = Object.keys(promiseLedger().items).length; } catch {}
+    log(`[约定] 已启动：每 60 秒检查一次，${cfg.promiseWake?.at ?? '10:00'} 之后才提醒（账本现有 ${count} 条）`);
+    // 启动时立刻扫一遍：停机期间到期的约定不该再等一个整点。
+    setTimeout(() => { try { promiseTick(); } catch (error) { log(`[约定] 首次检查失败：${error?.message ?? error}`); } }, 12_000).unref?.();
+  }
+
   /** 她真的往主人私聊发了消息（所有发送端点最终都会记到这里）。 */
   function notePurposeOutbound(key, messages) {
     if (!purposeRun || purposeRun.key !== key) return;
@@ -13030,6 +13686,24 @@ async function main() {
       const safeErrText = shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;
       if (!opts.silent) await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
       return { ok: false, error: safeErrText };
+    }
+    // 星图：投递被接受之后才算「醒了一次 / 注入了这几条旧记忆」。
+    // 特意放在接受点之后：被拒、过期、模式切换拦下的投递在页面上不该显示成发生过的事。
+    if (opts.wakeReason) {
+      const reason = String(opts.wakeReason);
+      const injected = brainLastInject.get(key);
+      brainLastInject.delete(key);
+      brainEmit('wake', {
+        key, nodes: [], e: { reason },
+        data: () => ({ reason }),
+      });
+      if (injected?.ltm?.length) {
+        brainEmit('inject', {
+          key, nodes: injected.ltm, n: { chars: injected.chars, items: injected.ltm.length },
+          e: { source: 'bm25', recall: true },
+          data: () => ({ ltm: injected.ltm, chars: injected.chars, recall: true, source: 'bm25' }),
+        });
+      }
     }
     if (wakeSnapshot && isCurrentSession(key, sessionId)
         && socialV2.conversations.get(canonicalV2Key(key)) === wakeState
@@ -14618,9 +15292,38 @@ async function main() {
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
     const memoryCardText = memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
+    // 约定到期（第 5 件）：**只在这个会话确实有到期约定时**才注入。
+    // 待提的那几条由 promiseTick 在排唤醒时写进 promiseWakePending —— 这里只读。
+    // 取走即删：这次没投出去（被白名单/额度拦下），下一轮 tick 会重新排、重新记。
+    const promisePending = promiseWakePending.get(key);
+    let promiseLine = '';
+    if (promisePending && Array.isArray(promisePending.items) && promisePending.items.length) {
+      promiseWakePending.delete(key);
+      const promiseText = promiseWatch.promiseWakeText(promisePending.items, {
+        name: (String(adminIdentity()?.displayName || '').trim() || '主人'),
+        today: brainLocalDay(Date.now()),
+      });
+      promiseLine = promiseText ? `${promiseText}\n\n` : '';
+    }
+    // 记忆检索（第 1 件）：只有对方这句话像「在回忆」时才注入几条命中的旧事。
+    // 同步纯 BM25 —— 唤醒路径不许 await 一个外部服务，否则服务一慢就把唤醒拖住。
+    // 语义（向量）检索留给控制台 API；失败/没命中一律空串，绝不冒异常。
+    const brainHits = [];
+    const memoryRecallText = lastMsg && cfg.memoryRecall?.enabled !== false
+      ? memoryRecall.recallBlock(MEMORY_CARD_PATHS.dir, String(lastMsg.text || lastMsg.plain || ''), {
+        avoidText: memoryCardText,
+        // 星图要把「这次唤醒注入了哪几条旧记忆」画出来：命中编号在这里记下，
+        // 投递被接受之后才发事件（见 deliverPromptNow），没投出去的不算发生过。
+        onHits: (hits) => {
+          for (const hit of hits) if (hit?.id) brainHits.push(`ltm:${hit.id}`);
+        },
+      })
+      : '';
+    brainLastInject.set(key, { at: Date.now(), ltm: brainHits.slice(0, 50), chars: memoryRecallText.length });
+    const memoryRecallLine = memoryRecallText ? `${memoryRecallText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + memoryRecallLine + promiseLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -14629,6 +15332,8 @@ async function main() {
       admin: adminLine.length,
       bili: biliLine.length,
       memory: memoryCardLine.length,
+      memoryRecall: memoryRecallLine.length,
+      promise: promiseLine.length,
       voice: voiceLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
@@ -14655,6 +15360,9 @@ async function main() {
     }
     if (reason === 'replyCheck') {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n先看有没有人回。如果没人回，这段对话可能已经自然结束：不用硬补一句，也不用为了收尾去等 5 分钟沉睡前观察——直接判断，还有想说的就回，没有就 qq_close_conversation 自然收尾（不是潜水，唤醒配置不变）。如果有人回你，先看【对话收尾判断】再决定接不接；需要确认对方是否说完，用 qq_wait_for_messages(purpose="reply")。`;
+    }
+    if (reason === 'promiseDue') {
+      return `${base}【唤醒】${key}\n原因：今天是某条约定的日子，你之前和对方说好的事到期了（见上面的【到期的约定】）。\n这不是对方的消息，是你自己的记事本响了。先看这个会话最近有没有人在说话：有人正在聊就顺着聊、自然地把约定点出来；没人说话再考虑要不要为这件事开一句。已经办完了/对方说不做了，用 qq_mark_read 安静收尾即可，账本那边不用你管。别像闹钟一样念日期。`;
     }
     if (reason === 'proactiveCheck') {
       return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
@@ -14686,7 +15394,9 @@ async function main() {
     if (cfg.socialV2?.enabled === false) return;
     if (currentMode !== 'reserved2' || socialV2.paused) return;
     const stForGuard = getSocialV2State(key);
-    const autoWake = ['proactiveCheck', 'timeout', 'replyCheck', 'history', 'bootstrap'].includes(String(reason));
+    // 「不是人主动叫的」唤醒：发送通道失败后要能暂停重试，别拿一个坏通道反复空烧。
+    // promiseDue 在这里是必须的 —— 它由定时器自己发起，没有人会替它重试。
+    const autoWake = ['proactiveCheck', 'timeout', 'replyCheck', 'history', 'bootstrap', 'promiseDue'].includes(String(reason));
     const channel = qqSendChannelStatus();
     if (!channel.ok) {
       if (!stForGuard.channelGateLoggedAt || Date.now() - stForGuard.channelGateLoggedAt > 10 * 60 * 1000) {
@@ -14968,6 +15678,9 @@ async function main() {
     // 合并窗口里如果同时来了真实消息，会升级成消息类原因，历史仍留在快照里。
     history: 25,
     backlog: 22,
+    // 约定到期：定时器类，比「主动机会」更值得开口（对方答应过的事），
+    // 但低于任何「有人正在说话」的原因 —— 有人在聊时先接人的话，约定那句留到快照里。
+    promiseDue: 24,
     proactiveCheck: 20
   };
 
@@ -14980,7 +15693,9 @@ async function main() {
   // 与「未读消息」无关的唤醒原因（定时器/引导/上线补历史）。这些原因在会话繁忙时被暂存后，
   // 不能用「unread 里还有没有对应 seq」来判断是否还要补发 —— 那一轮很可能已经把
   // 未读全部标读了，结果就是 timeout 定时器被静默丢掉、会话停在无定时器的静默态。
-  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin', 'history', 'backlog']);
+  // promiseDue 必须在这里：约定提醒是定时器类，会话忙时被暂存后要靠它补发；
+  // 漏掉就会被当消息类、按 unread 水位判定「已被处理」而静默丢弃（当天不再提）。
+  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin', 'history', 'backlog', 'promiseDue']);
   function isTimerWakeReason(reason) {
     return TIMER_WAKE_REASONS.has(String(reason ?? '').split(':')[0]);
   }
@@ -15584,7 +16299,7 @@ async function main() {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
+    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, cardUrl: true });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
@@ -15623,6 +16338,19 @@ async function main() {
     }
     // 任何入站消息（含纯图片/表情/引用）都先记「谁在说话」，且必须在下面的空文本过滤之前：
     // 语音触发判定只认这条记录，漏记就等于给"换个人来喊"留了后门。
+    // 星图：消息进来了。挂在这里（权限、黑名单、模式闸门之后）是有意的 ——
+    // 被拒绝的会话连一个点都不该在图上出现，那张图不该比实际发生的事更宽。
+    brainEmit('msg.in', {
+      key, nodes: [], e: { dir: 'in' },
+      // 名字按群名片 → 群昵称 → QQ 号退，私聊统一写「私聊」：页面的事件条靠它说清「谁在说话」。
+      data: () => ({
+        dir: 'in',
+        name: kind === 'group'
+          ? String(event.sender?.card || event.sender?.nickname || event.user_id || '')
+          : '私聊',
+        text: String(plainContent ?? ''),
+      }),
+    });
     {
       const isOwnerMsg = String(event.user_id) === String(cfg.ownerQQ ?? '');
       const now = Date.now();
@@ -15718,6 +16446,7 @@ async function main() {
           v2TurnStartAt.delete(old);
           turnLeaseNoted.delete(old);
           toolCallNames.delete(old);
+          forgetBrainToolArgs(old);
           social.silentTurns.delete(old);
           social.exitingSessions.delete(old);
           const pe = pending.get(key);
@@ -16519,6 +17248,9 @@ async function main() {
               const callId = frame.event.data?.callId;
               const args = sanitizeToolArgs(frame.event.data?.arguments ?? frame.event.data?.input ?? frame.event.data);
               appendToolLog({ type: 'call', time: new Date().toISOString(), key, sessionId: frame.sessionId, tool: toolName, args });
+              // 星图：工具事件等结果再发（见下面 tool/result）。调用这一刻还不知道成败，
+              // 先发出去页面只能猜「成功」，工具失败会被画成一件成功的事。
+              if (callId != null) brainToolArgs.set(`${frame.sessionId}:${callId}`, args);
               if (callId != null) {
                 if (isSendToolName(toolName)) {
                   let pending = pendingSendToolCalls.get(frame.sessionId);
@@ -16551,6 +17283,19 @@ async function main() {
                 ok: !resultError,
                 error: errorText ? sanitizeToolArgs(errorText) : null
               });
+              // 星图：工具这件事在结果落定时才发一次，成败、工具名、参数一起给。
+              // 落哪个脑区由工具名决定（见 brain-feed 的 toolRegion：语音→听觉、记忆类→工作记忆、图片/表情→视觉）。
+              {
+                const storeKey = callId != null ? `${frame.sessionId}:${callId}` : '';
+                const args = storeKey ? brainToolArgs.get(storeKey) : null;
+                if (storeKey) brainToolArgs.delete(storeKey);
+                const short = shortToolName(toolName);
+                brainEmit('tool', {
+                  // p.tool 决定脑区（toolRegion 只看最后一段），e.tool / data.name 是页面显示的名字。
+                  key, nodes: [], tool: toolName, e: { tool: toolName, status: resultError ? 'error' : 'ok' },
+                  data: () => ({ tool: short, name: short, ok: !resultError, args: args ?? null }),
+                });
+              }
               if (callId != null) {
                 toolCallNames.get(frame.sessionId)?.delete(String(callId));
                 const pending = pendingSendToolCalls.get(frame.sessionId);
@@ -16602,6 +17347,7 @@ async function main() {
               sendToolSucceededSessions.delete(frame.sessionId);
               pendingSendToolCalls.delete(frame.sessionId);
               toolCallNames.delete(frame.sessionId);
+              forgetBrainToolArgs(frame.sessionId);
               // 目的机制：先把「这一枪到底发没发 / 她写了什么目的」记下来，再走正常收尾。
               try { notePurposeTurnEnded(frame.sessionId, ended, sendToolSucceeded); } catch (error) {
                 log(`[目的] 回合回执异常：${error?.message ?? error}`);
@@ -16931,6 +17677,7 @@ async function main() {
         pendingSendToolCalls.clear();
         v2TurnStartAt.clear();
         toolCallNames.clear();
+        forgetBrainToolArgs(null);
         pendingWakeKeys.clear();
         clearAllPendingWakeLeases();
         social.exitingSessions.clear();

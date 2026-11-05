@@ -164,7 +164,7 @@
 | `tts.route` + `tts.endpoints` | `local` / 8765+8767 | **本地 / 云端切换**；桌宠每次合成前重读磁盘，**桥接要重启才生效**（见 §1.11.1 末注） |
 | `trigger.who` / `groups` / `members` | `owner` / `[]` / `[]` | 谁能触发语音（默认只主人） |
 
-### 1.12 联网搜索 / 目的 / 问候
+### 1.12 联网搜索 / 目的 / 约定提醒 / 问候
 
 - `webSearch`：`provider`（`auto` → DeepSeek 优先、Bing 兜底）、`apiKey` / `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`）、
   `model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs`。
@@ -172,6 +172,10 @@
   `quietStart/quietEnd`（23:30–08:30）、`idleThresholdMs`（主人空闲 30 分钟）、`materialWindowHours`、
   `biliWindowDays`、`maxMaterials`、`minMaterials`、`retryMs`、`maxAttempts`、`maxCandidates`、`promptMaxChars`。
   ⚠️ 新版本还有 `carrier`（qq/pet）、`petModality`、`petFallbackToQQ`，**模板里没有**。
+- `promiseWake`：约定提醒（第 5 件记忆能力的最后一块）。`enabled`（true）、`at`（10:00）、`until`（22:00）、
+  `maxPerDay`（3，管的是「不同会话」，同一天多条约定合成一条）、`graceDays`（2，当天没提成可顺延，过了标过期）。
+  `at` 是下限、`until` 是上限，闭开区间 `[at, until)`；两者相同视为不限结束（想让她半夜也能被约定叫醒才这么配）。
+  数据落在**角色目录**的 `promise-due.json`（跟着角色走，不是全局），从哪里认出约定见 `docs/cases/2026-11-05-promise-watch.md`。
 - `greetings.morning`：`time`（08:00）、`uin`、`name`；默认整体关。
 
 ### 1.13 ⚠️ 模板缺的四段

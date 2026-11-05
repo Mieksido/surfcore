@@ -1,0 +1,1751 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>记忆实时脑图</title>
+<!-- 实时脑图：光点来自 GET /api/brain/snapshot，动作来自 SSE /api/brain/events。
+     这一版的数据源是 SurfCore 自己的：记忆卡全量档（characters/<角色>/memory/memory-card-full.jsonl）
+     + state/brain/trace 的轨迹 + state/tool-calls.jsonl + state/qq-activity.log。
+     它从另一个项目（dsh-memory-brain）的脑图搬过来，那边的「账本 / 话题块 / 实体 / 日记 / 自己的生活」
+     在 SurfCore 里没有对应来源，因此那些扇区只留图例、不再编造光点；遗忘曲线用的是 SurfCore 的
+     清晰度阶梯（vivid/clear/fuzzy/trace/forgotten），不是 FSRS —— FSRS 是移植计划里的后续件。
+     安全约束（照抄控制台）：不引任何外部资源（桥接 CSP 是 default-src 'self'）；
+     接口返回的文字一律经 textContent 进 DOM，整页不用 HTML 字符串拼接；不动态执行代码；只请求同源。 -->
+<style>
+/* 布局：整屏是一颗会转的脑图画布；左边是脑区图例，右边是「实时 / 详情 / 检索演示 / 时间推演」四页面板；
+   窄屏时图例变成横条，面板变成可折叠的底部抽屉。单一深色视觉，刻意不做浅色主题。 */
+:root{
+  color-scheme: dark;
+  --void:#050918;
+  --deep:#0d1744;
+  --glass:rgba(9,14,38,.86);
+  --edge:rgba(150,165,255,.17);
+  --ink:#e4e9ff;
+  --dim:#8f99ca;
+  --gold:#ffe57a;
+  --warn:#ffb25c;
+  --bad:#ff5f7e;
+  --okc:#7ef0a8;
+  --f-display:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",system-ui,sans-serif;
+  --f-body:-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",system-ui,sans-serif;
+  --f-mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+}
+html,body{height:100%;margin:0}
+body{background:radial-gradient(ellipse 70% 60% at 46% 48%,#14205a 0%,var(--deep) 38%,var(--void) 100%);background-color:var(--void);color:var(--ink);font-family:var(--f-body);overflow:hidden}
+.app{position:relative;height:100%;overflow:hidden;box-sizing:border-box}
+#brain{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#brain.grabbing{cursor:grabbing}
+#brain.pointing{cursor:pointer}
+
+.head{position:absolute;top:16px;left:max(18px,env(safe-area-inset-left,0px));max-width:min(520px,calc(100% - 430px));pointer-events:none;z-index:2}
+h1{font-family:var(--f-display);font-weight:600;font-size:30px;letter-spacing:.05em;margin:0;line-height:1.15;text-shadow:0 0 22px rgba(120,150,255,.5)}
+h1 span{color:var(--gold);margin-left:.25em;text-shadow:0 0 18px rgba(255,229,122,.55)}
+.sub{margin:6px 0 0;color:var(--dim);font-size:12.5px;line-height:1.6}
+.stats{margin:4px 0 0;font:12px var(--f-mono);color:#aab4e8;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.ctl{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;pointer-events:auto}
+.ctl select{width:auto;max-width:220px;padding:5px 8px;font-size:13px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--edge);background:var(--glass);font:12px var(--f-body);color:var(--dim);white-space:nowrap}
+.pill i{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.pill.ok i{background:var(--okc);box-shadow:0 0 8px var(--okc)}
+.pill.down{color:var(--warn);border-color:rgba(255,178,92,.45)}
+.pill.down i{background:var(--warn)}
+.pill.mode{color:var(--gold);border-color:rgba(255,229,122,.5)}
+.pill.part{color:var(--warn);border-color:rgba(255,178,92,.5);cursor:pointer}
+.pill.trunc{color:var(--warn)}
+.pill[hidden]{display:none}
+
+.legend{position:absolute;left:max(16px,env(safe-area-inset-left,0px));top:176px;bottom:66px;width:190px;display:flex;flex-direction:column;gap:2px;overflow-y:auto;z-index:2;scrollbar-width:none}
+.legend::-webkit-scrollbar{display:none}
+.legend button{display:flex;align-items:center;gap:10px;padding:6px 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ink);font:13px var(--f-body);text-align:left;cursor:pointer;flex:none}
+.legend button i{width:9px;height:9px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c);flex:none}
+.legend button.idle{color:var(--dim)}
+.legend button.idle i{opacity:.35;box-shadow:none}
+.legend button:hover{background:rgba(140,160,255,.09)}
+.legend button[aria-pressed="true"]{border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 13%,transparent)}
+.legend small{margin-left:auto;font:11px var(--f-mono);color:var(--dim)}
+
+.panel{position:absolute;top:16px;bottom:16px;right:max(16px,env(safe-area-inset-right,0px));width:380px;display:flex;flex-direction:column;background:var(--glass);border:1px solid var(--edge);border-radius:14px;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);z-index:3;overflow:hidden}
+.tabs{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--edge);flex:none}
+.tabs button{flex:1;padding:8px 4px;border-radius:8px;border:0;background:transparent;color:var(--dim);font:500 13px var(--f-body);cursor:pointer;white-space:nowrap;min-width:0}
+.tabs button:hover{color:var(--ink)}
+.tabs button[aria-selected="true"]{background:rgba(255,229,122,.12);color:var(--gold)}
+.tabs .fold{flex:none;display:none;width:34px}
+.pbody{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px 16px 20px;min-height:0;scrollbar-width:thin}
+
+.eyebrow{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.08em;color:var(--dim)}
+.eyebrow i{width:8px;height:8px;border-radius:50%;background:var(--c);box-shadow:0 0 8px var(--c)}
+h2{font-family:var(--f-display);font-weight:600;font-size:21px;letter-spacing:.02em;margin:6px 0 10px;line-height:1.35;overflow-wrap:anywhere}
+h3{font-size:12px;letter-spacing:.12em;color:var(--dim);font-weight:500;margin:18px 0 8px}
+.desc{line-height:1.75;color:#cdd4f6;font-size:14px;margin:0 0 12px;overflow-wrap:anywhere}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 12px}
+.kv div{background:rgba(140,160,255,.06);border:1px solid var(--edge);border-radius:8px;padding:8px 10px;min-width:0}
+.kv dt{font-size:11px;color:var(--dim);letter-spacing:.04em}
+.kv dd{margin:3px 0 0;font:500 13px var(--f-mono);color:var(--ink);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.src{font:12px var(--f-mono);color:#8290cc;margin:0 0 6px;overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--edge);background:rgba(140,160,255,.05);color:var(--ink);font:12px var(--f-body);cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.chip i{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none}
+.chip:hover{border-color:rgba(200,210,255,.4)}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--edge);font:11px var(--f-mono);color:var(--dim);white-space:nowrap}
+.tag.c{color:var(--c);border-color:color-mix(in srgb,var(--c) 45%,transparent)}
+.quote{border-left:2px solid var(--c);padding:4px 0 4px 12px;margin:4px 0 14px;font-size:15px;line-height:1.75;overflow-wrap:anywhere;white-space:pre-wrap}
+.list{display:grid;gap:6px;margin:0;padding:0;list-style:none}
+.list button{width:100%;text-align:left;background:rgba(140,160,255,.05);border:1px solid var(--edge);border-radius:8px;padding:7px 10px;color:var(--ink);font:13px/1.55 var(--f-body);cursor:pointer;overflow-wrap:anywhere}
+.list button:hover{border-color:rgba(200,210,255,.4)}
+.list button b{font-weight:500;color:var(--c)}
+.hint{font-size:12px;color:var(--dim);line-height:1.7;margin:14px 0 0}
+.warn{font-size:12px;color:var(--warn);line-height:1.7;margin:8px 0 0}
+.err{font-size:13px;color:var(--bad);line-height:1.7;margin:8px 0 0}
+pre.raw{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.75 var(--f-mono);background:rgba(4,7,22,.85);border:1px solid var(--edge);border-radius:8px;padding:10px 12px;color:#dfe4ff;margin:6px 0 0;max-height:320px;overflow-y:auto}
+.rules{margin:0;padding-left:18px;font-size:13px;line-height:1.8;color:#cdd4f6}
+
+label{display:block;font-size:12px;color:var(--dim);margin:12px 0 6px;letter-spacing:.04em}
+select,input[type="text"]{width:100%;box-sizing:border-box;background:rgba(5,9,26,.75);border:1px solid var(--edge);border-radius:8px;color:var(--ink);font:14px var(--f-body);padding:9px 10px}
+.run{width:100%;margin-top:14px;padding:10px;border-radius:9px;border:1px solid rgba(255,229,122,.5);background:linear-gradient(180deg,rgba(255,229,122,.22),rgba(255,229,122,.07));color:var(--gold);font:500 14px var(--f-body);cursor:pointer}
+.run:hover{background:linear-gradient(180deg,rgba(255,229,122,.3),rgba(255,229,122,.1))}
+.run:disabled{opacity:.55;cursor:progress}
+.btn{padding:6px 12px;border-radius:8px;border:1px solid var(--edge);background:rgba(140,160,255,.06);color:var(--ink);font:12px var(--f-body);cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:rgba(200,210,255,.4)}
+.btn[aria-pressed="true"]{color:var(--gold);border-color:rgba(255,229,122,.5);background:rgba(255,229,122,.1)}
+.btn:disabled{opacity:.5;cursor:default}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.summary{font-size:12px;color:var(--dim);line-height:1.75;margin:10px 0;overflow-wrap:anywhere}
+.summary b{color:var(--ink);font-weight:500;font-family:var(--f-mono)}
+
+/* 实时列表 */
+.livebar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+.livebar .cnt{margin-left:auto;font:11px var(--f-mono);color:var(--dim)}
+.replaybox{border:1px solid rgba(255,229,122,.3);border-radius:10px;padding:10px;margin:0 0 10px;background:rgba(255,229,122,.04)}
+.replaybox select{width:auto;padding:5px 8px;font-size:13px}
+.evlist{list-style:none;margin:0;padding:0;display:grid;gap:5px}
+.evrow{display:block;width:100%;text-align:left;border:1px solid var(--edge);border-left:3px solid var(--c);border-radius:8px;padding:6px 9px;background:rgba(140,160,255,.045);color:var(--ink);cursor:pointer;font:inherit}
+.evrow:hover{border-color:rgba(255,229,122,.45);border-left-color:var(--c)}
+.evrow .meta{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:11px;color:var(--dim)}
+.evrow .meta time{font:11px var(--f-mono);color:#aab4e8}
+.evrow .meta b{font-weight:500;color:var(--c)}
+.evrow .txt{display:block;font-size:13px;line-height:1.55;margin-top:3px;overflow-wrap:anywhere;color:#dfe4ff}
+.evrow .full{display:block;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere;font:11.5px/1.65 var(--f-mono);color:#c2c9ee;border-top:1px dashed var(--edge);padding-top:6px}
+.evrow.del .txt{color:var(--dim);font-style:italic}
+
+/* 检索演示 */
+.hit{display:block;width:100%;text-align:left;border:1px solid var(--edge);border-radius:10px;padding:9px 11px;margin:0 0 8px;background:rgba(140,160,255,.045);color:var(--ink);cursor:pointer;font:inherit}
+.hit:hover{border-color:rgba(255,229,122,.45)}
+.hit .meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:5px}
+.hit .txt{display:block;font-size:13.5px;line-height:1.6;overflow-wrap:anywhere}
+.hit .line{display:block;font:12px/1.6 var(--f-mono);color:var(--dim);margin-top:4px;overflow-wrap:anywhere}
+.routes{display:grid;gap:4px;margin:6px 0 4px}
+.routes div{display:grid;grid-template-columns:58px 1fr 34px;align-items:center;gap:8px;font-size:12px}
+.routes span.bar{height:8px;border-radius:3px;background:rgba(140,160,255,.09);overflow:hidden;display:block}
+.routes span.bar i{display:block;height:100%;background:var(--c)}
+.routes em{font:11px var(--f-mono);color:var(--dim);font-style:normal;text-align:right}
+
+/* 时间推演 */
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+.tile{border:1px solid var(--edge);border-radius:10px;padding:8px 10px;min-width:0}
+.tile b{display:block;font:500 18px var(--f-mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.tile span{font-size:11px;color:var(--dim)}
+#curve{width:100%;height:170px;display:block;margin:4px 0 2px}
+input[type="range"]{width:100%;accent-color:var(--gold);margin:4px 0}
+.dayrow{display:flex;align-items:center;gap:10px;margin-top:6px}
+.dayrow output{font:500 14px var(--f-mono);color:var(--gold);font-variant-numeric:tabular-nums}
+
+/* 回放时间轴 */
+.timeline{position:absolute;left:228px;right:412px;bottom:16px;z-index:3;background:var(--glass);border:1px solid rgba(255,229,122,.35);border-radius:12px;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.timeline[hidden]{display:none}
+.timeline output{font:500 13px var(--f-mono);color:var(--gold);min-width:5.5em}
+.timeline select{width:auto;padding:4px 6px;font-size:12px}
+.ticks{position:relative;height:6px;margin:0 7px}
+.ticks span{position:absolute;top:0;width:1px;height:6px;background:rgba(255,229,122,.55)}
+
+.viewctl{position:absolute;left:max(16px,env(safe-area-inset-left,0px));bottom:16px;display:flex;gap:6px;z-index:2}
+.viewctl button{padding:6px 12px;border-radius:8px;border:1px solid var(--edge);background:var(--glass);color:var(--ink);font:12px var(--f-body);cursor:pointer}
+.viewctl button[aria-pressed="true"]{color:var(--gold);border-color:rgba(255,229,122,.45)}
+.tip{position:absolute;z-index:4;pointer-events:none;padding:6px 10px;border-radius:8px;background:rgba(7,11,32,.94);border:1px solid var(--edge);font-size:12px;color:var(--ink);max-width:260px;line-height:1.55;overflow-wrap:anywhere}
+.tip small{display:block;color:var(--dim);font-size:11px}
+
+.fatal{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(5,9,24,.88);padding:24px;box-sizing:border-box}
+.fatal[hidden]{display:none}
+.fatal div{max-width:420px;text-align:center;border:1px solid var(--edge);border-radius:14px;background:var(--glass);padding:24px 22px;font-size:15px;line-height:1.8}
+.fatal b{display:block;font-size:19px;color:var(--gold);margin-bottom:8px}
+
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+
+@media (max-width:820px){
+  .head{top:10px;max-width:none;right:max(12px,env(safe-area-inset-right,0px));left:max(12px,env(safe-area-inset-left,0px))}
+  h1{font-size:21px}
+  .sub{display:none}
+  .stats{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ctl{margin-top:5px}
+  .ctl select{max-width:150px;font-size:12px}
+  .legend{top:104px;bottom:auto;left:12px;right:12px;width:auto;flex-direction:row;overflow-x:auto;overflow-y:hidden;gap:4px;padding-bottom:4px}
+  .legend button{border-color:var(--edge);padding:4px 9px;font-size:12px}
+  .legend small{display:none}
+  .panel{top:auto;left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px));width:auto;height:clamp(220px,42%,420px);bottom:max(10px,env(safe-area-inset-bottom,0px))}
+  .panel.folded{height:auto}
+  .panel.folded .pbody{display:none}
+  .tabs .fold{display:block}
+  .tabs button{font-size:12px;padding:7px 2px}
+  .viewctl{bottom:calc(clamp(220px,42%,420px) + 20px);left:12px}
+  .app.pfold .viewctl{bottom:72px}
+  .viewctl button{padding:5px 10px}
+  .timeline{left:12px;right:12px;bottom:calc(clamp(220px,42%,420px) + 18px)}
+  .app.pfold .timeline{bottom:70px}
+  .app.replaying .viewctl{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <canvas id="brain" role="img" aria-label="记忆实时脑图：十三个脑区、真实记忆光点和它们之间的数据流"></canvas>
+  <div class="tip" id="tip" hidden><span id="tipMain"></span><small id="tipSub"></small></div>
+
+  <header class="head">
+    <h1>记忆<span>实时脑图</span></h1>
+    <p class="sub">每个光点是一条真实的记忆。她用到哪块记忆，哪个脑区和光点就亮起来，右边列出那次用到的内容。页面显示真实聊天原文，只在本机访问。</p>
+    <p class="stats" id="stats">正在读取…</p>
+    <div class="ctl">
+      <select id="keySel" aria-label="会话筛选"><option value="">全部会话</option></select>
+      <span class="pill" id="conn"><i></i><span id="connText">连接中</span></span>
+      <span class="pill mode" id="modePill" hidden></span>
+      <span class="pill part" id="partPill" role="button" tabindex="0" hidden>部分</span>
+      <span class="pill trunc" id="truncPill" hidden></span>
+    </div>
+  </header>
+
+  <nav class="legend" id="legend" aria-label="脑区"></nav>
+
+  <aside class="panel" id="panel" aria-label="面板">
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-btn-live" aria-selected="true" data-tab="live">实时</button>
+      <button role="tab" id="tab-btn-detail" aria-selected="false" data-tab="detail">详情</button>
+      <button role="tab" id="tab-btn-recall" aria-selected="false" data-tab="recall">检索演示</button>
+      <button role="tab" id="tab-btn-time" aria-selected="false" data-tab="time">时间推演</button>
+      <button class="fold" id="foldBtn" aria-label="折叠面板" aria-expanded="true">▾</button>
+    </div>
+    <div class="pbody" id="tab-live" role="tabpanel">
+      <div class="livebar">
+        <button class="btn" id="replayBtn" aria-pressed="false">回放</button>
+        <button class="btn" id="clearBtn">清空列表</button>
+        <span class="cnt" id="liveCount">0 条</span>
+      </div>
+      <div class="replaybox" id="replayBox" hidden>
+        <div class="row">
+          <label for="replayDay" style="margin:0">回放哪一天</label>
+          <select id="replayDay"></select>
+          <button class="btn" id="replayLoad">载入</button>
+        </div>
+        <p class="hint" id="replayMsg" style="margin-top:8px">回放按当天的轨迹文件 + 工具调用日志 + 活动日志重建；页面没开着时发生的动作也看得到。聊天原文没有长期存档，这里只有日志里那截短的。</p>
+        <ul class="rules" id="replayNotes" hidden></ul>
+      </div>
+      <ul class="evlist" id="evlist"></ul>
+      <p class="hint" id="liveEmpty">还没有事件。她收发消息、检索记忆、写记忆卡时，这里会实时出现一行，图上对应的脑区和光点会亮起来。</p>
+    </div>
+    <div class="pbody" id="tab-detail" role="tabpanel" hidden></div>
+    <div class="pbody" id="tab-recall" role="tabpanel" hidden>
+      <p class="hint" style="margin-top:0">检索打的是整张记忆卡（不按会话切），查到的条目会以「检索」的名义亮到图上。</p>
+      <label for="pq">查什么（一句话）</label>
+      <input type="text" id="pq" maxlength="200" autocomplete="off" placeholder="比如：上次说好去哪里">
+      <label for="pkw">关键词（可选，用空格或逗号分开）</label>
+      <input type="text" id="pkw" maxlength="200" autocomplete="off" placeholder="比如：看海 周五">
+      <button class="run" id="prun">开始检索</button>
+      <p class="hint">会调一次真实检索（有 embedding 开销，不调 DeepSeek），<b>不记复习</b>：控制台查 ≠ 她想起。每 2 秒最多 1 次。</p>
+      <div id="presult"></div>
+    </div>
+    <div class="pbody" id="tab-time" role="tabpanel" hidden>
+      <h2 style="margin-top:0">衰减曲线（清晰度阶梯）</h2>
+      <p class="desc">条目按清晰度逐日往下走（一天最多降一档），R 是这一档折算出来的可提取度；降到冻结线以下就不会自己冒出来，工具照样查得到。正文永不删。这一版用的是 SurfCore 的清晰度阶梯，不是 FSRS。</p>
+      <div id="timeBody"><p class="hint">在图上点一条记忆卡条目，这里会画出它接下来一年的 R 曲线。</p></div>
+    </div>
+  </aside>
+
+  <div class="timeline" id="timeline" hidden>
+    <div class="row">
+      <button class="btn" id="tlPlay">播放</button>
+      <select id="tlSpeed" aria-label="回放速度"><option value="1">1×</option><option value="10" selected>10×</option><option value="60">60×</option></select>
+      <button class="btn" id="tlNext">下一条</button>
+      <output id="tlTime">--:--:--</output>
+      <button class="btn" id="tlExit" style="margin-left:auto">退出回放</button>
+    </div>
+    <div class="ticks" id="tlTicks"></div>
+    <input type="range" id="tlRange" min="0" max="1" step="1000" value="0" aria-label="回放时间">
+  </div>
+
+  <div class="viewctl">
+    <button id="rot" aria-pressed="true">自动旋转</button>
+    <button id="reset">重置视角</button>
+  </div>
+
+  <div class="fatal" id="fatal" hidden><div><b id="fatalTitle"></b><span id="fatalText"></span></div></div>
+</div>
+
+<script>
+(() => {
+'use strict';
+const TAU = Math.PI * 2;
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (id) => document.getElementById(id);
+
+/* ------------------------------------------------------------ 令牌
+   从地址栏取 token 后立刻用 replaceState 去掉（免得截图 / 历史记录里带着它）；
+   页面刷新时地址栏已经没有 token，所以在 sessionStorage 留一份（只在这个标签页里）。
+   同源控制台存过 localStorage 的 consoleToken，也认。EventSource 不能带请求头，只能拼 ?token=。 */
+let TOKEN = '';
+{
+  const qs = new URLSearchParams(location.search);
+  const t = qs.get('token');
+  if (t) {
+    TOKEN = t;
+    try { sessionStorage.setItem('brainToken', t); } catch {}
+    qs.delete('token');
+    const rest = qs.toString();
+    history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+  } else {
+    try { TOKEN = sessionStorage.getItem('brainToken') || localStorage.getItem('consoleToken') || ''; } catch {}
+  }
+}
+
+/* ------------------------------------------------------------ 小工具 */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+let rnd = mulberry32(20261103);
+const rr = (a,b) => a + (b-a)*rnd();
+function hashStr(s){let h=2166136261;for(const ch of String(s)){h^=ch.codePointAt(0);h=Math.imul(h,16777619)}return h>>>0}
+const clamp = (x,a,b) => Math.max(a, Math.min(b, x));
+const short = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; };
+const pad = (n) => String(n).padStart(2, '0');
+const hms = (t) => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const md = (day) => String(day || '').slice(5);
+const num = (v, d = 2) => (typeof v === 'number' && Number.isFinite(v)) ? v.toFixed(d) : '—';
+// 所有动态 DOM 都经它造：文字一律 textContent，属性只用白名单里的几种
+function el(tag, props, ...kids){
+  const e = document.createElement(tag);
+  if(props) for(const [k, v] of Object.entries(props)){
+    if(v === undefined || v === null || v === false) continue;
+    if(k === 'class') e.className = v;
+    else if(k === 'text') e.textContent = v;
+    else if(k === 'style') e.setAttribute('style', v);
+    else if(k === 'c') e.style.setProperty('--c', v);
+    else if(k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if(k === 'dataset') Object.assign(e.dataset, v);
+    else e.setAttribute(k, v === true ? '' : String(v));
+  }
+  for(const k of kids.flat()){ if(k === null || k === undefined || k === false) continue; e.appendChild(typeof k === 'string' || typeof k === 'number' ? document.createTextNode(String(k)) : k); }
+  return e;
+}
+const clear = (node) => { while(node.firstChild) node.removeChild(node.firstChild); return node; };
+
+/* ------------------------------------------------------------ 脑区（含义对应我们自己的模块，规格 §4） */
+const REGIONS = [
+{id:'input',name:'QQ 收消息',color:'#b3a6ff',c:[-230,-250,90],r:[80,48,60],fill:34,
+ desc:'白名单内的私聊和群消息先到桥接：决定要不要唤醒她，被接受的消息在这里闪一下。',
+ fns:[
+  {name:'入站闸门',desc:'权限 / 黑名单 / 模式白名单都过了才落事件：被拒绝的会话不会出现在图上。',src:'src/bridge.js · handleIncoming'},
+  {name:'唤醒',desc:'被直接找、或二代仿真判断要接话时唤醒她，一次唤醒是一个回合。',src:'src/bridge.js · deliverPromptNow'},
+  {name:'活动日志',desc:'收到的消息在 state/qq-activity.log 里留一行（正文截 80 字）；回放的收发消息只能从这里还原。',src:'state/qq-activity.log'}]},
+{id:'vision',name:'看图 / 表情包',color:'#4cc9ff',c:[-340,-120,-70],r:[85,72,70],fill:40,
+ desc:'她调用看图工具、发表情包时亮；收到的图片不会自动描述，平时暗着。',
+ fns:[
+  {name:'看图',desc:'qq_get_message_images：她自己决定要不要看对方发的图。',src:'src/mcp-snowluma-safe.js'},
+  {name:'表情包',desc:'send_sticker：从收藏里挑表情发出去。',src:'src/mcp-snowluma-safe.js'}]},
+{id:'audio',name:'语音',color:'#ff6fae',c:[-445,40,60],r:[55,68,55],fill:30,
+ desc:'她发语音时亮（远程 TTS 合成）。收到的语音在这台机器的 QQ 上不能转写，平时暗着。',
+ fns:[
+  {name:'语音合成',desc:'qq_tts_voice：文字描述音色 / 预置音色 / 克隆。',src:'src/tts-api.js'},
+  {name:'限流',desc:'每分钟最多 2 条、每小时最多 10 条。',params:[['每分钟','2'],['每小时','10']],src:'config.json · socialV2.voice'}]},
+{id:'working',name:'工作记忆',color:'#ff9bd0',c:[-300,170,130],r:[70,55,55],fill:30,
+ desc:'一次唤醒里的上下文：当前会话，加上短期记忆（进行中的话题、想说没说的、群友印象）。',
+ fns:[
+  {name:'唤醒提示',desc:'唤醒时拼好的提示：新消息、注入的记忆块、生活回路的文案。',src:'src/bridge.js · buildWakePromptV2'},
+  {name:'短期记忆',desc:'qq_memory_*：话题 24 小时没再提就删。',params:[['话题寿命','24 小时']],src:'上游 social-v2'},
+  {name:'会话压缩',desc:'DSH 会话越早越只剩摘要；会话重建时清零。',src:'DSH'}]},
+{id:'hippo',name:'海马体·写入',color:'#33e3b5',c:[-95,-50,70],r:[72,55,60],fill:30,
+ desc:'把发生的事写成记忆卡条目，并让检索索引跟上：写的时候只留标题和摘要，正文按编号另行保存。',
+ fns:[
+  {name:'记忆卡',desc:'按人记：主人 / 经历 / 约定 / 初见 / 其它。记忆卡全量档是这张图的节点来源。',src:'src/memory-card.js · addMemoryRecord'},
+  {name:'并入',desc:'拿下一条新记忆时顺手把旧条目并进来（mergedFrom 记着并了谁）。',src:'src/memory-card.js'},
+  {name:'索引',desc:'条目写进 SQLite（全文 + 向量），检索用的就是这份派生库。',src:'src/memory-index.js · syncMemoryIndex'}]},
+{id:'graph',name:'神经图谱',color:'#5af2ff',c:[-150,-130,-215],r:[118,100,95],
+ desc:'这一格对应「实体与关系图」，SurfCore 还没有：条目之间暂时只有同类相邻，没有抽出的人和事当节点。',
+ fns:[
+  {name:'（暂无来源）',desc:'B 项目里这里是摘要抽出的人 / 地方 / 东西 / 话题与关系；SurfCore 的条目还没有这一步，所以这格不会有光点。',src:'未移植'}]},
+{id:'ltm',name:'长期记忆库',color:'#ffb35c',c:[40,195,-10],r:[255,118,175],
+ desc:'记忆卡条目：主人 / 经历 / 约定 / 初见 / 其它。按类分扇区，越新越靠里；暗的是快忘了的，外圈的是已归档。',
+ fns:[]},
+{id:'core',name:'中枢·检索',color:'#ffe57a',c:[30,-262,0],r:[92,45,70],fill:40,
+ desc:'她检索记忆时亮：关键词（BM25）与向量两路各自排名，再按名次融合（RRF）；本地向量服务没开就退回纯关键词。',
+ fns:[
+  {name:'两路融合',desc:'每一路各自排名，再按 RRF（倒数名次）合成一个总名次。',src:'src/memory-index.js · searchMemoryHybrid'},
+  {name:'关键词降级',desc:'向量服务关着或超时时，按命中词长 × IDF 打分。',src:'src/memory-index.js · searchMemoryIndex'},
+  {name:'唤醒注入',desc:'唤醒提示里那一段【记忆检索】就是这里挑出来的，注入过的条目会在图上连到「表达」。',src:'src/memory-recall.js · recallBlock'}]},
+{id:'decay',name:'代谢·治理',color:'#8c90ff',c:[330,322,120],r:[72,42,55],fill:30,
+ desc:'清晰度阶梯：条目按 清晰 / 清楚 / 模糊 / 只剩印象 / 已遗忘 逐日往下走，一天最多降一档；冻结线以下就不会自己冒出来。原文永不删。',
+ fns:[
+  {name:'每日衰减',desc:'每天算一次目标清晰度，往目标挪一档（不是一次跌到底）。',src:'src/memory-card.js · applyDailyDecay'},
+  {name:'冻结与豁免',desc:'R < 0.5 冻结；钉住的、初次见面的、主人条目不会淡忘。',params:[['冻结线','R < 0.5']],src:'src/brain-decay.js'},
+  {name:'曲线推演',desc:'「时间推演」页的曲线就是这条阶梯往后推一年，不是 FSRS 的 S/D。',src:'src/brain-decay.js · decayCurveFor'}]},
+{id:'limbic',name:'情绪',color:'#d77bff',c:[255,95,150],r:[78,55,60],fill:40,
+ desc:'人格层（底子 / 语气 / 场景）在这一格：图中只显示层名和字数，正文不上图。',
+ fns:[
+  {name:'人格层',desc:'分层写人格，唤醒时按会话挑场景层拼进提示词。',src:'src/persona-layers.js'},
+  {name:'判读',desc:'B 项目里这里还会对每条消息判读情绪；SurfCore 这一版没有，所以这格只有人格层的点。',src:'未移植'}]},
+{id:'life',name:'生活回路',color:'#8be36f',c:[390,195,-110],r:[72,62,60],fill:36,
+ desc:'这一格在 B 项目里是「自己的生活 / 忽然想起 / 到期约定」。SurfCore 有自己的目的回路，但还没接进星图，所以这格暂时不会有光点。',
+ fns:[
+  {name:'（暂无来源）',desc:'目的回路（purpose-engine）已有近似能力，但还没有对应的脑图事件；等移植计划走到那一步再接。',src:'未接线'}]},
+{id:'output',name:'表达',color:'#ffa65c',c:[400,-70,40],r:[72,70,60],fill:36,
+ desc:'她发出去的消息；唤醒时注入给她的条目会从「中枢」连到这里。',
+ fns:[
+  {name:'发消息',desc:'只有真的发出去了才在图上亮：发送失败不画。',src:'src/bridge.js · auditAndSend'},
+  {name:'注入',desc:'唤醒提示里【记忆卡】+【记忆检索】两段用到的条目编号，投递被接受后连成线。',src:'src/bridge.js · buildWakePromptV2'}]},
+{id:'introspect',name:'内省·反馈',color:'#ff4f6d',c:[270,-228,-120],r:[66,45,55],fill:30,
+ desc:'这一格在 B 项目里是「账本建议 / 夜间结算 / 每日报表」。SurfCore 的报表在控制台和 billing-report 里，没接进星图。',
+ fns:[
+  {name:'（暂无来源）',desc:'建议候选是移植计划里后面的一件；接上之后才会在这里出现。',src:'未移植'}]},
+];
+const REG = Object.fromEntries(REGIONS.map(r => [r.id, r]));
+for(const r of REGIONS){ r.count = 0; r.lastAt = -1e12; }
+
+// 长期记忆库扇区：SurfCore 记忆卡的 kind（只有这几种有真实来源）
+const KINDS = {
+  owner:{name:'主人',color:'#c49bff',desc:'记忆卡：关于主人本人的事。'},
+  event:{name:'经历',color:'#ff9a3c',desc:'记忆卡：一起经历过的事。'},
+  promise:{name:'约定',color:'#63e6a0',desc:'记忆卡：答应过、还没了结的事。'},
+  firstMeet:{name:'初见',color:'#ffe066',desc:'记忆卡：第一次见面的那一刻。'},
+  other:{name:'其它',color:'#5cc8ff',desc:'记忆卡：认不出类别、但确实记下来的条目。'},
+};
+const KIND_ORDER = ['owner','event','promise','firstMeet','other'];
+const CAT_NAME = {owner:'主人',event:'经历',promise:'约定',firstMeet:'初见',other:'其它'};
+const ETC = {person:'#c4fbff',topic:'#5af2ff',place:'#45b8ff',thing:'#2fd2d8'};
+const ETYPE = {person:'人物',topic:'话题',place:'地方',thing:'东西'};
+const OTHER_COLOR = {persona:'#e6b3ff', msgIn:'#d8d0ff', msgOut:'#ffd0a6'};
+const SRC = {bm25:{name:'关键词',color:'#ffe57a'},vector:{name:'向量',color:'#5cc8ff'}};
+const SRC_ORDER = ['bm25','vector'];
+const MEM_LABEL_COLOR = {'清晰':'#9ff7b0','清楚':'#9ff7b0','模糊':'#ffe57a','只剩印象':'#8c90ff','已遗忘':'#7a84b4'};
+const GRAY = '#5a6494';
+
+// 脑区之间的数据流（只画连线，不再放示例粒子：亮起来的都是真事件）
+const FLOWS = [
+  ['input','working','唤醒'],['input','hippo','记下'],['input','limbic','人格层'],
+  ['working','core','检索'],['hippo','ltm','写卡 / 索引'],
+  ['core','ltm','两路检索'],['core','output','注入'],
+  ['decay','ltm','每日衰减'],['vision','working','看图'],['audio','output','语音'],
+];
+
+const TYPE_NAME = {
+  'msg.in':'收到消息','msg.out':'她发出','wake':'唤醒','inject':'注入记忆','search':'检索','recall':'检索',
+  'remember':'记下','update':'改记忆','forget':'淡忘','decay.review':'复习','recall.auto':'自动检索',
+  'persona.appraisal':'人格','rag.index':'索引',
+  // 保留认识：这些类型在 B 项目里会发，SurfCore 暂时没有来源（留着免得陌生事件变空白）
+  'life.ownLife':'自己的生活','life.recall':'忽然想起','life.assoc':'联想','life.promiseDue':'约定到期',
+  'suggest.shown':'建议','suggest.adopted':'采用建议','persona.nightly':'夜间结算','rag.distill':'提炼',
+  'tool':'工具',
+};
+const REGION_OF = {
+  'msg.in':'input','msg.out':'output','wake':'working','inject':'output','search':'core','recall':'core',
+  'remember':'hippo','update':'hippo','forget':'decay','decay.review':'decay','recall.auto':'core',
+  'life.ownLife':'life','life.recall':'life','life.assoc':'life','life.promiseDue':'life',
+  'suggest.shown':'introspect','suggest.adopted':'introspect','persona.appraisal':'limbic','persona.nightly':'introspect',
+  'rag.index':'hippo','rag.distill':'hippo','tool':'output',
+};
+// 唤醒原因的中文名。值和 src/bridge.js 的真实来源一一对应：
+// evaluateWakeTriggerV2 的触发条件 + scheduleWakeV2 的定时器原因（见 TIMER_WAKE_REASONS）。
+// 表里没有的（将来新加的）直接显示原值，不吞掉。
+const WAKE_REASON = {
+  anyMessage:'新消息', atMention:'被 @ 了', nameMention:'被叫到名字', private:'私聊来消息',
+  question:'被提问', probability:'随机看看', message:'新消息',
+  timeout:'静默到点了', replyCheck:'去看有没有回复', proactiveCheck:'主动看看',
+  bootstrap:'刚上线', admin:'管理员唤醒', history:'补历史', backlog:'补积压',
+  promiseDue:'约定到期', purpose:'目的驱动', 'dsh-ready':'DSH 就绪', boot:'启动', other:'其它',
+};
+const ORIGIN_NAME = {ai:'她',bridge:'桥接',console:'控制台'};
+
+/* ------------------------------------------------------------ 场景：节点与连线（快照一来就整体重建） */
+let nodes = [], edges = [], edgeKeys = new Set(), ADJ = [], groups = new Map(), groupsDirty = true;
+let NODE = new Map();           // 编号 → 节点
+let SX = new Float32Array(0), SY = SX, SZ = SX, SS = SX, order = [];
+let N = 0, CAP = 0;
+let snap = null;                // 最近一次快照
+const keysMap = new Map();      // 会话 key → { key, kind, label }（跨快照累积，筛选单个会话时下拉框不丢别的）
+let freezeBelow = 0.5;
+
+function ensureCap(n){
+  if(n <= CAP) return;
+  const cap = Math.max(256, n * 2);
+  const grow = (a) => { const b = new Float32Array(cap); b.set(a); return b; };
+  SX = grow(SX); SY = grow(SY); SZ = grow(SZ); SS = grow(SS); CAP = cap;
+}
+function addNode(o){
+  o.i = nodes.length; o.dx = o.x; o.dy = o.y; o.dz = o.z; o.tx = o.x; o.ty = o.y; o.tz = o.z;
+  o.alpha = o.alpha ?? 1; o.ta = o.ta ?? 1; o.hl = 0; o.thl = 0; o.hc = '#ffffff'; o.hlEnd = 0; o.phase = o.phase ?? rnd() * TAU;
+  o.size0 = o.size; o.grow = o.grow ?? 1;
+  nodes.push(o); ADJ.push([]); order.push(o.i); N = nodes.length; ensureCap(N);
+  REG[o.region].nodes.push(o);
+  if(o.id) NODE.set(o.id, o);
+  return o;
+}
+function link(a, b, kind, color, extra){
+  if(!a || !b || a === b) return;
+  const k = Math.min(a.i,b.i) + '-' + Math.max(a.i,b.i);
+  if(edgeKeys.has(k)) return;
+  edgeKeys.add(k);
+  edges.push({a:a.i, b:b.i, kind, color: color || a.color, ...(extra || {})});
+  ADJ[a.i].push(b.i); ADJ[b.i].push(a.i); groupsDirty = true;
+}
+function fib(n, i){ const y = 1 - 2 * (i + 0.5) / n; const r = Math.sqrt(1 - y * y); const th = i * 2.399963229728653; return [Math.cos(th) * r, y, Math.sin(th) * r]; }
+function nearestLinks(list, k, kind, color){
+  if(list.length > 400) return;  // 点太多时不连近邻（O(n²)），格点 / 关系线已经够看
+  for(const a of list){
+    const ds = [];
+    for(const b of list){ if(a === b) continue; const dx = a.x-b.x, dy = a.y-b.y, dz = a.z-b.z; ds.push([dx*dx+dy*dy+dz*dz, b]); }
+    ds.sort((p, q) => p[0] - q[0]);
+    for(let j = 0; j < Math.min(k, ds.length); j++) link(a, ds[j][1], kind, color);
+  }
+}
+// 一条记录落在哪个脑区。只认这条流水线真实产出的 kind：
+// ltm（记忆卡条目）、persona（人格层）、msg（实时消息）。别的 kind 一律当 ltm，
+// 反正快照不会发它们 —— 留着兜底比让节点找不到脑区崩掉强。
+function regionOfKind(kind, id){
+  if(kind === 'persona') return 'limbic';
+  if(kind === 'msg') return 'input';
+  return 'ltm';
+}
+const kindOfId = (id) => String(id).split(':')[0];
+const sectorOf = (rec) => rec.kind === 'ltm' ? (KINDS[rec.cat] ? rec.cat : 'other') : rec.kind;
+function colorOf(rec){
+  if(rec.kind === 'ltm') return KINDS[sectorOf(rec)].color;
+  if(rec.kind === 'persona') return OTHER_COLOR.persona;
+  if(rec.kind === 'msg') return rec.dir === 'out' ? OTHER_COLOR.msgOut : OTHER_COLOR.msgIn;
+  return '#ffffff';
+}
+// 由记录算外观：大小、亮度、颜色、位置（已归档推到外圈）
+function restyle(n){
+  const r = n.rec; if(!r) return;
+  let size = 2.4, ta = 1, sc = null, out = 1;
+  if(r.kind === 'ltm'){
+    const R = r.decay && typeof r.decay.R === 'number' ? clamp(r.decay.R, 0, 1) : 1;
+    size = 1.8 + 2.6 * R + (r.core ? 0.8 : 0);
+    ta = r.decay && r.decay.frozen ? 0.32 : 0.45 + 0.55 * R;
+    if(r.outdatedAt){ sc = GRAY; ta = 0.45; size = 1.8; }
+    if(r.archived){ out = 1.14; ta = Math.min(ta, 0.5); sc = sc || '#8a7a66'; }
+  } else if(r.kind === 'persona'){ size = r.id === 'persona:core' ? 5.4 : 3.2; }
+  else if(r.kind === 'msg'){ size = 2.6; }
+  n.size0 = size; n.statusColor = sc;
+  if(!n.temp || n.rec.kind !== 'msg') n.ta = ta;
+  const c = REG[n.region].c;
+  n.tx = c[0] + (n.x - c[0]) * out; n.ty = c[1] + (n.y - c[1]) * out + (out > 1 ? 14 : 0); n.tz = c[2] + (n.z - c[2]) * out;
+}
+
+function buildScene(s){
+  rnd = mulberry32(20261103);
+  nodes = []; edges = []; edgeKeys = new Set(); ADJ = []; order = []; NODE = new Map(); N = 0; groupsDirty = true;
+  REGIONS.forEach(r => { r.nodes = []; r.hub = null; });
+  const recs = Array.isArray(s.nodes) ? s.nodes.filter(r => r && typeof r.id === 'string') : [];
+  const byRegion = {};
+  for(const r of recs){ const reg = regionOfKind(r.kind, r.id); (byRegion[reg] = byRegion[reg] || []).push(r); }
+
+  // 普通脑区：中心、功能、装饰神经元；introspect / life / limbic 另外放候选 / 日记 / 人格的真实光点
+  for(const r of REGIONS){
+    if(r.id === 'ltm' || r.id === 'graph') continue;
+    const [cx,cy,cz] = r.c, [rx,ry,rz] = r.r;
+    r.hub = addNode({type:'hub',region:r.id,name:r.name,color:r.color,x:cx,y:cy-ry*0.12,z:cz+rz*0.2,size:6.5});
+    r.fns.forEach((f, i) => {
+      const p = fib(r.fns.length, i);
+      const n = addNode({type:'fn',region:r.id,name:f.name,fn:f,color:r.color,x:cx+p[0]*rx*0.55,y:cy+p[1]*ry*0.55,z:cz+p[2]*rz*0.55,size:4});
+      link(r.hub, n, 'intra');
+    });
+    for(let i = 0; i < r.fill; i++){
+      const p = fib(r.fill, i), k = 0.5 + 0.5 * Math.cbrt(rnd()), j = () => rr(-0.14, 0.14);
+      addNode({type:'neuron',region:r.id,color:r.color,x:cx+(p[0]+j())*rx*k,y:cy+(p[1]+j())*ry*k,z:cz+(p[2]+j())*rz*k,size:rr(1,2.1)});
+    }
+    nearestLinks(r.nodes.filter(n => n.type !== 'hub'), 2, 'intra');
+    const data = (byRegion[r.id] || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+    data.forEach((rec, i) => {
+      const p = fib(Math.max(1, data.length), i), k = 0.82 + 0.12 * ((hashStr(rec.id) % 100) / 100);
+      const n = addNode({type:'mem',region:r.id,id:rec.id,rec,name:rec.label || rec.id,color:colorOf(rec),x:cx+p[0]*rx*k,y:cy+p[1]*ry*k,z:cz+p[2]*rz*k,size:2.4});
+      restyle(n); n.alpha = n.ta; link(r.hub, n, 'intra', n.color);
+    });
+  }
+
+  // 神经图谱：实体排成一颗球
+  {
+    const r = REG.graph, [cx,cy,cz] = r.c, [rx,ry,rz] = r.r;
+    r.hub = addNode({type:'hub',region:'graph',name:r.name,color:r.color,x:cx,y:cy-ry*0.15,z:cz+rz*0.3,size:6.5});
+    r.fns.forEach((f, i) => { const a = i / r.fns.length * TAU; const n = addNode({type:'fn',region:'graph',name:f.name,fn:f,color:r.color,x:cx+Math.cos(a)*rx*0.3,y:cy+ry*0.05,z:cz+Math.sin(a)*rz*0.3,size:4}); link(r.hub, n, 'intra'); });
+    const list = (byRegion.graph || []).slice().sort((a, b) => (b.n || 0) - (a.n || 0));
+    const ents = list.map((rec, i) => {
+      const p = fib(list.length, i), k = 0.78 + 0.22 * rnd();
+      const n = addNode({type:'mem',region:'graph',id:rec.id,rec,name:rec.name || rec.label || rec.id,color:colorOf(rec),x:cx+p[0]*rx*k,y:cy+p[1]*ry*k,z:cz+p[2]*rz*k,size:2});
+      restyle(n); n.alpha = n.ta; return n;
+    });
+    nearestLinks(ents, 2, 'intra', r.color);
+  }
+
+  // 长期记忆库：规则格点，按类分扇区，越新越靠里
+  {
+    const r = REG.ltm, [cx,cy,cz] = r.c, [rx,ry,rz] = r.r;
+    const data = byRegion.ltm || [], M = data.length;
+    r.hub = addNode({type:'hub',region:'ltm',name:r.name,color:r.color,x:cx,y:cy-ry*0.55,z:cz+rz*0.15,size:6.5});
+    if(M){
+      let sp = Math.cbrt(4/3 * Math.PI * rx * ry * rz / (M * 1.1)), pts = [];
+      for(let tries = 0; tries < 40; tries++){
+        pts = [];
+        const nx = Math.ceil(rx/sp), ny = Math.ceil(ry/sp), nz = Math.ceil(rz/sp);
+        for(let i = -nx; i <= nx; i++) for(let j = -ny; j <= ny; j++) for(let k = -nz; k <= nz; k++){
+          const x = i*sp, y = j*sp, z = k*sp, q = (x/rx)**2 + (y/ry)**2 + (z/rz)**2;
+          if(q <= 1) pts.push({i,j,k,x,y,z,q});
+        }
+        if(pts.length >= M) break; sp *= 0.94;
+      }
+      pts.sort((a, b) => a.q - b.q); pts = pts.slice(0, M);
+      pts.forEach(p => p.ang = Math.atan2(p.z, p.x));
+      pts.sort((a, b) => a.ang - b.ang);
+      const grid = new Map(); let off = 0;
+      for(const kind of KIND_ORDER){
+        const ms = data.filter(m => sectorOf(m) === kind).sort((a, b) => (b.at || 0) - (a.at || 0));
+        if(!ms.length) continue;
+        const sector = pts.slice(off, off + ms.length).sort((a, b) => a.q - b.q); off += ms.length;
+        let mx = 0, mz = 0;
+        ms.forEach((rec, idx) => {
+          const p = sector[idx]; if(!p) return;
+          const n = addNode({type:'mem',region:'ltm',id:rec.id,rec,name:rec.label || rec.id,color:colorOf(rec),x:cx+p.x,y:cy+p.y,z:cz+p.z,size:3});
+          restyle(n); n.alpha = n.ta; grid.set(p.i+','+p.j+','+p.k, n); n.gi = [p.i,p.j,p.k]; mx += p.x; mz += p.z;
+        });
+        const L = ms.length, d = Math.hypot(mx/L, mz/L) || 1;
+        const kn = addNode({type:'kind',region:'ltm',name:KINDS[kind].name + ' ' + ms.length,kind,color:KINDS[kind].color,x:cx+mx/L+(mx/L)/d*rx*0.35,y:cy-ry*0.95,z:cz+mz/L+(mz/L)/d*rz*0.35,size:3.4});
+        link(r.hub, kn, 'intra', KINDS[kind].color);
+      }
+      for(const n of r.nodes){ if(!n.gi) continue; const [i,j,k] = n.gi; for(const key of [(i+1)+','+j+','+k, i+','+(j+1)+','+k, i+','+j+','+(k+1)]){ const o = grid.get(key); if(o) link(n, o, 'lattice', n.color); } }
+    }
+  }
+
+  // 快照里的连线
+  for(const l of (Array.isArray(s.links) ? s.links : [])){
+    const a = NODE.get(l.src), b = NODE.get(l.dst);
+    if(!a || !b) continue;
+    const col = l.kind === 'rel' ? '#8ff7ff' : l.kind === 'sum-chunk' ? '#ffcf9e' : l.kind === 'note-sum' ? '#ff8fa6' : '#8fa2ff';
+    link(a, b, l.kind, col, l.kind === 'rel' ? {relation: l.relation} : null);
+  }
+  // 脑区之间的数据流
+  for(const [from, to] of FLOWS) link(REG[from].hub, REG[to].hub, 'flowhub', REG[from].color);
+
+  // 选中的光点如果还在，换成新对象
+  if(selected){
+    const old = selected;
+    selected = old.id ? (NODE.get(old.id) || null) : old.type === 'hub' ? REG[old.region].hub : old.type === 'fn' ? (REG[old.region].nodes.find(x => x.type === 'fn' && x.name === old.name) || null) : null;
+  }
+  removedCount = 0;
+  if(focusRegion && !REG[focusRegion].hub) focusRegion = null;
+  hoverIdx = -1; particles.length = 0; projected = false;
+  $('tip').hidden = true;
+  setFocus();
+}
+
+// 事件里出现、快照里没有的编号：临时插一颗光点（msg:* 闪几秒就淡出）
+function addTempNode(id, ev, recIn){
+  if(typeof id !== 'string' || !/^(ltm|chunk|sum|ent|note|diary|msg|persona):/.test(id)) return null;
+  const kind = kindOfId(id);
+  let rec = recIn || { id, kind, key: ev ? ev.key : null, at: ev ? ev.at : Date.now(), label: id };
+  if(kind === 'msg' && ev && ev.data){ rec = { id, kind, key: ev.key, at: ev.at, dir: ev.data.dir || (ev.type === 'msg.out' ? 'out' : 'in'), name: ev.data.name, text: ev.data.text, label: short(ev.data.text || '（已删除）', 40) }; }
+  let region = regionOfKind(kind, id);
+  if(kind === 'msg' && rec.dir === 'out') region = 'output';
+  const R = REG[region]; if(!R || !R.hub) return null;
+  const [cx,cy,cz] = R.c, [rx,ry,rz] = R.r;
+  const u = Math.random() * 2 - 1, th = Math.random() * TAU, rad = Math.sqrt(1 - u*u), k = region === 'ltm' ? 0.97 : 0.7 + Math.random() * 0.25;
+  const n = addNode({type:'mem',region,id,rec,temp:true,name:rec.label || id,color:colorOf(rec),x:cx+Math.cos(th)*rad*rx*k,y:cy+u*ry*k,z:cz+Math.sin(th)*rad*rz*k,size:2.4,alpha:0,ta:1,grow:0});
+  restyle(n);
+  if(kind === 'msg'){ n.ta = 1; n.expire = now + 4200; }
+  else if(replay.on) n.expire = now + 7000;   // 回放里插的点不留
+  return n;
+}
+let removedCount = 0;
+function removeNode(n){
+  if(!n || n.removed) return;
+  n.removed = true; removedCount++; n.ta = 0; n.thl = 0;
+  if(n.id && NODE.get(n.id) === n) NODE.delete(n.id);
+  if(selected === n){ selected = null; setFocus(); renderDetail(); }
+}
+function nodeOf(id, ev, mk){ const n = NODE.get(id); if(n && !n.removed) return n; return mk === false ? null : addTempNode(id, ev); }
+
+/* ------------------------------------------------------------ 画布与相机 */
+const canvas = $('brain'), ctx = canvas.getContext('2d');
+const F = 1100, OFFX = -20, OFFY = 30;
+let W = 0, H = 0, DPR = 1, view = {cx:0, cy:0, w:1, h:1}, baseZoom = 1;
+let yaw = -0.32, pitch = 0.1, zoom = 1, panX = 0, panY = 0, autoRotate = !REDUCED;
+const SHELL = {rx:560, ry:410, rz:390, cy:30};
+const BODY = getComputedStyle(document.documentElement).getPropertyValue('--f-body') || 'system-ui,sans-serif';
+
+const rgbCache = {};
+function rgb(hex){ if(rgbCache[hex]) return rgbCache[hex]; const h = hex.replace('#',''); const v = [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; rgbCache[hex] = v; return v; }
+const rgba = (hex, a) => { const [r,g,b] = rgb(hex); return `rgba(${r},${g},${b},${a})`; };
+const sprites = {};
+function sprite(hex){
+  if(sprites[hex]) return sprites[hex];
+  const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32,32,0,32,32,32);
+  grd.addColorStop(0, rgba(hex,1)); grd.addColorStop(0.13, rgba(hex,0.95)); grd.addColorStop(0.3, rgba(hex,0.34)); grd.addColorStop(0.6, rgba(hex,0.07)); grd.addColorStop(1, rgba(hex,0));
+  g.fillStyle = grd; g.fillRect(0,0,64,64); sprites[hex] = c; return c;
+}
+
+function resize(){
+  const hb = document.querySelector('.head').getBoundingClientRect().bottom;
+  $('legend').style.top = Math.round(hb + 8) + 'px';
+  const rect = canvas.getBoundingClientRect();
+  W = rect.width; H = rect.height; DPR = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  const lg = $('legend').getBoundingClientRect(), pn = $('panel').getBoundingClientRect();
+  let x0 = 0, x1 = W, y0 = 0, y1 = H;
+  if(W > 820){ x0 = lg.right - rect.left + 8; x1 = pn.left - rect.left - 8; y0 = 60; y1 = H - 20; }
+  else { y0 = lg.bottom - rect.top + 6; y1 = pn.top - rect.top - 6; }
+  view = {cx:(x0 + x1) / 2, cy:(y0 + y1) / 2, w:Math.max(80, x1 - x0), h:Math.max(80, y1 - y0)};
+  baseZoom = Math.min(view.w / 1120, view.h / 760);
+}
+function proj(x, y, z, out){
+  const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  x -= OFFX; y -= OFFY;
+  const x1 = x * cyw - z * syw, z1 = x * syw + z * cyw, y1 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
+  const s = F / (F + z2) * baseZoom * zoom;
+  out[0] = view.cx + panX + x1 * s; out[1] = view.cy + panY + y1 * s; out[2] = z2; out[3] = s;
+  return out;
+}
+const tmp = [0,0,0,0];
+let projected = false;
+function projectAll(){
+  projected = true;
+  const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch), Z = baseZoom * zoom, ox = view.cx + panX, oy = view.cy + panY;
+  for(let i = 0; i < N; i++){
+    const n = nodes[i], x = n.dx - OFFX, y = n.dy - OFFY, z = n.dz;
+    const x1 = x * cyw - z * syw, z1 = x * syw + z * cyw, y1 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
+    const s = F / (F + z2) * Z;
+    SX[i] = ox + x1 * s; SY[i] = oy + y1 * s; SZ[i] = z2; SS[i] = s;
+  }
+}
+const fade = z => 1 - clamp((z + 460) / 920, 0, 1) * 0.58;
+// 没有事件的脑区暗着：今天一次都没亮过、且最近 2 分钟没动静
+const regionLit = (r) => r.count > 0 || now - r.lastAt < 120000;
+
+/* ------------------------------------------------------------ 交互状态 */
+let selected = null, focusRegion = null, focusSet = null, focusGroups = [], hoverIdx = -1;
+const EDGE_ALPHA = {intra:0.13, lattice:0.08, flowhub:0.2, 'sum-chunk':0.2, 'sum-ent':0.06, rel:0.36, 'note-sum':0.22, hop:0.8};
+function regroup(){
+  groups = new Map();
+  for(const e of edges){ const key = e.kind + '|' + e.color; if(!groups.has(key)) groups.set(key, {kind:e.kind, color:e.color, list:[]}); groups.get(key).list.push(e); }
+  groupsDirty = false;
+}
+function setFocus(){
+  focusSet = null; focusGroups = [];
+  if(focusRegion && REG[focusRegion].hub) focusSet = new Set(REG[focusRegion].nodes.map(n => n.i));
+  else if(selected) focusSet = new Set([selected.i, ...ADJ[selected.i]]);
+  if(!focusSet) return;
+  const m = new Map();
+  for(const e of edges){
+    const hit = focusRegion ? (focusSet.has(e.a) || focusSet.has(e.b)) : (e.a === selected.i || e.b === selected.i);
+    if(!hit) continue;
+    const key = e.kind + '|' + e.color;
+    if(!m.has(key)) m.set(key, {kind:e.kind, color:e.color, list:[]});
+    m.get(key).list.push(e);
+  }
+  focusGroups = [...m.values()];
+}
+
+/* ------------------------------------------------------------ 动画原语：粒子、高亮、飘字、限速队列 */
+const particles = [], floaters = [];
+let now = performance.now();
+function spark(a, b, color, delay = 0, dur = 0.8, size = 2.4){
+  if(!a || !b || particles.length > 420) return;
+  particles.push({a, b, color, start: now + delay * 1000, dur: dur * 1000, size});
+}
+function flash(n, color, ms = 2400, strength = 1){
+  if(!n) return;
+  n.hc = color || '#fff3b0'; n.thl = strength; n.hlEnd = now + ms;
+  const r = REG[n.region]; if(r) r.lastAt = now;
+}
+function pulse(regionId, color, ms = 1800){
+  const r = REG[regionId]; if(!r || !r.hub) return;
+  flash(r.hub, color || r.color, ms, 1); r.lastAt = now;
+}
+function floater(n, text, color, delay = 0){
+  if(!n || floaters.length > 60) return;
+  floaters.push({n, text, color: color || '#ffffff', start: now + delay * 1000, dur: 2200});
+}
+const timers = [];
+function later(ms, fn){ timers.push({at: now + ms, fn}); }
+
+// 限速：每秒最多开始 10 个动画；排队超过 40 个时丢掉最早的（它们照样在面板里）
+const animQueue = [], animStarts = [];
+const MAX_ANIM_PER_SEC = 10, MAX_QUEUE = 40;
+function enqueueAnim(ev){ animQueue.push(ev); while(animQueue.length > MAX_QUEUE) animQueue.shift(); }
+function pumpAnim(){
+  while(animStarts.length && now - animStarts[0] > 1000) animStarts.shift();
+  while(animQueue.length && animStarts.length < MAX_ANIM_PER_SEC){
+    const ev = animQueue.shift(); animStarts.push(now);
+    try { animate(ev); } catch (e) { console.warn('animate', e); }
+  }
+}
+
+/* ------------------------------------------------------------ 每种事件一套动画 */
+function animate(ev){
+  const d = ev.data || {}, reg = ev.region || REGION_OF[ev.type] || 'output', RH = (id) => REG[id] && REG[id].hub;
+  const sh = ev.shadow === true;
+  pulse(reg, sh ? '#9aa4d6' : null);
+  if(sh) floater(RH(reg), '影子', '#c0c8f0');
+  const ids = Array.isArray(ev.nodes) ? ev.nodes : [];
+  switch(ev.type){
+    case 'msg.in': {
+      const n = nodeOf(ids[0] || ('msg:' + (d.msgId || ev.at)), ev);
+      if(n){ flash(n, OTHER_COLOR.msgIn, 3600, 1); spark(n, RH('working'), REG.input.color, 0.15, 0.9, 2.4); }
+      break;
+    }
+    case 'msg.out': {
+      const n = nodeOf(ids[0] || ('msg:' + (d.msgId || ev.at)), ev);
+      spark(RH('working'), RH('output'), REG.working.color, 0, 0.7, 2.2);
+      if(n){ flash(n, OTHER_COLOR.msgOut, 3600, 1); spark(RH('output'), n, REG.output.color, 0.5, 0.6, 2.2); }
+      break;
+    }
+    // 唤醒的来源都是「收到消息」：SurfCore 还没有自主唤醒，所以不按理由分岔
+    case 'wake': spark(RH('input'), RH('working'), REG.working.color, 0, 0.8, 3); break;
+    case 'inject': {
+      const list = (Array.isArray(d.ltm) ? d.ltm : ids).slice(0, 20);
+      list.forEach((id, i) => { const n = nodeOf(id, ev); if(n){ later(i * 60, () => flash(n, '#ffd9a8', 2600, 0.9)); spark(n, RH('output'), REG.output.color, i * 0.06, 0.9, 2); } });
+      if(d.recall) spark(RH('core'), RH('output'), REG.core.color, 0.3, 0.8, 2.4);
+      if(d.suggest) spark(RH('introspect'), RH('output'), REG.introspect.color, 0.4, 0.8, 2.4);
+      break;
+    }
+    case 'search': {
+      const core = RH('core');
+      spark(RH('working'), core, REG.working.color, 0, 0.6, 2.6);
+      const ranked = Array.isArray(d.ranked) && d.ranked.length ? d.ranked
+        : (Array.isArray(d.items) ? d.items : []).map(it => ({node: it.node, sources: [d.source === 'keyword' ? 'bm25' : 'vector']}));
+      let usedGraph = false;
+      ranked.slice(0, 20).forEach((r, i) => {
+        const n = nodeOf(r.node, ev); if(!n) return;
+        const srcs = Array.isArray(r.sources) && r.sources.length ? r.sources : ['bm25'];
+        srcs.forEach((s, j) => { if(s === 'graph') usedGraph = true; spark(core, n, (SRC[s] || SRC.bm25).color, 0.5 + j * 0.09 + i * 0.03, 0.75, 2); });
+        // 命中按名次依次亮
+        later(1300 + i * 300, () => { flash(n, '#fff3b0', 3200, 1); floater(n, '#' + (i + 1), '#fff3b0'); });
+      });
+      if(usedGraph) spark(core, RH('graph'), SRC.graph.color, 0.5, 0.7, 2.6);
+      for(const id of ids){ if(!ranked.some(r => r.node === id)){ const n = nodeOf(id, ev, false); if(n) later(1300, () => flash(n, '#d8dcff', 2400, 0.6)); } }
+      if(ev.origin === 'ai') later(1300 + ranked.length * 300, () => spark(core, RH('output'), REG.core.color, 0, 0.8, 2.4));
+      break;
+    }
+    case 'recall': {
+      const items = Array.isArray(d.items) ? d.items : ids.map(id => ({node:id}));
+      items.slice(0, 12).forEach((it, i) => { const n = nodeOf(it.node, ev); if(!n) return; spark(RH('core'), n, REG.core.color, 0.2 + i * 0.08, 0.7, 2); later(900 + i * 200, () => { flash(n, MEM_LABEL_COLOR[it.memory] || '#fff3b0', 3000, 1); if(it.memory) floater(n, it.memory, MEM_LABEL_COLOR[it.memory] || '#ffffff'); }); });
+      break;
+    }
+    case 'remember': {
+      const n = nodeOf(d.node || ids[0], ev);
+      if(n){ n.grow = 0; n.alpha = 0; spark(RH('hippo'), n, REG.hippo.color, 0, 0.9, 2.8); later(800, () => { flash(n, '#b6ffe6', 3000, 1); floater(n, '记下', '#b6ffe6'); }); }
+      if(d.replaces){ const o = nodeOf(d.replaces, ev, false); if(o){ later(900, () => { flash(o, GRAY, 2000, 0.8); floater(o, '已过时', '#9aa4d6'); }); } }
+      for(const s of (Array.isArray(d.similar) ? d.similar : []).slice(0, 5)){ const o = nodeOf(s, ev, false); if(o) later(1000, () => flash(o, '#d8dcff', 2000, 0.5)); }
+      break;
+    }
+    case 'update': {
+      const n = nodeOf(d.node || ids[0], ev);
+      if(n){ spark(RH('hippo'), n, REG.hippo.color, 0, 0.8, 2.4); later(700, () => { flash(n, d.outdated ? GRAY : '#b6ffe6', 2600, 1); floater(n, d.outdated ? '标过时' : d.archived ? '归档' : '改了', '#d8dcff'); }); }
+      break;
+    }
+    case 'forget': {
+      const n = nodeOf(d.node || ids[0], ev, false);
+      if(n){ spark(RH('decay'), n, REG.decay.color, 0, 0.7, 2.4); later(600, () => { flash(n, '#ff5f7e', 1000, 1); floater(n, '删掉', '#ff8fa6'); }); }
+      break;
+    }
+    case 'decay.review': {
+      const n = nodeOf(d.unit || ids[0], ev);
+      if(n){
+        spark(RH('decay'), n, REG.decay.color, 0, 0.7, 2.2);
+        const target = n.ta; n.alpha = 0.12; n.ta = 0.12;           // 由暗变亮：R 回到 1
+        later(500, () => { n.ta = Math.max(target, 0.9); flash(n, '#fff3b0', 2800, 1); floater(n, d.rating === 'hard' ? '费劲想起' : '顺利想起', d.rating === 'hard' ? '#ffb25c' : '#9ff7b0'); });
+      }
+      break;
+    }
+    case 'recall.auto': {
+      const cands = Array.isArray(d.candidates) ? d.candidates : ids.map(id => ({node:id, pass:false}));
+      cands.slice(0, 10).forEach((c, i) => { const n = nodeOf(c.node, ev); if(!n) return; spark(RH('core'), n, sh ? '#9aa4d6' : REG.core.color, 0.2 + i * 0.1, 0.7, 1.8); later(900 + i * 150, () => flash(n, c.pass ? '#fff3b0' : '#7f88b8', 2600, c.pass ? 1 : 0.5)); });
+      break;
+    }
+    case 'life.ownLife': spark(RH('life'), RH('working'), REG.life.color, 0.1, 0.9, 3); break;
+    case 'life.recall': { const n = nodeOf(d.node || ids[0], ev); if(n){ spark(RH('life'), n, REG.life.color, 0, 0.9, 2.6); later(800, () => { flash(n, '#d6ffc4', 3200, 1); floater(n, '忽然想起', '#d6ffc4'); }); } break; }
+    case 'life.assoc': {
+      // 沿连线逐跳走：摘要 → 实体 → 摘要 …
+      const hops = (Array.isArray(d.hops) ? d.hops : ids).map(id => nodeOf(id, ev)).filter(Boolean);
+      hops.forEach((n, i) => {
+        later(i * 650, () => flash(n, '#d6ffc4', 3400, 1));
+        if(i + 1 < hops.length){ spark(n, hops[i + 1], REG.life.color, i * 0.65 + 0.15, 0.55, 2.6); if(!edgeKeys.has(Math.min(n.i, hops[i+1].i) + '-' + Math.max(n.i, hops[i+1].i))) link(n, hops[i + 1], 'hop', '#d6ffc4'); }
+      });
+      if(hops[0]) spark(RH('life'), hops[0], REG.life.color, 0, 0.6, 2.4);
+      break;
+    }
+    case 'life.promiseDue': { const n = nodeOf(d.node || ids[0], ev); if(n){ spark(RH('life'), n, REG.life.color, 0, 0.8, 2.6); later(700, () => { flash(n, '#63e6a0', 3200, 1); floater(n, '今天到期', '#63e6a0'); spark(n, RH('output'), REG.output.color, 0.3, 0.8, 2.4); }); } break; }
+    case 'suggest.shown': { const items = Array.isArray(d.items) ? d.items : ids.map(id => ({node:id})); items.slice(0, 5).forEach((it, i) => { const n = nodeOf(it.node, ev); if(n){ later(i * 200, () => flash(n, OTHER_COLOR.note, 2600, 1)); spark(n, RH('working'), REG.introspect.color, 0.2 + i * 0.1, 0.8, 2); } }); break; }
+    case 'suggest.adopted': { const a = nodeOf(d.node || ids[0], ev), b = nodeOf(d.ltm || ids[1], ev); if(a) flash(a, '#ffd0dc', 2600, 1); if(a && b){ spark(a, b, OTHER_COLOR.note, 0.2, 0.9, 2.6); later(1100, () => { flash(b, '#b6ffe6', 2600, 1); floater(b, '采用了', '#b6ffe6'); }); } break; }
+    case 'persona.appraisal': {
+      const core = NODE.get('persona:core');
+      spark(RH('input'), RH('limbic'), REG.limbic.color, 0, 0.8, 2.6);
+      if(core) later(700, () => { flash(core, sh ? '#9aa4d6' : '#f0c8ff', 2600, 1); if(d.label) floater(core, String(d.label), '#f0c8ff'); });
+      for(const id of ids){ if(id === 'persona:core') continue; const n = nodeOf(id, ev, false); if(n) later(900, () => flash(n, '#f0c8ff', 2200, 0.8)); }
+      break;
+    }
+    case 'persona.nightly': { const core = NODE.get('persona:core'); spark(RH('introspect'), core || RH('limbic'), REG.introspect.color, 0, 0.9, 2.6); if(core) later(800, () => flash(core, '#f0c8ff', 2600, 1)); break; }
+    case 'rag.index': case 'rag.distill': spark(RH('hippo'), RH(ev.type === 'rag.distill' ? 'graph' : 'ltm'), REG.hippo.color, 0, 0.9, 2.8); break;
+    case 'tool': if(reg !== 'output') spark(RH(reg), RH('working'), REG[reg] ? REG[reg].color : '#ffffff', 0.1, 0.7, 2.2); break;
+    default: for(const id of ids){ const n = nodeOf(id, ev, false); if(n) flash(n, '#fff3b0', 2000, 0.8); }
+  }
+}
+
+// 实时事件里会改变「库里有什么」的部分（回放不改，只播动画）
+function mutate(ev){
+  const d = ev.data || {};
+  if(ev.type === 'remember' && typeof d.node === 'string'){
+    let n = NODE.get(d.node);
+    const rec = { id: d.node, kind: 'ltm', key: ev.key, at: ev.at, label: short(d.text || '', 40), text: d.text, cat: d.cat, userId: d.userId, name: d.name, core: false, decay: { R: 1, S: null, frozen: false, exempt: false } };
+    if(!n) n = addTempNode(d.node, ev, rec);
+    else { Object.assign(n.rec, { text: d.text ?? n.rec.text, cat: d.cat ?? n.rec.cat }); restyle(n); }
+    if(n){ n.temp = false; n.expire = 0; }
+    if(d.replaces){ const o = NODE.get(d.replaces); if(o && o.rec){ o.rec.outdatedAt = ev.at; o.rec.outdatedBy = d.node; restyle(o); } }
+  } else if(ev.type === 'update' && typeof d.node === 'string'){
+    const n = NODE.get(d.node);
+    if(n && n.rec){
+      if(typeof d.text === 'string'){ n.rec.text = d.text; n.rec.label = short(d.text, 40); n.name = n.rec.label; }
+      if(d.cat) n.rec.cat = d.cat;
+      if(d.outdated === true) n.rec.outdatedAt = ev.at; else if(d.outdated === false) n.rec.outdatedAt = null;
+      if(d.archived === true) n.rec.archivedAt = ev.at; else if(d.archived === false) n.rec.archivedAt = null;
+      if(d.status) n.rec.status = d.status;
+      restyle(n);
+    }
+  } else if(ev.type === 'forget' && typeof d.node === 'string'){
+    const n = NODE.get(d.node); if(n) setTimeout(() => removeNode(n), 1600);
+  } else if(ev.type === 'decay.review' && typeof d.unit === 'string'){
+    const n = NODE.get(d.unit);
+    if(n && n.rec && d.after){ n.rec.decay = Object.assign({}, n.rec.decay || {}, { R: d.after.R, S: d.after.S, frozen: false }); const keep = n.alpha; restyle(n); n.alpha = keep; }
+  } else if(ev.type === 'suggest.adopted' && typeof d.node === 'string'){
+    const n = NODE.get(d.node); if(n && n.rec){ n.rec.state = 'adopted'; restyle(n); }
+  }
+}
+
+/* ------------------------------------------------------------ 绘制 */
+function drawShell(){
+  ctx.fillStyle = '#9fb0ff';
+  const ring = (fn) => { for(let t = 0; t < 120; t++){ const a = t / 120 * TAU; const p = fn(a); proj(p[0], p[1], p[2], tmp); ctx.globalAlpha = 0.05 + 0.16 * fade(tmp[2]); ctx.fillRect(tmp[0] - 0.8, tmp[1] - 0.8, 1.6, 1.6); } };
+  for(const v of [-0.55, 0, 0.55]){ const k = Math.sqrt(1 - v*v); ring(a => [Math.cos(a) * SHELL.rx * k + OFFX, SHELL.cy + v * SHELL.ry, Math.sin(a) * SHELL.rz * k]); }
+  for(const m of [0, 1, 2, 3]){ const th = m / 4 * Math.PI; ring(a => [Math.cos(a) * Math.cos(th) * SHELL.rx + OFFX, SHELL.cy + Math.sin(a) * SHELL.ry, Math.cos(a) * Math.sin(th) * SHELL.rz]); }
+  ctx.globalAlpha = 1;
+}
+function drawEdges(){
+  if(groupsDirty) regroup();
+  const dimMul = focusSet ? 0.28 : 1;
+  ctx.globalCompositeOperation = 'lighter';
+  for(const g of groups.values()){
+    const base = (EDGE_ALPHA[g.kind] ?? 0.1) * dimMul;
+    ctx.strokeStyle = rgba(g.color, base);
+    ctx.lineWidth = g.kind === 'rel' || g.kind === 'flowhub' || g.kind === 'hop' ? 1.1 : 0.7;
+    if(g.kind === 'hop') ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    for(const e of g.list){ const A = nodes[e.a], B = nodes[e.b]; if(A.alpha < 0.25 || B.alpha < 0.25 || A.removed || B.removed) continue; ctx.moveTo(SX[e.a], SY[e.a]); ctx.lineTo(SX[e.b], SY[e.b]); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.lineWidth = 1;
+  for(const g of focusGroups){
+    ctx.strokeStyle = rgba(g.color, Math.min(0.7, (EDGE_ALPHA[g.kind] ?? 0.1) * 4.5 + 0.08)); ctx.beginPath();
+    for(const e of g.list){ const A = nodes[e.a], B = nodes[e.b]; if(A.alpha < 0.08 || B.alpha < 0.08) continue; ctx.moveTo(SX[e.a], SY[e.a]); ctx.lineTo(SX[e.b], SY[e.b]); }
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+function drawNodes(t){
+  order.sort((a, b) => SZ[b] - SZ[a]);
+  ctx.globalCompositeOperation = 'lighter';
+  for(const i of order){
+    const n = nodes[i]; if(n.alpha < 0.02) continue;
+    let a = n.alpha * fade(SZ[i]);
+    if(focusSet && !focusSet.has(i)) a *= 0.22;
+    if(n.type !== 'mem' && !regionLit(REG[n.region])) a *= 0.32;
+    if(n.type === 'neuron' && !REDUCED) a *= 0.62 + 0.38 * Math.sin(t * 0.0013 + n.phase);
+    const r = Math.max(0.6, n.size * SS[i] * 0.95), col = n.statusColor || n.color, x = SX[i], y = SY[i];
+    ctx.globalAlpha = a; ctx.drawImage(sprite(col), x - r * 2.7, y - r * 2.7, r * 5.4, r * 5.4);
+    if(n.type === 'fn' || n.type === 'hub' || n.type === 'kind'){
+      ctx.strokeStyle = col; ctx.lineWidth = n.type === 'hub' ? 1.6 : 1.1; ctx.globalAlpha = a * 0.9;
+      ctx.beginPath(); ctx.arc(x, y, r * 1.55 + 1.5, 0, TAU); ctx.stroke();
+    }
+    if(n.type === 'hub' || n.type === 'fn' || (n.rec && ((n.rec.kind === 'ent' && n.rec.type === 'person') || n.rec.core || n.rec.kind === 'persona'))){ ctx.fillStyle = '#ffffff'; ctx.globalAlpha = a * 0.8; ctx.beginPath(); ctx.arc(x, y, Math.max(0.8, r * 0.35), 0, TAU); ctx.fill(); }
+    if(n.hl > 0.02){ ctx.globalAlpha = Math.min(1, n.hl) * fade(SZ[i]) * 0.95; const R = r * (5 + 7 * n.hl); ctx.drawImage(sprite(n.hc), x - R / 2, y - R / 2, R, R); if(n.hl > 0.6){ ctx.strokeStyle = n.hc; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(x, y, r * 2 + 3 + Math.sin(t * 0.006) * 1.5, 0, TAU); ctx.stroke(); } }
+  }
+  if(selected && !selected.removed){ const i = selected.i, r = Math.max(3, selected.size * SS[i]); ctx.globalAlpha = 0.95; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.arc(SX[i], SY[i], r * 2.2 + 4 + (REDUCED ? 0 : Math.sin(t * 0.005) * 2), 0, TAU); ctx.stroke(); }
+  for(let k = particles.length - 1; k >= 0; k--){
+    const p = particles[k], u = (t - p.start) / p.dur;
+    if(u < 0) continue; if(u > 1){ particles.splice(k, 1); continue; }
+    for(let s = 0; s < 4; s++){
+      const v = u - s * 0.045; if(v < 0) break;
+      const A = p.a, B = p.b, mx = (A.dx + B.dx) / 2, my = (A.dy + B.dy) / 2 - 70, mz = (A.dz + B.dz) / 2, w = 1 - v;
+      proj(w*w*A.dx + 2*w*v*mx + v*v*B.dx, w*w*A.dy + 2*w*v*my + v*v*B.dy, w*w*A.dz + 2*w*v*mz + v*v*B.dz, tmp);
+      const R = p.size * tmp[3] * (1 - s * 0.2) * 3.2;
+      ctx.globalAlpha = (1 - s * 0.24) * 0.95; ctx.drawImage(sprite(p.color), tmp[0] - R, tmp[1] - R, R * 2, R * 2);
+    }
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+function label(text, x, y, font, color, glow){
+  ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  if(glow){ ctx.shadowColor = glow; ctx.shadowBlur = 14; }
+  ctx.fillStyle = color; ctx.fillText(text, x, y); ctx.shadowBlur = 0;
+}
+function pill(text, x, y){
+  ctx.font = `12px ${BODY}`; const w = ctx.measureText(text).width + 14;
+  ctx.fillStyle = 'rgba(7,11,32,.82)'; ctx.strokeStyle = 'rgba(150,165,255,.3)'; ctx.lineWidth = 1;
+  ctx.beginPath(); if(ctx.roundRect) ctx.roundRect(x - w / 2, y - 15, w, 20, 6); else ctx.rect(x - w / 2, y - 15, w, 20); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#e4e9ff'; ctx.textAlign = 'center'; ctx.fillText(text, x, y);
+}
+function drawLabels(t){
+  const fs = clamp(21 * baseZoom * zoom / 0.8, 13, 28);
+  for(const r of REGIONS){
+    if(!r.hub) continue;
+    const i = r.hub.i; let a = fade(SZ[i]); if(focusRegion && focusRegion !== r.id) a *= 0.35;
+    if(!regionLit(r)) a *= 0.45;
+    ctx.globalAlpha = Math.max(0.22, a);
+    label(r.name, SX[i], SY[i] - 12 * SS[i] - 8, `600 ${fs * SS[i] / (baseZoom * zoom)}px ${BODY}`, r.color, regionLit(r) ? r.color : null);
+  }
+  ctx.globalAlpha = 0.9;
+  for(const n of REG.ltm.nodes) if(n.type === 'kind') label(n.name, SX[n.i], SY[n.i] - 10, `${clamp(fs * 0.55, 11, 14)}px ${BODY}`, n.color);
+  let people = 0;
+  for(const n of REG.graph.nodes){ if(people > 30) break; if(n.rec && n.rec.type === 'person' && n.alpha > 0.3){ people++; ctx.globalAlpha = 0.75 * fade(SZ[n.i]) * (focusSet && !focusSet.has(n.i) ? 0.3 : 1); label(short(n.name, 8), SX[n.i], SY[n.i] - 8, `${clamp(fs * 0.52, 10, 13)}px ${BODY}`, '#c4fbff'); } }
+  ctx.globalAlpha = 1;
+  if(focusRegion && REG[focusRegion].hub){ for(const n of REG[focusRegion].nodes) if(n.type === 'fn') pill(n.name, SX[n.i], SY[n.i] - 10); }
+  if(selected && !selected.removed && selected.type !== 'hub' && selected.type !== 'neuron'){ pill(short(selected.name, 18), SX[selected.i], SY[selected.i] - 14); }
+  // 飘字
+  for(let k = floaters.length - 1; k >= 0; k--){
+    const f = floaters[k], u = (t - f.start) / f.dur;
+    if(u < 0) continue; if(u > 1 || f.n.removed && u > 0.6){ floaters.splice(k, 1); continue; }
+    const i = f.n.i;
+    ctx.globalAlpha = u < 0.15 ? u / 0.15 : 1 - Math.max(0, (u - 0.6) / 0.4);
+    label(f.text, SX[i], SY[i] - 16 - u * 26, `600 ${clamp(fs * 0.62, 12, 15)}px ${BODY}`, f.color, f.color);
+  }
+  ctx.globalAlpha = 1;
+}
+
+let lastFrame = performance.now();
+function frame(t){
+  const dt = Math.min(80, t - lastFrame); lastFrame = t; now = t;
+  if(autoRotate && !dragging && hoverIdx < 0) yaw += dt * 0.00007;
+  for(let k = timers.length - 1; k >= 0; k--){ if(timers[k].at <= now){ const f = timers[k].fn; timers.splice(k, 1); try { f(); } catch {} } }
+  if(replay.on) tickReplay(dt);
+  pumpAnim();
+  // 闪现过的消息光点只是透明了、还占着数组；攒多了就按快照重建一次，免得越跑越慢
+  if(removedCount > 300 && !replay.on && snap){ removedCount = 0; loadSnapshot(); }
+  for(const n of nodes){
+    if(n.hlEnd && now > n.hlEnd){ n.thl = 0; n.hlEnd = 0; }
+    if(n.expire && now > n.expire){ n.expire = 0; removeNode(n); }
+    n.dx += (n.tx - n.dx) * 0.08; n.dy += (n.ty - n.dy) * 0.08; n.dz += (n.tz - n.dz) * 0.08;
+    n.alpha += (n.ta - n.alpha) * 0.08; n.hl += (n.thl - n.hl) * 0.1;
+    if(n.grow < 1) n.grow = Math.min(1, n.grow + dt / 700);
+    n.size = n.size0 * (n.grow < 1 ? 0.2 + 0.8 * n.grow : 1) * (n.hl > 0.02 ? 1 + 0.25 * n.hl : 1);
+  }
+  projectAll();
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  drawShell(); drawEdges(); drawNodes(t); drawLabels(t);
+  requestAnimationFrame(frame);
+}
+
+/* ------------------------------------------------------------ 指针：拖动旋转，滚轮/双指缩放，Shift 或双指平移 */
+let dragging = false, downX = 0, downY = 0, lastX = 0, lastY = 0, moved = 0, panMode = false;
+const pointers = new Map(); let pinchD = 0, pinchMid = null;
+const tip = $('tip');
+function pickAt(mx, my){
+  if(!projected) return -1;
+  let best = -1, bd = Infinity;
+  for(let i = 0; i < N; i++){
+    const n = nodes[i]; if(n.alpha < 0.2 || n.removed) continue;
+    const r = Math.max(5, n.size * SS[i] * 1.5) + 4, dx = SX[i] - mx, dy = SY[i] - my, d = dx * dx + dy * dy;
+    if(d > r * r) continue;
+    const score = d * (n.type === 'neuron' ? 3 : n.type === 'mem' ? 1.2 : 1) + SZ[i] * 0.02;
+    if(score < bd){ bd = score; best = i; }
+  }
+  return best;
+}
+function local(ev){ const r = canvas.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+canvas.addEventListener('pointerdown', ev => {
+  canvas.setPointerCapture(ev.pointerId); pointers.set(ev.pointerId, local(ev));
+  if(pointers.size === 2){ const [p, q] = [...pointers.values()]; pinchD = Math.hypot(p[0]-q[0], p[1]-q[1]); pinchMid = [(p[0]+q[0])/2, (p[1]+q[1])/2]; }
+  [downX, downY] = local(ev); lastX = downX; lastY = downY; moved = 0; dragging = true; panMode = ev.shiftKey || ev.button === 1 || ev.button === 2;
+  canvas.classList.add('grabbing'); tip.hidden = true;
+});
+canvas.addEventListener('pointermove', ev => {
+  const [x, y] = local(ev);
+  if(pointers.has(ev.pointerId)) pointers.set(ev.pointerId, [x, y]);
+  if(dragging && pointers.size === 2){
+    const [p, q] = [...pointers.values()], d = Math.hypot(p[0]-q[0], p[1]-q[1]), mid = [(p[0]+q[0])/2, (p[1]+q[1])/2];
+    if(pinchD > 0) zoomAt(mid[0], mid[1], d / pinchD);
+    panX += mid[0] - pinchMid[0]; panY += mid[1] - pinchMid[1]; pinchD = d; pinchMid = mid; moved += 10; return;
+  }
+  if(dragging){
+    const dx = x - lastX, dy = y - lastY; moved += Math.abs(dx) + Math.abs(dy); lastX = x; lastY = y;
+    if(panMode){ panX += dx; panY += dy; } else { yaw += dx * 0.005; pitch = clamp(pitch + dy * 0.004, -0.95, 0.95); }
+    return;
+  }
+  const idx = pickAt(x, y); hoverIdx = idx;
+  canvas.classList.toggle('pointing', idx >= 0);
+  if(idx < 0){ tip.hidden = true; return; }
+  const [main, sub] = tipText(nodes[idx]);
+  $('tipMain').textContent = main; $('tipSub').textContent = sub; tip.hidden = false;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = clamp(x + 14, 8, W - tw - 8) + 'px'; tip.style.top = clamp(y + 14, 8, H - th - 8) + 'px';
+});
+function endPointer(ev){
+  const wasDrag = dragging;
+  pointers.delete(ev.pointerId);
+  if(pointers.size > 0){ const [p] = [...pointers.values()]; lastX = p[0]; lastY = p[1]; pinchD = 0; return; }
+  dragging = false; canvas.classList.remove('grabbing'); pinchD = 0;
+  if(wasDrag && moved < 5 && ev.type === 'pointerup'){
+    const [x, y] = local(ev), idx = pickAt(x, y);
+    if(idx >= 0) select(nodes[idx]); else clearSelection();
+  }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('pointerleave', () => { if(!dragging){ hoverIdx = -1; tip.hidden = true; } });
+canvas.addEventListener('contextmenu', ev => ev.preventDefault());
+function zoomAt(mx, my, k){
+  const nz = clamp(zoom * k, 0.5, 4); k = nz / zoom; zoom = nz;
+  panX = (mx - view.cx) - ((mx - view.cx) - panX) * k; panY = (my - view.cy) - ((my - view.cy) - panY) * k;
+}
+canvas.addEventListener('wheel', ev => { ev.preventDefault(); const [x, y] = local(ev); zoomAt(x, y, Math.exp(-ev.deltaY * 0.0012)); }, {passive:false});
+window.addEventListener('keydown', ev => { if(ev.key === 'Escape') clearSelection(); });
+
+function recSub(r){
+  if(!r) return '';
+  if(r.kind === 'ltm'){ const R = r.decay && typeof r.decay.R === 'number' ? r.decay.R : null; return [CAT_NAME[r.cat] || r.cat, r.clarityLabel, r.decay && r.decay.exempt ? '不会淡忘' : r.decay && r.decay.frozen ? '已冻结' : R !== null ? `记得 ${Math.round(R * 100)}%` : ''].filter(Boolean).join(' · '); }
+  if(r.kind === 'persona') return `人格层 · ${r.chars ? r.chars + ' 字' : ''}`;
+  if(r.kind === 'msg') return (r.dir === 'out' ? '她发出' : '收到') + (r.name ? ' · ' + r.name : '');
+  return '';
+}
+function tipText(n){
+  const r = REG[n.region];
+  if(n.type === 'neuron') return [r.name, '点一下看这个脑区'];
+  if(n.type === 'hub') return [r.name, `脑区中心 · 今天 ${r.count} 次`];
+  if(n.type === 'fn') return [n.name, r.name];
+  if(n.type === 'kind') return [n.name, KINDS[n.kind].desc];
+  if(n.rec) return [short(n.rec.kind === 'msg' ? n.name : n.name, 40), recSub(n.rec)];
+  return [n.name || '', ''];
+}
+
+/* ------------------------------------------------------------ 面板：标签页 */
+const tabs = document.querySelectorAll('.tabs button[data-tab]');
+let curTab = 'live';
+function showTab(name){
+  curTab = name;
+  for(const b of tabs){ const on = b.dataset.tab === name; b.setAttribute('aria-selected', on); $('tab-' + b.dataset.tab).hidden = !on; }
+  if(name === 'time') renderTime();
+  unfold();
+}
+tabs.forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+// 手机：面板可以折叠成一条，露出脑图
+const panelEl = $('panel'), foldBtn = $('foldBtn');
+function unfold(){ if(panelEl.classList.contains('folded')){ panelEl.classList.remove('folded'); $('app').classList.remove('pfold'); foldBtn.textContent = '▾'; foldBtn.setAttribute('aria-expanded', 'true'); setTimeout(resize, 0); } }
+foldBtn.addEventListener('click', () => {
+  const f = !panelEl.classList.contains('folded');
+  panelEl.classList.toggle('folded', f); $('app').classList.toggle('pfold', f);
+  foldBtn.textContent = f ? '▴' : '▾'; foldBtn.setAttribute('aria-expanded', String(!f));
+  setTimeout(resize, 0);
+});
+
+function select(n, opts = {}){
+  if(!n) return;
+  if(n.type === 'neuron' || n.type === 'hub'){ focusRegion = n.region; selected = REG[n.region].hub; }
+  else { focusRegion = null; selected = n; }
+  setFocus(); syncLegend(); renderDetail();
+  // 正在看「时间推演」时点另一条记忆卡条目，留在推演页直接换曲线
+  const stay = curTab === 'time' && n.rec && (n.rec.kind === 'ltm' || n.rec.kind === 'diary');
+  if(stay) renderTime();
+  else if(opts.tab !== false) showTab('detail');
+}
+function clearSelection(){ selected = null; focusRegion = null; setFocus(); syncLegend(); renderDetail(); }
+
+/* ------------------------------------------------------------ 详情 */
+const detail = $('tab-detail');
+const chunkCache = new Map();   // chunk 编号 → { ok, text, ... }（drop 时清掉）
+function kv(pairs){ return el('dl', {class:'kv'}, pairs.filter(Boolean).map(([k, v]) => el('div', null, el('dt', {text:k}), el('dd', {text: v === null || v === undefined || v === '' ? '—' : String(v)})))); }
+function nodeChip(id, text){
+  const n = NODE.get(id);
+  return el('button', {class:'chip', c: n ? (n.statusColor || n.color) : '#7a84b4', onclick: () => { const m = NODE.get(id); if(m) select(m); }}, el('i'), short(text || (n ? n.name : id), 24));
+}
+function recentEventsOf(id){
+  const list = (replay.on ? replay.shown : liveEvents).filter(e => evNodes(e).includes(id)).slice(-8).reverse();
+  if(!list.length) return null;
+  return [el('h3', {text:'最近的事件'}), el('ul', {class:'list'}, list.map(e => el('li', null, el('button', {c: regionColor(e), onclick: () => { showTab('live'); }}, el('b', {text: hms(e.at) + ' ' + (TYPE_NAME[e.type] || e.type)}), ' ' + short(evSummary(e), 60)))))];
+}
+function renderDetail(){
+  clear(detail);
+  const n = selected;
+  if(!n){
+    const s = snap || {};
+    const cnt = (k) => (s.nodes || []).filter(r => r.kind === k).length;
+    detail.append(
+      el('div', {class:'eyebrow'}, el('i', {c:'var(--gold)', style:'--c:var(--gold)'}), '总览'),
+      el('h2', {text:'她的记忆，此刻'}),
+      el('p', {class:'desc', text:'光点是真实的记忆卡条目和人格层。她每用到一个记忆模块，对应的脑区和光点就亮起来，「实时」页列出那次用到的内容。'}),
+      kv([['记忆卡条目', cnt('ltm')], ['人格层', cnt('persona')]]),
+      el('h3', {text:'怎么看'}),
+      el('ul', {class:'rules'},
+        el('li', {text:'越亮越大的条目记得越牢；暗的是快忘了的（已冻结），被推到外圈的是已归档。'}),
+        el('li', {text:'暗着的脑区今天还没有事件。'}),
+        el('li', {text:'检索时两种颜色的粒子是两路检索：黄 = 关键词（BM25）、蓝 = 向量。向量服务没开时只有黄的。'})),
+      el('p', {class:'hint', text:'拖动旋转，滚轮或双指缩放，Shift 拖动平移。点光点看详情，点左边的脑区名字只看这一区。'})
+    );
+    return;
+  }
+  if(n.type === 'hub'){
+    const r = REG[n.region];
+    detail.append(el('div', {class:'eyebrow'}, el('i', {c:r.color}), '脑区'), el('h2', {text:r.name}), el('p', {class:'desc', text:r.desc}),
+      kv([['今天的事件', r.count], ['光点', r.nodes.filter(x => x.type === 'mem' && !x.removed).length]]));
+    if(r.id === 'ltm'){
+      detail.append(el('h3', {text:'分区'}), el('ul', {class:'list'}, KIND_ORDER.map(k => {
+        const c = r.nodes.filter(x => x.rec && sectorOf(x.rec) === k && !x.removed).length;
+        return el('li', null, el('button', {c:KINDS[k].color, onclick: () => { const first = r.nodes.find(x => x.rec && sectorOf(x.rec) === k && !x.removed); if(first) select(first); }}, el('b', {text:KINDS[k].name}), ` · ${c} 条 · ${KINDS[k].desc}`));
+      })));
+    }
+    if(r.fns.length) detail.append(el('h3', {text:'功能'}), el('ul', {class:'list'}, r.nodes.filter(x => x.type === 'fn').map(x => el('li', null, el('button', {c:r.color, onclick: () => select(x)}, el('b', {text:x.name}))))));
+    const fl = FLOWS.filter(f => f[0] === r.id || f[1] === r.id);
+    if(fl.length) detail.append(el('h3', {text:'和别的脑区'}), el('div', {class:'chips'}, fl.map(f => { const o = f[0] === r.id ? f[1] : f[0]; return el('button', {class:'chip', c:REG[o].color, onclick: () => select(REG[o].hub)}, el('i'), `${f[0] === r.id ? '→' : '←'} ${REG[o].name} · ${f[2]}`); })));
+    return;
+  }
+  if(n.type === 'fn'){
+    const r = REG[n.region], f = n.fn;
+    detail.append(el('div', {class:'eyebrow'}, el('i', {c:r.color}), r.name), el('h2', {text:f.name}), el('p', {class:'desc', text:f.desc}));
+    if(f.params) detail.append(kv(f.params));
+    if(f.src) detail.append(el('p', {class:'src', text:f.src}));
+    detail.append(el('p', {class:'hint'}, el('button', {class:'chip', c:r.color, onclick: () => select(r.hub)}, el('i'), '看整个' + r.name)));
+    return;
+  }
+  if(n.type === 'kind'){
+    const k = KINDS[n.kind];
+    const list = REG.ltm.nodes.filter(x => x.rec && sectorOf(x.rec) === n.kind && !x.removed).sort((a, b) => (b.rec.at || 0) - (a.rec.at || 0));
+    detail.append(el('div', {class:'eyebrow'}, el('i', {c:k.color}), '长期记忆库'), el('h2', {text:k.name}), el('p', {class:'desc', text:k.desc}),
+      el('h3', {text:`最近的 ${Math.min(10, list.length)} 条`}), el('ul', {class:'list'}, list.slice(0, 10).map(x => el('li', null, el('button', {c:k.color, onclick: () => select(x)}, el('b', {text: x.rec.at ? ymd(x.rec.at).slice(5) : ''}), ' ' + (x.rec.text || x.rec.title || x.name))))));
+    return;
+  }
+  const r = n.rec || {};
+  const head = (eyebrow, color, title) => detail.append(el('div', {class:'eyebrow'}, el('i', {c:color}), eyebrow), el('h2', {text: title || '（没有文字）'}));
+  const keyTag = r.key ? el('span', {class:'tag', text: keyLabel(r.key)}) : null;
+  if(r.kind === 'ltm'){
+    head(`记忆卡 · ${CAT_NAME[r.cat] || r.cat || ''}${n.temp ? ' · 新' : ''}`, n.statusColor || n.color, r.text || r.label);
+    const dc = r.decay;
+    detail.append(el('div', {class:'chips', style:'margin-bottom:12px'}, keyTag, r.initial ? el('span', {class:'tag c', c:'#ffe57a', text:'初见'}) : null, r.pinned ? el('span', {class:'tag', text:'钉住'}) : null, r.archived ? el('span', {class:'tag', text:'已归档'}) : null, dc && dc.frozen ? el('span', {class:'tag c', c:'#8c90ff', text:'已冻结'}) : null, dc && dc.exempt ? el('span', {class:'tag c', c:'#9ff7b0', text:'不会淡忘'}) : null),
+      kv([['清晰度', r.clarityLabel], ['记得', dc && typeof dc.R === 'number' ? Math.round(dc.R * 100) + '%' : '—'], ['来源', r.platform || r.scope], ['说话的人', r.speaker],
+        ['被想起', r.recallCount === undefined ? '—' : r.recallCount + ' 次'], ['写入', r.at ? ymd(r.at) + ' ' + hms(r.at).slice(0, 5) : '—'],
+        r.tags && r.tags.length ? ['标签', r.tags.join('、')] : null]),
+      el('button', {class:'btn', onclick: () => showTab('time')}, '看衰减曲线 →'));
+  } else if(r.kind === 'persona'){
+    head('人格层', n.color, r.name || r.label);
+    detail.append(kv([['字数', r.chars], ['内容', '不上图（人格卡正文属于敏感内容）']]));
+  } else if(r.kind === 'msg'){
+    head(r.dir === 'out' ? '她发出的消息' : '收到的消息', n.color, r.text === null ? '（已删除）' : r.text);
+    detail.append(el('div', {class:'chips'}, keyTag, r.name ? el('span', {class:'tag', text:r.name}) : null, el('span', {class:'tag', text: hms(r.at)})), el('p', {class:'hint', text:'消息不单独成点，只在事件里闪一下。'}));
+  } else {
+    head(r.kind || '光点', n.color, n.name);
+  }
+  if(n.id){ const re = recentEventsOf(n.id); if(re) detail.append(...re); detail.append(el('p', {class:'src', text: n.id})); }
+}
+async function loadChunk(id, key, box){
+  // 这条数据源在 SurfCore 版里没有：条目正文随快照一起下来，不需要再回一次「取原文」。
+  // 函数留着是为了不动调用点结构，但页面不会走到这里（没有 chunk 节点）。
+  clear(box);
+  box.append(el('p', {class:'hint', text:'这一版没有「按编号取原文」的接口：正文随快照一起给。'}));
+}
+
+/* ------------------------------------------------------------ 图例 */
+const legend = $('legend');
+const legendBtns = {};
+for(const r of REGIONS){
+  const sm = el('small', {text:'0'});
+  const b = el('button', {'data-r':r.id, 'aria-pressed':'false', c:r.color}, el('i'), r.name, sm);
+  b._count = sm; legendBtns[r.id] = b; legend.appendChild(b);
+}
+legend.addEventListener('click', ev => { const b = ev.target.closest('button'); if(!b) return; if(focusRegion === b.dataset.r) clearSelection(); else select(REG[b.dataset.r].hub); });
+function syncLegend(){
+  for(const r of REGIONS){ const b = legendBtns[r.id]; b.setAttribute('aria-pressed', focusRegion === r.id); b._count.textContent = String(r.count); b.classList.toggle('idle', !regionLit(r)); }
+}
+setInterval(syncLegend, 5000);
+
+/* ------------------------------------------------------------ 接口 */
+let dead = false;
+function fatal(title, text){
+  dead = true;
+  $('fatalTitle').textContent = title; $('fatalText').textContent = text; $('fatal').hidden = false;
+  if(es){ try { es.close(); } catch {} es = null; }
+  setConn('down', '已停止');
+}
+const FATAL_TOKEN = () => fatal('令牌无效', '令牌无效，请从控制台打开（导航里的「实时脑图」）。');
+const FATAL_OFF = () => fatal('实时脑图已关闭', '实时脑图已关闭，可在控制台「API 管理」页打开。');
+// 返回 { status, data }；401 / 403 / 404（开关关了）直接整页提示。allow404：这个接口的 404 有别的意思（块已删 / 单元不存在）
+async function api(path, opts = {}){
+  const headers = {};
+  if(TOKEN) headers['x-console-token'] = TOKEN;
+  if(opts.body) headers['content-type'] = 'application/json';
+  let res;
+  try { res = await fetch(path, { method: opts.method || 'GET', headers, body: opts.body ? JSON.stringify(opts.body) : undefined, credentials: 'same-origin', cache: 'no-store' }); }
+  catch { return { status: 0, data: null }; }
+  let data = null; try { data = await res.json(); } catch {}
+  if(res.status === 401 || res.status === 403){ FATAL_TOKEN(); return { status: res.status, data }; }
+  if(res.status === 404){
+    if(!opts.allow404) FATAL_OFF();
+    else checkOff();
+  }
+  return { status: res.status, data };
+}
+// 一个允许 404 的接口回了 404：问一下开关，真关了就整页提示
+async function checkOff(){
+  try {
+    const r = await fetch('/api/brain/control', { headers: TOKEN ? {'x-console-token': TOKEN} : {}, cache: 'no-store' });
+    if(r.status === 401 || r.status === 403) return FATAL_TOKEN();
+    const j = await r.json().catch(() => null);
+    if(j && j.enabled === false) FATAL_OFF();
+  } catch {}
+}
+
+/* ------------------------------------------------------------ 快照 */
+let filterKey = '';
+let snapTimer = 0, snapSeq = 0;
+function keyLabel(k){ if(!k) return '—'; const o = keysMap.get(k); return o && o.label ? o.label : k; }
+async function loadSnapshot(){
+  if(dead) return;
+  clearTimeout(snapTimer);
+  const seq = ++snapSeq;
+  const r = await api('/api/brain/snapshot' + (filterKey ? '?key=' + encodeURIComponent(filterKey) : ''));
+  if(dead || seq !== snapSeq) return;
+  if(r.status !== 200 || !r.data || r.data.ok === false){
+    $('stats').textContent = '快照读取失败，3 秒后重试';
+    snapTimer = setTimeout(loadSnapshot, 3000); return;
+  }
+  snap = r.data;
+  freezeBelow = typeof snap.freezeBelow === 'number' ? snap.freezeBelow : 0.5;
+  for(const k of (Array.isArray(snap.keys) ? snap.keys : [])) if(k && typeof k.key === 'string') keysMap.set(k.key, k);
+  if(snap.regions && typeof snap.regions === 'object') for(const r2 of REGIONS){ const v = snap.regions[r2.id]; r2.count = typeof v === 'number' && v >= 0 ? v : 0; }
+  buildScene(snap);
+  renderKeys(); renderStats(); syncLegend(); renderDetail();
+}
+function renderStats(){
+  const s = snap || {}, ns = s.nodes || [];
+  const cnt = (k) => ns.filter(r => r.kind === k).length;
+  const ragTxt = s.rag === 'off' ? ' · 向量检索关着（只有关键词）' : s.rag === 'unavailable' ? ' · 向量检索暂时连不上' : '';
+  $('stats').textContent = `光点 ${ns.length} · 记忆卡 ${cnt('ltm')} · 人格层 ${cnt('persona')} · 连线 ${(s.links || []).length}${ragTxt}`;
+  const tr = s.truncated && typeof s.truncated === 'object' ? Object.values(s.truncated).reduce((a, v) => a + (typeof v === 'number' && v > 0 ? v : 0), 0) : 0;
+  const tp = $('truncPill');
+  tp.hidden = !tr; tp.textContent = `另有 ${tr} 条未显示`;
+  setTimeout(resize, 0);
+  tp.title = tr ? Object.entries(s.truncated).filter(([, v]) => v > 0).map(([k, v]) => `${KINDS[k] ? KINDS[k].name : k} ${v}`).join('，') : '';
+}
+const keySel = $('keySel');
+function renderKeys(){
+  const keys = [...keysMap.values()];
+  const fill = (sel, withAll, value) => {
+    clear(sel);
+    if(withAll) sel.appendChild(el('option', {value:'', text:'全部会话'}));
+    for(const k of keys) sel.appendChild(el('option', {value:k.key, text: (k.label || k.key) + (k.kind === 'group' ? '' : '')}));
+    if(!withAll && !keys.length) sel.appendChild(el('option', {value:'', text:'（没有会话）'}));
+    sel.value = value;
+    if(sel.value !== value && !withAll && keys.length) sel.value = keys[0].key;
+  };
+  fill(keySel, true, filterKey);
+}
+keySel.addEventListener('change', () => {
+  filterKey = keySel.value;
+  renderRows();
+  if(replay.on) loadReplay(); else loadSnapshot();
+  connect(true);
+});
+
+/* ------------------------------------------------------------ 实时事件 */
+let es = null, lastId = 0, hellos = 0, reconnectTimer = 0;
+const liveEvents = [];           // 最多 500 条，旧的在前
+const MAX_ROWS = 500;
+function setConn(state, text){
+  const c = $('conn'); c.className = 'pill ' + (state === 'ok' ? 'ok' : state === 'down' ? 'down' : '');
+  $('connText').textContent = text || (state === 'ok' ? '实时' : state === 'down' ? '已断开，重连中' : '连接中');
+}
+function connect(fresh){
+  if(dead) return;
+  clearTimeout(reconnectTimer);
+  if(es){ try { es.close(); } catch {} es = null; }
+  if(fresh){ hellos = 0; }
+  const q = new URLSearchParams();
+  q.set('token', TOKEN);
+  if(filterKey) q.set('key', filterKey);
+  if(lastId && !fresh) q.set('lastEventId', String(lastId));
+  setConn('', '连接中');
+  const src = new EventSource('/api/brain/events?' + q.toString());
+  es = src;
+  src.addEventListener('hello', (e) => {
+    let h = null; try { h = JSON.parse(e.data); } catch {}
+    if(!h) return;
+    if(h.enabled === false){ FATAL_OFF(); return; }
+    setConn('ok');
+    const restarted = typeof h.lastId === 'number' && h.lastId < lastId;
+    if(restarted || fresh) lastId = typeof h.lastId === 'number' ? h.lastId : 0;
+    // 第一次连上不重拉；之后每次（断线重连 / 桥接重启）都重拉快照
+    if(hellos++ > 0 || restarted){ if(replay.on) replay.needReload = true; else loadSnapshot(); }
+  });
+  src.addEventListener('brain', (e) => {
+    let ev = null; try { ev = JSON.parse(e.data); } catch {}
+    if(!ev || typeof ev.type !== 'string') return;
+    if(typeof ev.id === 'number'){ if(ev.id <= lastId) return; lastId = ev.id; }
+    onLive(ev);
+  });
+  src.addEventListener('drop', (e) => { let d = null; try { d = JSON.parse(e.data); } catch {} if(d) onDrop(d); });
+  src.onerror = () => {
+    if(dead || es !== src) return;
+    setConn('down');
+    if(src.readyState === EventSource.CLOSED){
+      // 服务端拒了（401 / 404 / 429）或彻底断了：浏览器不会再自己重连，问清楚再决定
+      es = null;
+      reconnectTimer = setTimeout(async () => {
+        const r = await api('/api/brain/control', {allow404:true});
+        if(dead) return;
+        if(r.status === 200 && r.data && r.data.enabled === false){ FATAL_OFF(); return; }
+        if(r.status === 200) setConn('down', '已断开，重连中（最多 4 个页面同时连）');
+        connect(false);
+      }, 3000 + Math.random() * 2000);
+    }
+  };
+}
+function evNodes(ev){
+  const d = ev.data || {}, out = Array.isArray(ev.nodes) ? ev.nodes.slice() : [];
+  for(const k of ['node', 'unit', 'replaces', 'ltm']) if(typeof d[k] === 'string') out.push(d[k]);
+  return out;
+}
+function onLive(ev){
+  if(replay.on){ replay.buffer.push(ev); if(replay.buffer.length > MAX_ROWS) replay.buffer.shift(); return; }
+  const r = REG[ev.region] || REG[REGION_OF[ev.type]]; if(r){ r.count++; r.lastAt = now; }
+  try { mutate(ev); } catch (e) { console.warn('mutate', e); }
+  liveEvents.push(ev);
+  if(liveEvents.length > MAX_ROWS) liveEvents.splice(0, liveEvents.length - MAX_ROWS);
+  if(rowVisible(ev)) prependRow(ev);
+  enqueueAnim(ev);
+}
+function onDrop(d){
+  const set = new Set(Array.isArray(d.nodes) ? d.nodes : []);
+  const kill = (e) => evNodes(e).some(id => set.has(id)) || (d.reload && e.key === d.key && /^(msg\.|search$|persona\.appraisal$)/.test(e.type));
+  for(const list of [liveEvents, replay.buffer]){ for(let i = list.length - 1; i >= 0; i--) if(kill(list[i])) list.splice(i, 1); }
+  for(const id of set){ const n = NODE.get(id); if(n) removeNode(n); }
+  renderRows();
+  if(d.reload){ if(replay.on) replay.needReload = true; else loadSnapshot(); }
+}
+
+/* ------------------------------------------------------------ 面板行 */
+const evlist = $('evlist');
+const regionColor = (ev) => (REG[ev.region] || REG[REGION_OF[ev.type]] || {color:'#9aa4d6'}).color;
+const rowVisible = (ev) => !filterKey || ev.key === null || ev.key === undefined || ev.key === filterKey;
+const labelOf = (id) => { const n = NODE.get(id); return n ? (n.rec && (n.rec.text || n.rec.summary || n.rec.title || n.rec.name) || n.name) : null; };
+const txt = (v, del) => (v === null || v === undefined) ? (del ? '（已删除）' : '') : String(v);
+function evSummary(ev){
+  const d = ev.data || {}, del = d.deleted === true;
+  switch(ev.type){
+    case 'msg.in': case 'msg.out': return `${d.name ? d.name + '：' : ''}${txt(d.text, true) || '（已删除）'}`;
+    case 'wake': return `原因：${WAKE_REASON[d.reason] || d.reason || '—'}`;
+    case 'inject': return `记忆 ${Array.isArray(d.ltm) ? d.ltm.length : 0} 条 · ${d.chars ?? '?'} 字${d.recall ? ' · 来自检索' : ''}`;
+    case 'search': {
+      const q = d.query === null || d.query === undefined ? '（不知道查了什么）' : `「${d.query}」`;
+      const kw = Array.isArray(d.keywords) && d.keywords.length ? ` [${d.keywords.join(' ')}]` : '';
+      const items = Array.isArray(d.items) ? d.items : [];
+      const first = items[0] ? ' · ' + (items[0].title || items[0].summary || items[0].line || '') : '';
+      return `${q}${kw} → ${items.length} 段（${d.source === 'keyword' ? '关键词' : '混合检索'}${typeof d.ms === 'number' ? '，' + d.ms + ' ms' : ''}）${first}`;
+    }
+    case 'recall': { const items = Array.isArray(d.items) ? d.items : []; return `${d.query ? '「' + d.query + '」' : '全部'} → ${items.map(i => `${txt(i.text, true)}（${i.memory || ''}）`).join('；') || '没有'}`; }
+    case 'remember': return `${d.name ? d.name + '：' : ''}${txt(d.text, del) || labelOf(d.node) || '（已删除）'}${d.replaces ? ' · 替换旧条目' : ''}${Array.isArray(d.similar) && d.similar.length ? ' · 有相似的' : ''}`;
+    case 'update': return `${txt(d.text, del) || labelOf(d.node) || '（已删除）'}${d.outdated === true ? ' · 标过时' : d.outdated === false ? ' · 取消过时' : ''}${d.archived ? ' · 归档' : ''}${d.status ? ' · ' + d.status : ''}`;
+    case 'forget': return labelOf(d.node) || d.node || '';
+    case 'decay.review': return `${labelOf(d.unit) || d.unit || ''} · ${d.rating === 'hard' ? '费劲想起' : '顺利想起'} · R ${num(d.before && d.before.R)} → ${num(d.after && d.after.R)}`;
+    case 'recall.auto': { const c = Array.isArray(d.candidates) ? d.candidates : []; return `${c.length} 个候选，过线 ${c.filter(x => x.pass).length} 个（τ = ${num(d.tau)}）${c[0] ? ' · ' + (labelOf(c[0].node) || '') : ''}`; }
+    case 'life.ownLife': return `${d.kind || ''} · 今天还剩 ${d.remainingSlots ?? '?'} 次`;
+    case 'life.recall': return txt(d.text, del) || labelOf(d.node) || '（已删除）';
+    case 'life.assoc': return (Array.isArray(d.hops) ? d.hops : []).map(id => short(labelOf(id) || '?', 16)).join(' → ');
+    case 'life.promiseDue': return `${d.name ? d.name + '：' : ''}${txt(d.text, del) || '（已删除）'}`;
+    case 'suggest.shown': return (Array.isArray(d.items) ? d.items : []).map(i => txt(i.text, true)).join('；');
+    case 'suggest.adopted': return `${short(labelOf(d.node) || d.node || '', 30)} → ${short(labelOf(d.ltm) || d.ltm || '', 30)}`;
+    case 'persona.appraisal': return `${d.label || d.kind || ''} · 强度 ${num(d.intensity)} · 显著度 ${num(d.salience)} · ${d.source === 'model' ? '模型判读' : '规则'}`;
+    case 'persona.nightly': return Object.entries(d.changes || {}).map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${v}`).join('，') || '没有变化';
+    case 'rag.index': case 'rag.distill': return `新增 ${d.added ?? 0}，共 ${d.total ?? '?'}`;
+    case 'tool': return `${d.name || ''} ${d.ok === false ? '失败' : '成功'}`;
+    default: return '';
+  }
+}
+// 展开后的完整内容：data 每个字段一行（文字截 300）
+function evFull(ev){
+  const lines = [`类型：${ev.type}`, `会话：${keyLabel(ev.key)}`, `来自：${ORIGIN_NAME[ev.origin] || ev.origin || '—'}`, `时间：${ymd(ev.at)} ${hms(ev.at)}`];
+  const d = ev.data || {};
+  for(const [k, v] of Object.entries(d)){
+    let s;
+    if(Array.isArray(v)) s = v.map(x => (x && typeof x === 'object') ? Object.entries(x).map(([a, b]) => `${a}=${Array.isArray(b) ? b.join('/') : b}`).join(' ') : String(x)).join('\n    ');
+    else if(v && typeof v === 'object') s = Object.entries(v).map(([a, b]) => `${a}=${b}`).join(' ');
+    else s = v === null ? '（无）' : String(v);
+    lines.push(`${k}：${short(s, 300)}`);
+  }
+  if(Array.isArray(ev.nodes) && ev.nodes.length) lines.push(`光点：${ev.nodes.slice(0, 12).join(' ')}${ev.nodes.length > 12 ? ' …' : ''}`);
+  return lines.join('\n');
+}
+function rowFor(ev){
+  const d = ev.data || {};
+  const del = d.deleted === true || ((ev.type === 'msg.in' || ev.type === 'msg.out') && d.text === null);
+  const b = el('button', {class:'evrow' + (del ? ' del' : ''), c: regionColor(ev)},
+    el('span', {class:'meta'},
+      el('time', {text: hms(ev.at)}),
+      el('b', {text: TYPE_NAME[ev.type] || ev.type}),
+      el('span', {text: keyLabel(ev.key)}),
+      ev.shadow ? el('span', {class:'tag', text:'影子'}) : null,
+      ev.origin === 'console' ? el('span', {class:'tag', text:'控制台'}) : null,
+      del ? el('span', {class:'tag', text:'已删除'}) : null),
+    el('span', {class:'txt', text: short(evSummary(ev), 140)}));
+  b.addEventListener('click', () => {
+    let full = b.querySelector('.full');
+    if(full) full.remove(); else b.appendChild(el('span', {class:'full', text: evFull(ev)}));
+    locate(ev);
+  });
+  return el('li', null, b);
+}
+function locate(ev){
+  for(const id of evNodes(ev)){ const n = NODE.get(id); if(n && !n.removed){ select(n, {tab:false}); flash(n, '#ffffff', 2600, 1); return; } }
+  const r = REG[ev.region] || REG[REGION_OF[ev.type]]; if(r && r.hub){ select(r.hub, {tab:false}); pulse(r.id); }
+}
+function prependRow(ev){
+  evlist.insertBefore(rowFor(ev), evlist.firstChild);
+  while(evlist.children.length > MAX_ROWS) evlist.removeChild(evlist.lastChild);
+  updateCount();
+}
+function renderRows(){
+  clear(evlist);
+  const src = replay.on ? replay.shown : liveEvents;
+  const list = src.filter(rowVisible).slice(-MAX_ROWS);
+  const frag = document.createDocumentFragment();
+  for(let i = list.length - 1; i >= 0; i--) frag.appendChild(rowFor(list[i]));
+  evlist.appendChild(frag);
+  updateCount();
+}
+function updateCount(){
+  const n = evlist.children.length;
+  $('liveCount').textContent = `${n} 条${replay.on ? '（回放）' : ''}`;
+  $('liveEmpty').hidden = n > 0;
+}
+$('clearBtn').addEventListener('click', () => { if(replay.on) return; liveEvents.length = 0; renderRows(); });
+
+/* ------------------------------------------------------------ 回放 */
+const replay = { on:false, day:'', events:[], shown:[], idx:0, t:0, t0:0, t1:1, playing:false, speed:10, buffer:[], needReload:false, partial:false, notes:[] };
+const replayDay = $('replayDay');
+function fillDays(){
+  clear(replayDay);
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  // 约定 §5.3：今天往前 7 天内（含今天）
+  for(let i = 0; i < 7; i++){ const t = today.getTime() - i * 86400000; const d = ymd(t); replayDay.appendChild(el('option', {value:d, text: i === 0 ? `今天 · ${md(d)}` : i === 1 ? `昨天 · ${md(d)}` : md(d)})); }
+}
+fillDays();
+$('replayBtn').addEventListener('click', () => {
+  const box = $('replayBox');
+  if(replay.on){ exitReplay(); return; }
+  box.hidden = !box.hidden;
+  $('replayBtn').setAttribute('aria-pressed', String(!box.hidden));
+});
+$('replayLoad').addEventListener('click', () => loadReplay());
+async function loadReplay(){
+  const day = replayDay.value;
+  $('replayMsg').textContent = '正在载入…';
+  const r = await api('/api/brain/replay?day=' + encodeURIComponent(day) + (filterKey ? '&key=' + encodeURIComponent(filterKey) : ''));
+  if(dead) return;
+  if(r.status === 400){ $('replayMsg').textContent = '只能回放今天往前 7 天内的日子。'; return; }
+  if(r.status !== 200 || !r.data || r.data.ok === false){ $('replayMsg').textContent = '载入失败，稍后再试。'; return; }
+  const evs = (Array.isArray(r.data.events) ? r.data.events : []).filter(e => e && typeof e.type === 'string' && typeof e.at === 'number').sort((a, b) => a.at - b.at);
+  const wasOn = replay.on;
+  Object.assign(replay, { on:true, day: r.data.day || day, events: evs, shown: [], idx: 0, playing:false, partial: r.data.partial === true, notes: Array.isArray(r.data.notes) ? r.data.notes.map(String) : [] });
+  if(!wasOn){ replay.buffer = []; replay.needReload = false; }
+  animQueue.length = 0;
+  const dayStart = new Date(replay.day + 'T00:00:00').getTime();
+  replay.t0 = evs.length ? evs[0].at - 30000 : dayStart;
+  replay.t1 = evs.length ? evs[evs.length - 1].at + 30000 : dayStart + 86400000;
+  replay.t = replay.t0;
+  $('replayMsg').textContent = evs.length ? `${md(replay.day)} 共 ${evs.length} 个事件。用底部的时间轴播放、拖动。` : `${md(replay.day)} 没有事件。`;
+  const notes = $('replayNotes'); clear(notes);
+  for(const s of replay.notes) notes.appendChild(el('li', {text:s}));
+  notes.hidden = !replay.notes.length;
+  $('modePill').hidden = false; $('modePill').textContent = `回放中 · ${md(replay.day)}`;
+  $('partPill').hidden = !replay.partial; $('partPill').title = replay.notes.join('\n');
+  setTimeout(resize, 0);
+  $('replayBtn').textContent = '退出回放'; $('replayBtn').setAttribute('aria-pressed', 'true');
+  $('clearBtn').disabled = true;
+  $('timeline').hidden = false; $('app').classList.add('replaying');
+  const rg = $('tlRange'); rg.min = String(replay.t0); rg.max = String(replay.t1); rg.value = String(replay.t0);
+  const ticks = clear($('tlTicks'));
+  const span = Math.max(1, replay.t1 - replay.t0);
+  for(const e of evs.slice(0, 800)) ticks.appendChild(el('span', {style:`left:${((e.at - replay.t0) / span * 100).toFixed(2)}%`}));
+  setPlaying(false); updateTlTime(); renderRows(); setConn(es ? 'ok' : 'down', es ? '实时（暂存中）' : undefined);
+}
+function exitReplay(){
+  if(!replay.on) return;
+  replay.on = false; replay.playing = false; animQueue.length = 0;
+  $('timeline').hidden = true; $('app').classList.remove('replaying');
+  $('modePill').hidden = true; $('partPill').hidden = true; setTimeout(resize, 0);
+  $('replayBtn').textContent = '回放'; $('replayBtn').setAttribute('aria-pressed', 'false'); $('replayBox').hidden = true;
+  $('clearBtn').disabled = false;
+  // 回放期间暂存的实时事件补进面板（不补动画）；库的变化以重新拉的快照为准
+  for(const ev of replay.buffer){ const r = REG[ev.region] || REG[REGION_OF[ev.type]]; if(r) r.count++; liveEvents.push(ev); }
+  if(liveEvents.length > MAX_ROWS) liveEvents.splice(0, liveEvents.length - MAX_ROWS);
+  replay.buffer = []; replay.needReload = false; replay.shown = [];
+  renderRows(); setConn(es ? 'ok' : 'down');
+  loadSnapshot();
+}
+function setPlaying(p){ replay.playing = p; $('tlPlay').textContent = p ? '暂停' : '播放'; }
+function updateTlTime(){ $('tlTime').textContent = hms(replay.t); $('tlRange').value = String(Math.round(replay.t)); }
+function fireReplay(ev){ replay.shown.push(ev); if(rowVisible(ev)) prependRow(ev); enqueueAnim(ev); }
+function tickReplay(dt){
+  if(!replay.playing) return;
+  replay.t += dt * replay.speed;
+  while(replay.idx < replay.events.length && replay.events[replay.idx].at <= replay.t) fireReplay(replay.events[replay.idx++]);
+  if(replay.t >= replay.t1){ replay.t = replay.t1; setPlaying(false); }
+  updateTlTime();
+}
+$('tlPlay').addEventListener('click', () => { if(replay.t >= replay.t1){ seekReplay(replay.t0); } setPlaying(!replay.playing); });
+$('tlSpeed').addEventListener('change', () => { replay.speed = +$('tlSpeed').value || 1; });
+$('tlNext').addEventListener('click', () => {
+  if(replay.idx >= replay.events.length) return;
+  const ev = replay.events[replay.idx++]; replay.t = ev.at; fireReplay(ev); updateTlTime();
+});
+$('tlExit').addEventListener('click', exitReplay);
+function seekReplay(t){
+  replay.t = clamp(t, replay.t0, replay.t1);
+  let i = 0; while(i < replay.events.length && replay.events[i].at <= replay.t) i++;
+  replay.idx = i; replay.shown = replay.events.slice(0, i); animQueue.length = 0;
+  renderRows(); updateTlTime();
+}
+$('tlRange').addEventListener('input', () => { setPlaying(false); seekReplay(+$('tlRange').value); });
+$('partPill').addEventListener('click', () => { showTab('live'); $('replayBox').hidden = false; });
+$('partPill').addEventListener('keydown', (e) => { if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showTab('live'); $('replayBox').hidden = false; } });
+
+/* ------------------------------------------------------------ 检索演示 */
+const presult = $('presult'), prun = $('prun');
+let probeCooldown = 0;
+async function runProbe(){
+  const query = $('pq').value.trim();
+  if(!query){ $('pq').focus(); return; }
+  const keywords = $('pkw').value.split(/[\s,，、]+/).map(s => s.trim()).filter(Boolean).slice(0, 12);
+  prun.disabled = true; prun.textContent = '检索中…';
+  const body = { query }; if(keywords.length) body.keywords = keywords;
+  const r = await api('/api/brain/probe', {method:'POST', body});
+  clear(presult);
+  if(r.status === 429){
+    presult.append(el('p', {class:'warn', text:'太快了，2 秒后再试。'}));
+    clearTimeout(probeCooldown); prun.textContent = '稍等…';
+    probeCooldown = setTimeout(() => { prun.disabled = false; prun.textContent = '开始检索'; }, 2000);
+    return;
+  }
+  prun.disabled = false; prun.textContent = '再检索一次';
+  if(r.status !== 200 || !r.data || r.data.ok === false){ presult.append(el('p', {class:'err', text:'检索失败：' + ((r.data && r.data.error) || ('HTTP ' + r.status))})); return; }
+  renderProbe(r.data);
+}
+prun.addEventListener('click', runProbe);
+$('pq').addEventListener('keydown', ev => { if(ev.key === 'Enter') runProbe(); });
+$('pkw').addEventListener('keydown', ev => { if(ev.key === 'Enter') runProbe(); });
+function srcBadge(s){ const o = SRC[s] || {name:s, color:'#9aa4d6'}; return el('span', {class:'tag c', c:o.color, text:o.name}); }
+function renderProbe(d){
+  const items = Array.isArray(d.items) ? d.items : [], ranked = Array.isArray(d.ranked) ? d.ranked : [], routes = d.routes && typeof d.routes === 'object' ? d.routes : {};
+  presult.append(el('p', {class:'summary'}, '来源 ', el('b', {text: d.source === 'keyword' ? '关键词' : '混合检索'}), ' · 语义 ', el('b', {text: d.semantic === 'ok' ? '可用' : d.semantic === 'off' ? '关着' : '不可用'}), ' · 耗时 ', el('b', {text: typeof d.ms === 'number' ? d.ms + ' ms' : '—'}), ' · 命中 ', el('b', {text: String(items.length)})));
+  if(d.source === 'keyword') presult.append(el('p', {class:'warn', text:'语义检索不可用，已用关键词。'}));
+  if(Object.keys(routes).length){
+    const max = Math.max(1, ...SRC_ORDER.map(s => +routes[s] || 0));
+    presult.append(el('h3', {text:'两路各自找到'}), el('div', {class:'routes'}, SRC_ORDER.map(s => el('div', {c:SRC[s].color}, el('span', {text:SRC[s].name}), el('span', {class:'bar'}, el('i', {style:`width:${((+routes[s] || 0) / max * 100).toFixed(1)}%`})), el('em', {text:String(+routes[s] || 0)})))));
+  }
+  if(ranked.length){
+    presult.append(el('h3', {text:'融合后的名次'}));
+    ranked.slice(0, 20).forEach((rk, i) => {
+      const it = items.find(x => x.node === rk.node) || {};
+      presult.append(el('button', {class:'hit', onclick: () => { const n = NODE.get(rk.node); if(n){ select(n, {tab:false}); flash(n, '#fff3b0', 2600, 1); } }},
+        el('span', {class:'meta'}, el('span', {class:'tag', text:'#' + (i + 1)}), el('span', {class:'tag', text: 'score ' + num(rk.score, 4)}), (Array.isArray(rk.sources) ? rk.sources : []).map(srcBadge)),
+        el('span', {class:'txt', text: it.title || it.summary || labelOf(rk.node) || rk.node})));
+    });
+  }
+  presult.append(el('h3', {text: ranked.length ? '找到的内容' : '融合结果'}));
+  if(!items.length) presult.append(el('p', {class:'hint', text:'没有找到。'}));
+  for(const it of items){
+    presult.append(el('button', {class:'hit', onclick: () => { const n = NODE.get(it.node); if(n){ select(n, {tab:false}); flash(n, '#fff3b0', 2600, 1); } }},
+      el('span', {class:'meta'}, it.day ? el('span', {class:'tag', text: it.day}) : null, it.title ? el('span', {class:'tag', text: short(it.title, 24)}) : null),
+      el('span', {class:'txt', text: it.summary || it.title || it.node || ''}),
+      it.line ? el('span', {class:'line', text: it.line}) : null));
+  }
+}
+
+/* ------------------------------------------------------------ 时间推演：GET /api/brain/decay-curve */
+const timeBody = $('timeBody');
+let curveFor = null, curveData = null, curveDay = 0;
+async function renderTime(){
+  const n = selected;
+  const ok = n && n.id && n.rec && (n.rec.kind === 'ltm' || n.rec.kind === 'diary');
+  if(!ok){ curveFor = null; clear(timeBody).append(el('p', {class:'hint', text:'在图上点一条记忆卡条目，这里会画出它接下来一年的 R 曲线。'})); return; }
+  if(curveFor === n.id && curveData){ drawCurveView(n); return; }
+  curveFor = n.id; curveData = null; curveDay = 0;
+  clear(timeBody).append(el('p', {class:'hint', text:'正在算…'}));
+  const r = await api('/api/brain/decay-curve?unit=' + encodeURIComponent(n.id), {allow404:true});
+  if(curveFor !== n.id) return;
+  if(r.status !== 200 || !r.data || r.data.ok === false || !Array.isArray(r.data.points)){
+    clear(timeBody).append(el('p', {class:'warn', text: r.status === 404 ? '这条记忆已删除或不可用。' : '读取失败，稍后再试。'})); curveFor = null; return;
+  }
+  curveData = r.data; drawCurveView(n);
+}
+function drawCurveView(n){
+  const d = curveData, fb = typeof d.freezeBelow === 'number' ? d.freezeBelow : freezeBelow;
+  clear(timeBody);
+  const verdict = d.exempt ? '不会淡忘（钉住的、初见或主人条目）' : typeof d.frozenAtDay === 'number' ? (d.frozenAtDay === 0 ? '现在已经在冻结线以下（已冻结）' : `第 ${d.frozenAtDay} 天降到冻结线`) : '一年内不会降到冻结线';
+  timeBody.append(
+    el('div', {class:'eyebrow'}, el('i', {c:n.statusColor || n.color}), '记忆卡条目'),
+    el('h2', {text: short(n.rec.text || n.rec.title || n.name, 60), style:'font-size:17px'}),
+    el('div', {class:'tiles'}, el('div', {class:'tile'}, el('b', {text: num(d.R0)}), el('span', {text:'现在的 R'})), el('div', {class:'tile'}, el('b', {text: d.exempt ? '—' : (typeof d.S === 'number' ? String(d.S) : '—')}), el('span', {text:'降到冻结线（第几天）'})), el('div', {class:'tile'}, el('b', {text: num(d.freezeBelow, 2)}), el('span', {text:'冻结线 R'}))),
+    el('p', {class: d.exempt ? 'hint' : 'warn', style:'margin:0 0 6px', text: verdict}));
+  const cv = el('canvas', {id:'curve', role:'img', 'aria-label': 'R 随时间变化的曲线：' + verdict});
+  timeBody.append(cv);
+  const out = el('output', {text:''});
+  const rg = el('input', {type:'range', min:'0', max:'365', step:'1', value:String(curveDay), 'aria-label':'往后推多少天'});
+  rg.addEventListener('input', () => { curveDay = +rg.value; paintCurve(cv, d, fb); setOut(); });
+  const setOut = () => { const p = d.points[Math.min(d.points.length - 1, curveDay)] || {}; out.textContent = `第 ${curveDay} 天 · R ${num(p.R, 3)}${typeof p.R === 'number' && p.R < fb && !d.exempt ? ' · 已冻结' : ''}`; };
+  timeBody.append(el('div', {class:'dayrow'}, out), rg,
+    el('p', {class:'hint', text:`红色虚线是冻结线 R = ${fb}。被想起一次 R 回到 1、S 变大，曲线会整体变平。只读：这里不会改变任何记忆。`}));
+  setOut();
+  requestAnimationFrame(() => paintCurve(cv, d, fb));
+}
+function paintCurve(cv, d, fb){
+  const w = cv.clientWidth || 330, h = cv.clientHeight || 170, dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const X0 = 34, X1 = w - 8, Y0 = 10, Y1 = h - 24;
+  const X = (day) => X0 + (X1 - X0) * day / 365, Y = (R) => Y1 - (Y1 - Y0) * clamp(R, 0, 1);
+  g.font = `10px ${BODY}`; g.fillStyle = '#8f99ca'; g.strokeStyle = 'rgba(150,165,255,.14)'; g.lineWidth = 1;
+  for(const v of [0, 0.5, 1]){ g.beginPath(); g.moveTo(X0, Y(v)); g.lineTo(X1, Y(v)); g.stroke(); g.textAlign = 'right'; g.fillText(v.toFixed(1), X0 - 5, Y(v) + 3); }
+  g.textAlign = 'center';
+  for(const dd of [0, 90, 180, 270, 365]) g.fillText(String(dd), X(dd), Y1 + 14);
+  g.textAlign = 'right'; g.fillText('天数', X1, Y1 - 4);
+  g.strokeStyle = '#ff5f7e'; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(X0, Y(fb)); g.lineTo(X1, Y(fb)); g.stroke(); g.setLineDash([]);
+  const pts = d.points.filter(p => typeof p.day === 'number' && typeof p.R === 'number');
+  g.fillStyle = 'rgba(255,229,122,.08)'; g.beginPath(); g.moveTo(X(0), Y(0));
+  for(const p of pts) g.lineTo(X(p.day), Y(p.R));
+  g.lineTo(X(365), Y(0)); g.closePath(); g.fill();
+  g.strokeStyle = '#ffe57a'; g.lineWidth = 1.8; g.beginPath();
+  pts.forEach((p, i) => { if(i) g.lineTo(X(p.day), Y(p.R)); else g.moveTo(X(p.day), Y(p.R)); }); g.stroke();
+  if(typeof d.frozenAtDay === 'number' && !d.exempt){ const p = pts[d.frozenAtDay]; if(p){ g.fillStyle = '#ff5f7e'; g.beginPath(); g.arc(X(p.day), Y(p.R), 3.4, 0, TAU); g.fill(); } }
+  const cur = pts[curveDay]; if(cur){ g.strokeStyle = 'rgba(255,255,255,.8)'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(X(curveDay), Y0 - 4); g.lineTo(X(curveDay), Y1); g.stroke(); g.fillStyle = '#ffe57a'; g.beginPath(); g.arc(X(curveDay), Y(cur.R), 3.2, 0, TAU); g.fill(); }
+}
+
+/* ------------------------------------------------------------ 视角按钮 */
+const rotBtn = $('rot');
+rotBtn.setAttribute('aria-pressed', autoRotate);
+rotBtn.addEventListener('click', () => { autoRotate = !autoRotate; rotBtn.setAttribute('aria-pressed', autoRotate); });
+$('reset').addEventListener('click', () => { yaw = -0.32; pitch = 0.1; zoom = 1; panX = 0; panY = 0; });
+
+/* ------------------------------------------------------------ 启动：先拉快照，再连 SSE */
+window.addEventListener('resize', resize);
+buildScene({nodes:[], links:[]});
+resize(); renderDetail(); syncLegend(); updateCount();
+requestAnimationFrame(t => { now = t; lastFrame = t; requestAnimationFrame(frame); });
+(async () => {
+  await loadSnapshot();
+  if(!dead) connect(true);
+})();
+})();
+</script>
+</body>
+</html>
