@@ -17,6 +17,45 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-06 01:50 · 建议候选（第 4 件：入站抽「关于他自己的事」）
+<!-- release-batch: start=2026-11-06T01:40+08:00 end=2026-11-06T01:50+08:00 commits=9ef389d -->
+
+**覆盖提交**：`9ef389d`
+**建议**：**0.9.0（minor）** —— 与上一批一起发；新增三条对外接口面（`/api/memory/suggestions` 的 GET /
+probe / dismiss）与一段唤醒提示词。
+
+**改了什么**：
+- 新模块 `src/ledger-suggest.js`：从入站消息按 8 类高精度规则抽「关于他自己的事」
+  （称呼/生日/忌口/过敏/喜好/住处/工作/宠物），只收私聊与主人，群聊不抽。
+- 唤醒提示词新增【可能值得记住的】一段：只递由头、不带 id/日期；已在记忆卡里的不再提；
+  每条 `maxShows` 次、`ttlDays` 天、每会话每日 `maxPerDay` 条。
+- 状态落角色目录 `ledger-suggest.json`（原子写 0600，坏 JSON 当空）。
+- 控制台：`GET /api/memory/suggestions`、`POST /api/memory/suggestions/probe`（只抽取不入池）、
+  `POST /api/memory/suggestions/dismiss`。
+- 配置段 `ledgerSuggest`（enabled/perWake/maxShows/ttlDays/maxPerDay/minChars），
+  `docs/guides/DATA-AND-CONFIG.md` 已写。
+
+**没做**：
+- 照抄 B 的「采用/作废」状态机：本仓库没有「她决定要记」这个动作，采用与否只靠次数上限自然过期，
+  控制台可手工作废（详见 case 文档「遗留」）。
+- 群聊不做候选（开了容易像查户口，等真机跑一段再定）。
+- 抽取是规则的，不懂上下文：`我对香菜无感` 这类否定表达会漏，这是精度优先的取舍。
+
+**风险**：
+- 提示词多一段，token 成本很小（通常 0 段；有候选时约 120 字）。
+- 候选只在唤醒路径出现，不额外发消息，不会打扰；最坏情况是「她提了一句对方早说过的事」，
+  由 `maxShows=2` 与 `ttlDays=14` 兜住。
+
+**验证**：
+```text
+npm run test:suggest      # 17 + 5（抽取精度 / 通路安全：两遍都带、接受后才计数、不串会话）
+npm run test:regressions  # 全部通过
+npm run test:audit        # 153/154（唯一失败 test-release-manifest：dev 分支清单必然对不上，非回归）
+node scripts/version.mjs check   # v0.8.8 一致（未 bump）
+```
+
+**case**：`docs/cases/2026-11-06-ledger-suggest.md`；`docs/PITFALLS.md` 新增「移植前先找它依赖的通路」。
+
 ### 批次 2026-11-06 01:45 · 记忆强度分（第 3 件：FSRS 形状的 R/S/D）
 <!-- release-batch: start=2026-11-06T01:00+08:00 end=2026-11-06T01:45+08:00 commits=7b7e767 -->
 
