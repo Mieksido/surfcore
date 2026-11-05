@@ -1,4 +1,4 @@
-﻿# 发布待办队列（编辑会话 → 发布会话）
+# 发布待办队列（编辑会话 → 发布会话）
 
 > 用途：编辑会话每完成一批改动，在这里追加**一个带时间戳的批次**：覆盖到哪个提交、
 > 改了哪些文件/功能、case 路径、建议版本、可直接复制的交接块。
@@ -14,11 +14,30 @@
 
 ## 待发布
 
+### 批次 2026-11-06 03:15 · 唤醒自检脚本（`npm run check:wake`）
+<!-- release-batch: start=2026-11-06T03:05+08:00 end=2026-11-06T03:15+08:00 commits=TBD -->
+
+**覆盖提交**：`TBD`（dev）
+**建议**：**0.9.1（patch）** —— 纯排查工具，不改运行时行为。
+
+**改了什么**：
+- 新增 `scripts/wake-selfcheck.mjs`：从 `state/context-telemetry-bridge.jsonl` 里取最近的
+  `kind:"wake"` 事件，把 `layers` 里四段记忆注入（`memoryRecall` / `associate` / `suggest` / `promise`）
+  和记忆卡正文逐行打出来，0 字节的显式标「—  0」——「没报错」和「真接上了」不是一回事。
+- `package.json` 加 `check:wake`；`--last N`、`--json`、`--file <路径>` 可选。
+- 找不到遥测文件或里面没有唤醒事件时退出码 1，并说清是「还没被叫醒过」而不是「脚本坏了」。
+
+**验证**：对当前真机遥测跑 → 正确指出最近一次唤醒是 00:18（功能上线前），四段全 0、只有记忆卡 983 字；
+  空文件用例退出码 1 且提示正确；`--json` 结构可被脚本消费。
+
+**风险**：无（只读遥测文件，不连桥接、不需要 token）。
+
 > **2026-11-06 02:45：v0.9.0 已发布（本地）**，覆盖本表截至 02:10 的四个批次（记忆六件 + 表情元数据）。
 > main：`e529fc8`（release 合并）+ `8b07ce2`（重算清单，712 文件）；tag `v0.9.0`；dev 已合回。
 > `npm run test:audit` **156/156**、`test:regressions` 全过、`version.mjs check` 一致。
-> ⚠️ 尚未推送到 GitHub：本机没有 `GH_TOKEN`，且 `github.com:443` 不通 —— 推送要用 `api.github.com`
-> 的 Data API（见 `docs/RELEASE.md` 第三节第 4–6 步），拿到 token 后再补 tag ref + Release。
+> ⚠️ 尚未推送到 GitHub：网络其实是通的（`api.github.com` 200），卡在**凭据**——本机存的是
+> `yymk-works-2026` 的账号，对 `Mieksido/surfcore` 是 403。拿到 Mieksido 名下的 `GH_TOKEN` 后
+> 用 `node scripts/publish-via-api.mjs Mieksido/surfcore <dir> --tag v0.9.0` 即可。
 > ⚠️ `plugins/surfcore && npm test` 有一条环境性失败：`test-platform-start-host.mjs` 断言
 > 「未运行的服务停止应幂等成功」，本机有 **DSH 宿主托管着的真桥接在 3100**（杀掉会在几秒内被拉起），
 > `stop-qq-bot.ps1` 停不掉它 → `stopped:false`。插件代码与 v0.8.8 **逐字节相同**（只有版本号变了），
