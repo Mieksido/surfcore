@@ -101,6 +101,21 @@ await test('到期的约定：提示词里出现【到期的约定】与正文',
   assert.ok(prompt.includes('别像闹钟一样念日期'), '要带「自然提起」的口径');
 });
 
+await test('约定连建两遍都带（回归 2026-11-06 00:01：第二次建提示词时被吃掉）', async (h) => {
+  sayLast(h, '在吗');
+  h.promiseWakePending.set(KEY, {
+    at: Date.now(),
+    items: [{ id: 'p1', text: '周六陪我去看那家店的橘猫', dueDate: '2026-11-07' }],
+  });
+  const first = h.buildWakePromptV2(KEY, 'promiseDue');
+  const second = h.buildWakePromptV2(KEY, 'promiseDue');
+  // scheduleWakeV2 建第一份用于排队，deliverPromptNow 建第二份真正投递。
+  // 只要有一次构建顺手删了待提条目，第二份就会丢约定正文——真机上表现为
+  // 「唤醒原因是约定到期，但模型没看到约定」。
+  assert.ok(first.includes('橘猫'), '第一遍要带');
+  assert.ok(second.includes('橘猫'), '第二遍也要带（消费点在接受之后）');
+});
+
 await test('私聊说了忌口：下一次唤醒带【可能值得记住的】', async (h) => {
   sayLast(h, '我不吃香菜，你记一下');
   h.noteSuggestCandidate({ key: KEY, text: '我不吃香菜，你记一下', sender: '主人', isOwner: true });
