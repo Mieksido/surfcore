@@ -57,6 +57,8 @@ import * as memoryRecall from '../src/memory-recall.js';
 import * as promiseWatch from '../src/promise-watch.js';
 // 建议候选：桥接在入站时入池、唤醒时挑一句提示词。
 import * as ledgerSuggest from '../src/ledger-suggest.js';
+// 联想（第 6 件）：桥接在排唤醒时预取、在提示词里只读、投递接受后记冷却。
+import * as memoryAssociate from '../src/memory-associate.js';
 // 星图（实时脑图）：桥接顶层 import 了这四个绑定，VM 里必须同名字注入，
 // 否则剥掉 import 之后 `createBrainFeed is not defined` 会让整份夹具起不来。
 import * as brainFeed from '../src/brain-feed.js';
@@ -228,6 +230,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     promiseTick, promiseLedgerFile, promiseLedger, promiseWakePending, startPromiseLoop,
     // 建议候选（第 4 件）：入池、挑选、接受点计数都要能在夹具里直接验。
     noteSuggestCandidate, planSuggestFor, settleSuggest, suggestState, suggestFile, suggestLastPlan,
+    // 联想（第 6 件）：预取要跑一次真检索（夹具里没有真实索引），测试直接往缓存里塞条目。
+    associateCache, associatePrefetch, associateLine, associateSettle, associateSeen, associateFile,
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
     initialPrompts, initialPromptMaxChars,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
@@ -298,6 +302,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     memoryRecall,
     promiseWatch,
     ledgerSuggest,
+    memoryAssociate,
     ...brainFeed, ...brainReplay,
     memoryIndexStats, vectorIndexStats,
     // 桥接里把它重命名成 brainLocalDay（避免和本地同名函数打架），这里跟着给同一个函数。

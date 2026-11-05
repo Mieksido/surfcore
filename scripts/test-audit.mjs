@@ -130,6 +130,9 @@ const tests = [
   // 建议候选：入站消息里抽「关于他自己的事」（精度优先）、去重、每次/每日上限、
   // 保鲜期、接受后才计数、状态文件容错。
   'test-ledger-suggest.mjs', 'test-ledger-suggest-bridge.mjs',
+  // 联想：只挑 R 落在中间段的旧事（太牢不用提、太淡提了也白提），提过要冷却；
+  // 唤醒里只读缓存，投递接受后才记冷却（和约定/建议/星图同一口径）。
+  'test-memory-associate.mjs', 'test-memory-associate-bridge.mjs',
   // 星图：事件与轨迹（编号/载荷白名单/脑区/快照衰减）+ 7 天回放（三路来源合成）+
   // 接线（/api/brain/* 的鉴权、开关落盘、SSE 推送与挂点）。夹具起临时控制台，不连真 QQ。
   'test-brain-feed.mjs', 'test-brain-replay.mjs', 'test-brain-bridge.mjs', 'test-brain-page.mjs',

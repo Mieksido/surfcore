@@ -88,6 +88,8 @@ import * as promiseWatch from './promise-watch.js';
 // 建议候选（第 4 件）：把对方随口说的「关于他自己的事」在合适的唤醒里提一句，
 // 让她顺着问、让那句话自然进 inbox（记忆卡仍然自动摄取，候选不写卡）。
 import * as ledgerSuggest from './ledger-suggest.js';
+// 联想（第 6 件）：唤醒时顺带想起一条快淡忘的旧事（纯函数 + 旁挂状态，检索走第 1 件的索引）。
+import * as memoryAssociate from './memory-associate.js';
 // 星图（移植自 B 项目）：事件流 + 回放 + 检索索引统计（给「索引涨了」那类事件用）。
 import { createBrainFeed, localDay as brainLocalDay } from './brain-feed.js';
 import { createBrainReplay, shortToolName } from './brain-replay.js';
@@ -9833,6 +9835,29 @@ async function main() {
           });
           return;
         }
+        if (req.method === 'POST' && url.pathname === '/api/memory/associate/preview') {
+          // 排查用：立刻跑一次预取（跳过 5 分钟节流），把「这轮会想起什么」摊开看。
+          // 只读：不写冷却、不投递；返回的就是缓存里的那几条。
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!/^(group|private):\d+$/.test(key)) {
+            sendJson({ ok: false, code: 'associate.bad-key', error: 'key 要写成 private:QQ号 或 group:群号' }, 400);
+            return;
+          }
+          await associatePrefetch(key, { force: true });
+          const cached = associateCache.get(key);
+          const config = memoryAssociate.normalizeAssociateConfig(cfg.memoryAssociate ?? {});
+          sendJson({
+            ok: true,
+            key,
+            config,
+            at: cached?.at ?? 0,
+            items: Array.isArray(cached?.items) ? cached.items : [],
+            hint: cached?.items?.length ? '这些会在下一次唤醒时作为【忽然想起】注入'
+              : '没挑到：可能没有 R 落在区间的旧事、都提过还没过冷却、或检索没命中',
+          });
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/memory/suggestions/dismiss') {
           const body = await readBody();
           const id = String(body.id ?? '').trim();
@@ -13368,6 +13393,123 @@ async function main() {
     }
   }
 
+  // ---- 联想（第 6 件）：醒来时顺带想起一条「快淡忘的旧事」 ----
+  //
+  // 和记忆检索（第 1 件）分工：检索管「对方提到了，去找出来」；联想管「没人提，但她自己想起来了」。
+  // 挑的不是最相关的，而是 R 落在中间段的老事（间隔重复：太牢不用提，太淡提了也白提）。
+  //
+  // 唤醒路径是同步的，不能在这里 await 一次检索：预取在 scheduleWakeV2 排唤醒时踢一脚
+  // （通常有 1~8 秒窗口），buildWakePromptV2 只读缓存；没赶上就这一轮不带，下次再说。
+  const ASSOCIATE_TTL_MS = 10 * 60_000;
+  const ASSOCIATE_PREFETCH_GAP_MS = 5 * 60_000;
+  const associateCache = new Map(); // key -> { at, items }
+  const associatePrefetchAt = new Map();
+  let associateSeenCache = null;
+  let associateSeenFile = '';
+  let associateRecordsCache = { at: 0, records: [] };
+
+  function associateFile() {
+    try {
+      const file = memoryAssociate.associatePathFor(MEMORY_CARD_PATHS.dir);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      return file;
+    } catch {
+      return path.join(STATE_DIR, 'memory-associate.json');
+    }
+  }
+
+  function associateSeen() {
+    const file = associateFile();
+    if (associateSeenCache && associateSeenFile === file) return associateSeenCache;
+    associateSeenCache = memoryAssociate.loadSeen(file);
+    associateSeenFile = file;
+    return associateSeenCache;
+  }
+
+  function associateSaveSeen(next) {
+    try {
+      associateSeenCache = memoryAssociate.saveSeen(associateFile(), next);
+      associateSeenFile = associateFile();
+    } catch (error) {
+      log(`[联想] 状态写盘失败：${error?.message ?? error}`);
+    }
+  }
+
+  /** 记忆档全量记录（要 R/S/D 才能挑），60 秒内复用：一次唤醒不值得读两遍档。 */
+  function associateRecords() {
+    if (Date.now() - associateRecordsCache.at < 60_000) return associateRecordsCache.records;
+    let records = [];
+    try { records = readAllFullRecords(MEMORY_CARD_PATHS) ?? []; } catch { records = []; }
+    associateRecordsCache = { at: Date.now(), records };
+    return records;
+  }
+
+  /**
+   * 预取：拿最近几句**对方说的**话当语境，做一次混合检索，再按 R 区间挑。
+   * 任何失败都吞掉 —— 联想没有也照样能醒，绝不能因为检索慢/挂把唤醒拖住。
+   */
+  async function associatePrefetch(key, { force = false } = {}) {
+    const config = memoryAssociate.normalizeAssociateConfig(cfg.memoryAssociate ?? {});
+    if (!config.enabled || config.maxPerWake < 1) return;
+    const now = Date.now();
+    if (!force && now - Number(associatePrefetchAt.get(key) || 0) < ASSOCIATE_PREFETCH_GAP_MS) return;
+    associatePrefetchAt.set(key, now);
+    try {
+      const st = getSocialV2State(key);
+      const said = [...(Array.isArray(st.recentMessages) ? st.recentMessages : []), ...(Array.isArray(st.unread) ? st.unread : [])]
+        .filter((m) => m && !m.isSelf)
+        .map((m) => String(m.text || m.plain || '').trim())
+        .filter(Boolean)
+        .slice(-3);
+      if (!said.length) return;
+      // 对方正在回忆时由第 1 件负责，两边同时注入等于把同一件事说两遍。
+      if (memoryRecall.shouldRecall(said[said.length - 1])) return;
+      const res = await memoryRecall.searchMemoryAsync(MEMORY_CARD_PATHS.dir, said.join(' '), {
+        limit: 8, maxChars: 400,
+      });
+      if (!res?.ok || !Array.isArray(res.items) || !res.items.length) return;
+      const items = memoryAssociate.pickAssociations(res.items, {
+        records: associateRecords(),
+        seen: associateSeen(),
+        config,
+        today: brainLocalDay(now),
+        now,
+      });
+      if (items.length) {
+        associateCache.set(key, { at: now, items });
+        log(`[联想] ${shouldAuditKey(key) ? key : '（隐藏会话）'} 预取到 ${items.length} 条旧事（R=${items.map((it) => it.R.toFixed(2)).join(',')}）`);
+      }
+    } catch (error) {
+      log(`[联想] 预取失败（不影响唤醒）：${error?.message ?? error}`);
+    }
+  }
+
+  /** 唤醒提示词用：只读。一次唤醒里会被调两遍，这里绝不能改状态。 */
+  function associateLine(key) {
+    const config = memoryAssociate.normalizeAssociateConfig(cfg.memoryAssociate ?? {});
+    if (!config.enabled || config.maxPerWake < 1) return '';
+    const cached = associateCache.get(key);
+    if (!cached) return '';
+    if (Date.now() - Number(cached.at || 0) > ASSOCIATE_TTL_MS) {
+      associateCache.delete(key);
+      return '';
+    }
+    if (!Array.isArray(cached.items) || !cached.items.length) return '';
+    const text = memoryAssociate.associateWakeText(cached.items, {
+      maxChars: memoryAssociate.normalizeAssociateConfig(cfg.memoryAssociate ?? {}).maxChars,
+    });
+    return text ? `${text}\n\n` : '';
+  }
+
+  /** 投递被接受之后才记「这几条提过」：没投出去的不算想起来。 */
+  function associateSettle(key) {
+    const cached = associateCache.get(key);
+    if (!cached) return;
+    associateCache.delete(key);
+    if (!Array.isArray(cached.items) || !cached.items.length) return;
+    associateSaveSeen(memoryAssociate.markSeen(associateSeen(), cached.items.map((it) => it.id), brainLocalDay(Date.now())));
+  }
+
   /** 账本路径跟着当前角色走（和 purpose-outreach.json 同一层次）。 */
   function promiseLedgerFile() {
     const cur = readCurrentCharacter();
@@ -13856,6 +13998,8 @@ async function main() {
     // 建议候选：提示词里确实带了这几条，现在才算「提过一次」（被拒/过期的不计数）。
     // 与约定、星图同一口径，放在接受点之后。
     settleSuggest(key);
+    // 联想：这一条真的被带出去了，才记「提过」（冷却从今天算起）。
+    associateSettle(key);
     // 星图：投递被接受之后才算「醒了一次 / 注入了这几条旧记忆」。
     // 特意放在接受点之后：被拒、过期、模式切换拦下的投递在页面上不该显示成发生过的事。
     if (opts.wakeReason) {
@@ -15503,9 +15647,13 @@ async function main() {
       : '';
     brainLastInject.set(key, { at: Date.now(), ltm: brainHits.slice(0, 50), chars: memoryRecallText.length });
     const memoryRecallLine = memoryRecallText ? `${memoryRecallText}\n\n` : '';
+    // 联想（第 6 件）：只读缓存（预取在 scheduleWakeV2 里踢过一脚）。
+    // 和检索不同时出现：对方正在回忆时，检索已经把旧事捞出来了，再叠一段就是同一件事说两遍。
+    const associateText = memoryRecallText ? '' : associateLine(key);
+    const associateLineText = associateText ? `${associateText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + memoryRecallLine + suggestLine + promiseLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + memoryRecallLine + associateLineText + suggestLine + promiseLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15515,6 +15663,7 @@ async function main() {
       bili: biliLine.length,
       memory: memoryCardLine.length,
       memoryRecall: memoryRecallLine.length,
+      associate: associateLineText.length,
       suggest: suggestLine.length,
       promise: promiseLine.length,
       voice: voiceLine.length,
@@ -15891,6 +16040,9 @@ async function main() {
       return;
     }
     const st = getSocialV2State(key);
+    // 联想：先把「快淡忘的旧事」异步取回来，等批处理窗口到点时 buildWakePromptV2 就有得用。
+    // 放在所有闸门之后：注定不会醒的会话不该白花一次检索。
+    void associatePrefetch(key).catch((error) => log(`[联想] 预取异常 ${key}:`, error?.message ?? error));
     if (st.pendingWakeTimer) {
       // 合并窗口内已有待发送唤醒：按优先级升级最终原因，避免先概率后 @ 却仍按概率唤醒。
       const cur = st.pendingWakeReason || reason;

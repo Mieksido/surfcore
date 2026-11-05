@@ -182,6 +182,14 @@
   只是让她在这一轮里自然接一句。数据落在角色目录的 `ledger-suggest.json`；
   控制台 `GET /api/memory/suggestions` 可看，`POST /api/memory/suggestions/dismiss` 可作废，
   `POST /api/memory/suggestions/probe` 只跑抽取不入池（改规则时用）。
+- `memoryAssociate`：联想（第 6 件）。唤醒时顺带注入一条**快淡忘的旧事**（`【忽然想起】`），
+  不是最相关的、而是可提取性 R 落在中间段的 —— 间隔重复：太牢不用提，太淡提了也白提。
+  `enabled`（true）、`maxPerWake`（1）、`cooldownDays`（7，提过一次就按日历日冷却）、
+  `rMin`（0.2）/`rMax`（0.65，区间写反会自动交换）、`minAgeDays`（2，刚聊过的不算旧事）、
+  `maxChars`（120）。状态落角色目录 `memory-associate.json`。
+  预取在排唤醒时异步踢一脚（5 分钟节流），提示词只读缓存（10 分钟有效）；
+  对方正在「回忆」时由第 1 件检索负责，两边不同时注入。
+  控制台 `POST /api/memory/associate/preview {key}` 可立刻跑一次并看会想起什么（不写冷却）。
 - `greetings.morning`：`time`（08:00）、`uin`、`name`；默认整体关。
 
 ### 1.13 ⚠️ 模板缺的四段
