@@ -79,17 +79,46 @@ await test('到点且会话在白名单内：排一次 promiseDue 唤醒，提�
   files: { 'dsh/surfcore/memory/memory-card-full.jsonl': memoryFile([dueTodayRecord()]) },
 });
 
+await test('同一份提示词建两次都带约定：一次唤醒会建两份（先排队日志、再真投递）', async (h) => {
+  h.promiseTick();
+  assert.ok(h.promiseWakePending.get('private:123'), '第一遍应该排上');
+  // 真实唤醒里 buildWakePromptV2 会被调两次：scheduleWakeV2 建一份用于排队/日志，
+  // deliverPromptNow 建完会话再建真正投递的那份。**两份都必须带约定**。
+  // 2026-11-06 00:01 的真机事故：第一份把待提约定「取走即删」了，第二份（真投递的）
+  // 拿到空串，layers.promise=0 —— 唤醒原因写着 promiseDue，模型却不知道该提什么。
+  const first = h.buildWakePromptV2('private:123', 'promiseDue');
+  const second = h.buildWakePromptV2('private:123', 'promiseDue');
+  assert.match(first, /【到期的约定】/, '第一份要有');
+  assert.match(second, /【到期的约定】/, '第二份（真投递的）更要有');
+  assert.match(second, /猫咪小镇/);
+  assert.ok(h.promiseWakePending.get('private:123'), '建提示词不等于提过了：删要等到投递被接受');
+}, {
+  config: ALWAYS,
+  files: { 'dsh/surfcore/memory/memory-card-full.jsonl': memoryFile([dueTodayRecord()]) },
+});
+
+await test('投递被接受之后才清掉待提条目；投递失败则留着（还没说出口）', async (h) => {
+  h.promiseTick();
+  assert.ok(h.promiseWakePending.get('private:123'));
+  const before = h.calls.prompts.length;
+  // 夹具的 sessions.prompt 一律接受，所以这里只验「接受 → 清掉」这一环。
+  await h.deliverPrompt('private:123', h.buildWakePromptV2('private:123', 'promiseDue'), { wakeReason: 'promiseDue' });
+  assert.equal(h.promiseWakePending.get('private:123'), undefined, '投递接受后要清掉，免得下一次无关唤醒又提一遍');
+  assert.ok(h.calls.prompts.length > before, '确实走了一次真实投递');
+  assert.match(String(h.calls.prompts.at(-1)?.content?.[0]?.text ?? ''), /【到期的约定】/, '投递出去的那份要带约定');
+}, {
+  config: ALWAYS,
+  files: { 'dsh/surfcore/memory/memory-card-full.jsonl': memoryFile([dueTodayRecord()]) },
+});
+
 await test('同一会话同一天不重复提：第二遍 tick 不再产生待提条目', async (h) => {
   h.promiseTick();
   const first = h.promiseWakePending.get('private:123');
   assert.ok(first, '第一遍应该排上');
-  // 消费掉（等价于投递时被 buildWakePromptV2 取走）
-  h.buildWakePromptV2('private:123', 'promiseDue');
-  assert.equal(h.promiseWakePending.get('private:123'), undefined, '取走即删');
 
   h.promiseTick();
   h.promiseTick();
-  assert.equal(h.promiseWakePending.get('private:123'), undefined, '今天提过了，后面几轮不能再排（否则每 60 秒提醒一次）');
+  assert.equal(h.promiseWakePending.get('private:123').at, first.at, '今天提过了，后面几轮不能再排（否则每 60 秒提醒一次）');
   const ledger = h.promiseLedger(true);
   assert.equal(ledger.items.mem_promise_today.firedDay, TODAY, '已提的日子不能因为再扫一遍就丢');
 }, {

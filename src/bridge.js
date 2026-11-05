@@ -13691,6 +13691,9 @@ async function main() {
     // 特意放在接受点之后：被拒、过期、模式切换拦下的投递在页面上不该显示成发生过的事。
     if (opts.wakeReason) {
       const reason = String(opts.wakeReason);
+      // 约定到期：提示词已经被接受，这条才算「提过了」。放在这里而不是 buildWakePromptV2 里，
+      // 因为后者一次唤醒会被调两次，先删就等于把约定从真正投递的那份里抹掉。
+      promiseWakePending.delete(key);
       const injected = brainLastInject.get(key);
       brainLastInject.delete(key);
       brainEmit('wake', {
@@ -15294,11 +15297,17 @@ async function main() {
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     // 约定到期（第 5 件）：**只在这个会话确实有到期约定时**才注入。
     // 待提的那几条由 promiseTick 在排唤醒时写进 promiseWakePending —— 这里只读。
-    // 取走即删：这次没投出去（被白名单/额度拦下），下一轮 tick 会重新排、重新记。
+    // **不要在这里删**：一次唤醒里 buildWakePromptV2 会被调用两次 —— scheduleWakeV2 先建
+    // 一份用于排队/日志，deliverPromptNow 建完会话后再建真正投递的那一份。谁先删谁就把
+    // 约定从真正投递的提示词里吃掉：2026-11-06 00:01 的真实投递里 layers.promise = 0，
+    // 模型收到「约定到期」的唤醒原因却没有约定正文，于是随口聊了句别的。
+    // 删除挪到 deliverPromptNow 的接受点（和星图 brainLastInject 同一口径：没投出去不算提过）。
+    // 过期窗口兜住「排了但一直投不出去」：10 分钟外的旧条目不再注入，免得挂到无关唤醒上。
     const promisePending = promiseWakePending.get(key);
     let promiseLine = '';
-    if (promisePending && Array.isArray(promisePending.items) && promisePending.items.length) {
-      promiseWakePending.delete(key);
+    const promiseFresh = !!promisePending && Date.now() - Number(promisePending.at || 0) <= 10 * 60_000;
+    if (promisePending && !promiseFresh) promiseWakePending.delete(key);
+    if (promiseFresh && Array.isArray(promisePending.items) && promisePending.items.length) {
       const promiseText = promiseWatch.promiseWakeText(promisePending.items, {
         name: (String(adminIdentity()?.displayName || '').trim() || '主人'),
         today: brainLocalDay(Date.now()),
