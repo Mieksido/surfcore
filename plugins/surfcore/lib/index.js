@@ -2108,9 +2108,9 @@ ${body}`;
   // 默认关闭；必须用户在设置页显式开启 snowluma.allowLaunch，且只在点击
   // 「一键启动 / 打开 SnowLuma」时执行。源码/测试里的 L6 边界仍保持：
   // MCP 工具面没有 start_snowluma，桥接本身也只探测不启动。
-  function portOpen(port, timeout = 600) {
+  function portOpen(port, timeout = 600, host = '127.0.0.1') {
     return new Promise((resolve) => {
-      const socket = net.connect({ port, host: '127.0.0.1' });
+      const socket = net.connect({ port, host });
       const done = (ok) => { socket.destroy(); resolve(ok); };
       socket.setTimeout(timeout);
       socket.once('connect', () => done(true));
@@ -2187,7 +2187,7 @@ ${body}`;
       } catch {}
     }
     if (!port) port = 5100;
-    return { port, url: explicitUrl || `http://${host}:${port}` };
+    return { host, port, url: explicitUrl || `http://${host}:${port}` };
   }
 
   // SnowLuma WebUI 的访问密码：优先用户显式填的，其次仓库 state 里的口令文件。
@@ -2206,7 +2206,7 @@ ${body}`;
     const webui = snowLumaWebui();
     let up = false;
     for (let i = 0; i < 8; i += 1) {
-      if (await portOpen(webui.port, 500)) { up = true; break; }
+      if (await portOpen(webui.port, 500, webui.host)) { up = true; break; }
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
     if (!up) {
@@ -2337,7 +2337,7 @@ ${body}`;
     }
     const webui = snowLumaWebui();
     const onebot = (await portOpen(3000)) || (await portOpen(3001));
-    const webuiUp = await portOpen(webui.port);
+    const webuiUp = await portOpen(webui.port, 600, webui.host);
     if (onebot) {
       return {
         state: 'onebot-rejected',
@@ -2415,7 +2415,7 @@ ${body}`;
     }
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
-    if (await portOpen(webui.port)) {
+    if (await portOpen(webui.port, 600, webui.host)) {
       const opened = openWebui ? openLocalUrl(webui.url) : false;
       return {
         ok: true,
@@ -2436,7 +2436,8 @@ ${body}`;
       const lower = launcher.toLowerCase();
       // 2026-11-06：默认「隐藏 + 脱离 DSH 进程树」。想恢复旧行为（可见控制台、随 DSH 退出），
       // 设置 snowluma.launchMode = "legacy" 即可（不写默认 detached）。
-      const launchMode = String(cfg.launchMode ?? 'detached').toLowerCase();
+      // 默认跟随「隐藏命令行黑框」开关；显式 launchMode 仍然优先。
+      const launchMode = String(cfg.launchMode ?? (hideConsoles ? 'detached' : 'legacy')).toLowerCase();
       let launchedBy = 'legacy';
       if (launchMode !== 'legacy') {
         const detachedResult = spawnSnowLumaDetached({ launcher, cwd, env: nodePathEnv() });
@@ -2473,7 +2474,7 @@ ${body}`;
       const until = Date.now() + 10_000;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
-        if (await portOpen(webui.port)) {
+        if (await portOpen(webui.port, 600, webui.host)) {
           const opened = openWebui ? openLocalUrl(webui.url) : false;
           return {
             ok: true,

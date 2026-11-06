@@ -120,7 +120,7 @@ console.log('## 6. 接线钉子（防"写了模块但没接上"）')
   const bridge = read('src/bridge.js')
   ok(bridge.includes("from './session-rollover.js'"), 'bridge 引入会话滚动模块')
   ok(bridge.includes("from './wake-batch.js'"), 'bridge 引入合并窗口模块')
-  ok(/function maybeRollSessionV2\(key\)/.test(bridge), 'bridge 有 maybeRollSessionV2')
+  ok(/function maybeRollSessionV2\(key, \{ forceRoll/.test(bridge), 'bridge 有 maybeRollSessionV2')
   // 2026-11-06 实测修正：换会话与会话交接必须放在 deliverPromptNow 里，
   // 否则「目的机制」这类不走 sendWakePromptV2 的投递路径永远不会换会话，
   // 而唤醒路径里贴好的交接块又会被 deliverPromptNow 重建正文时覆盖。
@@ -388,8 +388,22 @@ console.log('## 15. 更新 busy 锁：必须说人话并自动复位')
   ok((ui.match(/const f = failed\[0\] \?\? \{ code: r\.code, reason: r\.reason/g) || []).length >= 2,
     '两处更新入口都在 results 为空时回落到顶层 error/reason')
   ok(ui.includes('r.code === "apply.busy"'), '忙锁时保留更新弹窗，方便锁释放后重试')
+  ok(upd.includes('applyGeneration') && upd.includes('applyToken === applyGeneration'), '被超时复位的旧 apply 不能清掉新 apply 的锁（ABA 防护）')
   ok(ui.includes('总大小未知（GitHub 归档）'), '更新进度在拿不到总大小时仍显示已下载大小和未知原因')
   ok(ui.includes('包大小未知（GitHub 归档）'), 'dev/版本通道在无 asset.size 时明确标注包大小未知')
+}
+
+console.log('## 16. 会话滚动：P0 延后到下一轮 + 状态持久化')
+{
+  const bridge = read('src/bridge.js')
+  ok(bridge.includes('st.rolloverPending = true'), '到阈值先标记 pending，不在当前轮 retire')
+  ok(bridge.includes('下一轮投递开始前换会话'), '日志明确说明本轮不轮换')
+  ok(bridge.includes('sessionTurns: Number(st.sessionTurns)'), '持久化 sessionTurns')
+  ok(bridge.includes('sessionTokens: Number(st.sessionTokens)'), '持久化 sessionTokens')
+  ok(bridge.includes('sessionBaseTokens: Number(st.sessionBaseTokens)'), '持久化 sessionBaseTokens')
+  ok(bridge.includes('handoffPending: String(st.handoffPending'), '持久化 handoffPending')
+  ok(bridge.includes('rolloverPending: st.rolloverPending === true'), '持久化 rolloverPending')
+  ok(bridge.includes('rolling: false') && !bridge.includes('rolling: st.rolling'), 'rolling 不持久化 true，避免崩溃后卡死')
 }
 
 console.log(`\n🚀 会话滚动 + 合并窗口测试通过（${passed} 项）`)

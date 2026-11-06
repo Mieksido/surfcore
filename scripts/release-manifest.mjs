@@ -87,19 +87,27 @@ function verifyAt(ref) {
 }
 
 function verifyDir(dir) {
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'release/install-manifest.json'), 'utf8'));
+  const target = path.resolve(dir);
+  const manifestPath = path.join(target, 'release', 'install-manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    console.error(`[release-manifest] ${target} 里没有 release/install-manifest.json：这不是发布包，拒绝用本机清单猜`);
+    process.exit(1);
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  console.log(`verify-dir ${target}: 使用 ${manifestPath}`);
   let ok = 0; const bad = []; const missing = [];
   for (const [rel, want] of Object.entries(manifest.files ?? {})) {
-    const abs = path.join(dir, rel);
+    const abs = path.resolve(target, rel);
+    if (!abs.startsWith(`${target}${path.sep}`)) { bad.push(`${rel}（路径越界）`); continue; }
     if (!fs.existsSync(abs)) { missing.push(rel); continue; }
     const hash = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
     if (hash === want) ok += 1; else bad.push(rel);
   }
-  console.log(`verify-dir ${dir}: ok ${ok} | 不符 ${bad.length} | 缺失 ${missing.length}`);
+  console.log(`verify-dir ${target}: ok ${ok} | 不符 ${bad.length} | 缺失 ${missing.length}`);
   for (const rel of bad.slice(0, 10)) console.log(`  ✗ 不符：${rel}`);
   for (const rel of missing.slice(0, 10)) console.log(`  ✗ 缺失：${rel}`);
   if (bad.length || missing.length) process.exit(1);
-  console.log('✅ 目录内容与清单一致');
+  console.log('✅ 目录内容与该目录自己的清单一致');
 }
 
 if (verifyRefIdx >= 0) {

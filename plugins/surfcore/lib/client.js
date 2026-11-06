@@ -1952,7 +1952,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const launch = overview?.launch ?? {};
       const voiceKnown = launch.voice?.ok !== false;
       const [launchSel, setLaunchSel] = useState({ qq: true, bili: true, pet: false, voice: false, vector: false });
-      const [hideConsoles, setHideConsoles] = useState(unified?.platforms?.hideConsoles === true);
+      const [hideConsoles, setHideConsoles] = useState(unified?.platforms?.hideConsoles !== false);
       const [voiceBranch, setVoiceBranch] = useState("voice-local");
       const [vectorPack, setVectorPack] = useState("");
       const [snowAccountOpen, setSnowAccountOpen] = useState(false);

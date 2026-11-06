@@ -147,8 +147,8 @@ export const DEFAULT_UNIFIED = {
     // 「一键启动」；正在跑的那一边由宿主在保存配置时停掉（见 lib/index.js）。
     // QQ 的旧开关 bridge.autoStart 只用于升级迁移，保存时会镜像回这个值。
     start: { qq: true, bili: true },
-    // 一键启动时是否隐藏命令行窗口（SnowLuma/批处理的黑框）；默认保留旧行为。
-    hideConsoles: false,
+    // 一键启动默认隐藏命令行窗口（SnowLuma/批处理的黑框）；用户可取消勾选恢复旧行为。
+    hideConsoles: true,
   },
   ui: { activeTab: 'overview', showAdvanced: false },
   // 组件更新（2026-10-26）：检查 SurfCore 本体 / 语音包 / 桌宠 / 未来登记的扩展。

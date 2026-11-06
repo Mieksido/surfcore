@@ -243,6 +243,7 @@ const tests = [
   'test-theme-tokens.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
+  'test-release-manifest-verify.mjs',
   'test-voice-gates.mjs',
   'test-update-apply-result.mjs',
   'test-update-version-fallback.mjs',

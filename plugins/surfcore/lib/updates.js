@@ -1038,6 +1038,8 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   // 用户再点更新会拿到 results:[] 的 busy 响应，前端只读 results[0] → 显示"原因不明"。
   let applyingSince = 0;
   const APPLY_STUCK_MS = 10 * 60 * 1000;
+  // 卡死超时后允许新 apply；旧 apply 的 finally 不能把新 apply 的锁复位（ABA）。
+  let applyGeneration = 0;
   let timer = null;
 
   function persist() {
@@ -1751,6 +1753,7 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
     }
     const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));
     if (!wanted.size) return { ok: false, error: '没有选择要更新的组件', results: [] };
+    const applyToken = ++applyGeneration;
     applying = true;
     applyingSince = Date.now();
     downloadProgress = null;
@@ -1929,8 +1932,12 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         status: status(),
       };
     } finally {
-      applying = false;
-      applyingSince = 0;
+      // 只有「当前这一代」apply 能释放锁；被 10 分钟看门狗强制复位的旧 apply
+      // 晚到时不能把后来新 apply 的锁清掉（否则会并发安装）。
+      if (applyToken === applyGeneration) {
+        applying = false;
+        applyingSince = 0;
+      }
     }
   }
 

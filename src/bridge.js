@@ -10867,6 +10867,7 @@ async function main() {
         st.sessionStartedAt = Date.now();
         st.sessionTurns = 0;
         st.sessionBaseTokens = tokenLedger.sessionTotal(sessionId);
+        st.rolloverPending = false;
       }
       await ensureChatModel(sessionId);
       if (epoch !== sessionEpoch || !isCurrentSession(key, sessionId)) {
@@ -11139,6 +11140,12 @@ async function main() {
         lastActionAt: 0,
         agentToken: crypto.randomBytes(16).toString('hex'),
         bootstrapSent: false,
+        sessionTurns: 0,
+        sessionTokens: 0,
+        sessionBaseTokens: 0,
+        handoffPending: '',
+        rolloverPending: false,
+        rolling: false,
         wakeTimes: [],
         // 只装「计入每天最多醒」的唤醒；回复后回访不进来（见 isFreeWakeReason）。
         // wakeTimes 仍是全量，用于最小间隔与每分钟/每小时限频。
@@ -11220,6 +11227,12 @@ async function main() {
             lastActionAt: Number(val.lastActionAt) || 0,
             agentToken,
             bootstrapSent: !!val.bootstrapSent,
+            sessionTurns: Number(val.sessionTurns) || 0,
+            sessionTokens: Number(val.sessionTokens) || 0,
+            sessionBaseTokens: Number(val.sessionBaseTokens) || 0,
+            handoffPending: String(val.handoffPending ?? ''),
+            rolloverPending: val.rolloverPending === true,
+            rolling: false,
             wakeTimes: Array.isArray(val.wakeTimes) ? val.wakeTimes : [],
             // 旧状态没有 wakeBudgetTimes：回填成 wakeTimes 快照，升级当天不会凭空多出额度。
             wakeBudgetTimes: Array.isArray(val.wakeBudgetTimes)
@@ -11349,6 +11362,14 @@ async function main() {
           lastActionAt: st.lastActionAt,
           agentToken: st.agentToken,
           bootstrapSent: st.bootstrapSent,
+          // 会话滚动状态必须跨重启保留：否则 sessionTurns 归零、handoffPending 丢失，
+          // 用户会看到「刚满 2 次又归零」或「换了会话但没接上」。
+          sessionTurns: Number(st.sessionTurns) || 0,
+          sessionTokens: Number(st.sessionTokens) || 0,
+          sessionBaseTokens: Number(st.sessionBaseTokens) || 0,
+          handoffPending: String(st.handoffPending ?? ''),
+          rolloverPending: st.rolloverPending === true,
+          // rolling 是内存防重入，不持久化；加载时固定 false，避免崩溃后永远卡住。
           wakeTimes: st.wakeTimes.slice(-200),
           wakeBudgetTimes: wakeBudgetTimesOf(st).slice(-200),
           sendTimes: st.sendTimes.slice(-500),
@@ -12731,6 +12752,7 @@ async function main() {
       return { ok: false, reason: 'no-purpose' };
     }
 
+    if (!preview) maybeRollSessionV2(key, { forceRoll: true });
     const token = currentMode === 'reserved2' ? String(st.agentToken || '') : '';
     const prompt = buildPurposePrompt({
       now,
@@ -15061,7 +15083,7 @@ async function main() {
    * 交接：记忆卡每轮都注入，所以"她记得什么"不会丢；丢的是对话流，只需要补一句"刚才聊到哪"。
    * 交接块由 buildHandoffBlock 规则拼出（不额外花模型调用），下一条唤醒注入一次即清空。
    */
-  function maybeRollSessionV2(key) {
+  function maybeRollSessionV2(key, { forceRoll = false } = {}) {
     const sessionId = state.sessions[key];
     if (!sessionId) return null;
     const st = getSocialV2State(key);
@@ -15071,14 +15093,27 @@ async function main() {
     const rollCfg = engineMode() === 'machine'
       ? { ...baseRollCfg, enabled: true, tokens: 0, turns: 1, minTurnsBeforeRoll: 0, summary: true }
       : baseRollCfg;
-    if (rollCfg.enabled === false) return null;
+    if (rollCfg.enabled === false && st.rolloverPending !== true) return null;
     const used = Math.max(0, tokenLedger.sessionTotal(sessionId) - (Number(st.sessionBaseTokens) || 0));
     const wakes = (Number(st.sessionTurns) || 0) + 1;
-    st.sessionTurns = wakes;
-    st.sessionTokens = used;
-    if (!shouldRollSession({ usedTokens: used, turns: wakes, config: rollCfg })) {
+    const shouldRoll = st.rolloverPending === true || shouldRollSession({ usedTokens: used, turns: wakes, config: rollCfg });
+    if (!shouldRoll) {
+      st.sessionTurns = wakes;
+      st.sessionTokens = used;
       saveSocialV2State();
       return null;
+    }
+    // P0（2026-11-06 真机）：不能在「这一轮正要投递」时 retireSession。
+    // retireSession 会轮换 agentToken，而这一轮模型已拿到的提示词/工具参数里可能还是旧 token；
+    // 结果是滚动恰好发生在会话最贵的一轮，回复直接 403 丢失。
+    // 先记 pending，让当前轮照常跑完；下一次投递开始前再换（提示词此时才构建，token 一定是最新的）。
+    if (st.rolloverPending !== true && forceRoll !== true) {
+      st.sessionTurns = wakes;
+      st.sessionTokens = used;
+      st.rolloverPending = true;
+      saveSocialV2State();
+      log(`[rollover] ${key} 已到阈值（${used} token / ${wakes} 次唤醒），下一轮投递开始前换会话（本轮不轮换，避免 token 失效）`);
+      return { deferred: true, used, wakes };
     }
     // 防重入：retireSession 会同步清状态，但同一 tick 里可能有并发唤醒。
     st.rolling = true;
@@ -15096,6 +15131,7 @@ async function main() {
       st.sessionTurns = 0;
       st.sessionTokens = 0;
       st.sessionBaseTokens = 0;
+      st.rolloverPending = false;
       saveSocialV2State();
       retireSession(key);
       log(`[rollover] ${key} 已用 ${used} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? '（带交接）' : ''}`);

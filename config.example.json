@@ -54,7 +54,6 @@
     "homeDir": "",
     "webuiPort": 0,
     "webuiUrl": "",
-    "launchMode": "detached",
     "downloadUrl": "https://github.com/SnowLuma/SnowLuma/releases/latest"
   },
   "ownerQQ": null,

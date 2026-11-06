@@ -77,7 +77,7 @@ try {
 
   // 9) 隐藏命令行窗口：默认关，只收明确 true，落盘可读。
   writeUnified({ version: 1 });
-  assert.equal(store.readUnified().config.platforms.hideConsoles, false, '隐藏命令行默认关');
+  assert.equal(store.readUnified().config.platforms.hideConsoles, true, '隐藏命令行默认开');
   const hidden = store.saveUnified({ platforms: { hideConsoles: true } });
   assert.equal(hidden.config.platforms.hideConsoles, true);
   assert.equal(JSON.parse(fs.readFileSync(unifiedFile, 'utf8')).platforms.hideConsoles, true);
