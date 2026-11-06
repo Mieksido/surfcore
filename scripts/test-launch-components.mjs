@@ -28,6 +28,10 @@ assert.ok(index.includes('hideConsoles') && client.includes('隐藏启动后的�
 assert.ok(index.includes('nodePathEnv'), 'SnowLuma 启动脚本必须能找到 node（不依赖系统 PATH）');
 assert.ok(index.includes("['config', 'runtime.json']") && index.includes('cfg.webuiPort') && client.includes('snowluma.webuiPort'), 'SnowLuma WebUI 端口必须读 config/runtime.json，并支持显式覆盖');
 assert.ok(client.includes('读不到 SnowLuma 控制台') && client.includes('和 QQ 有没有启动无关'), '账号弹窗不能把控制台错误误报成 QQ 没启动');
+assert.ok(index.includes('spawnSnowLumaDetached') && index.includes('WScript.Shell') && index.includes('explorer+vbs'), 'SnowLuma 默认必须隐藏并脱离 DSH 进程树');
+assert.ok(client.includes('snowluma.launchMode'), '设置页必须能切回 legacy 启动方式');
+assert.ok(index.includes("'stop-snowluma'") && index.includes('stopSnowLuma'), '孤儿 SnowLuma 必须能在插件里关闭');
+assert.ok(client.includes('关闭 SnowLuma'), 'SnowLuma 设置卡必须有「关闭 SnowLuma」按钮');
 
 for (const text of ['一键启动 SurfCore', '一键停止（全部）', 'voiceBranch', '语音分支', '向量模型']) {
   assert.ok(client.includes(text), `前端必须有一键启动/停止/语音分支/向量模型：${text}`);

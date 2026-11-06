@@ -1149,6 +1149,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("snowluma.homeDir", "SnowLuma home（app 目录）", "内含 config 的那个目录，一般是 安装目录 下的 app；填错会导致「检测不到」", "text", { browse: "dir" }),
         F("snowluma.webuiPort", "控制台端口（可选）", "留空自动读 config/runtime.json；读不到才回退 5100", "number", { min: 1, max: 65535 }),
         F("snowluma.webuiUrl", "控制台地址（可选）", "例如 http://127.0.0.1:5099；填了优先于端口", "text", { wide: true }),
+        F("snowluma.launchMode", "启动方式", "detached=隐藏并脱离 DSH 进程树（推荐）；legacy=旧窗口，DSH 退出会一起结束", "select", { options: [["detached", "隐藏 + 脱离 DSH（推荐）"], ["legacy", "旧方式（可见窗口）"]] }),
       ]},
       { group: "控制台", note: "桥接本地控制台", fields: [
         F("consolePort", "控制台端口", "默认 3100", "number", { min: 1024, max: 65535 }),
@@ -2603,7 +2604,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h(Btn, { onClick: () => detectSnowLuma(), disabled: !!busy }, "检测已安装的 SnowLuma"),
                 h(Btn, { kind: "qbw-btn2", onClick: () => setSnowImport(true), disabled: !!busy }, "手动选择已安装的 SnowLuma"),
                 h(Browse, { mode: "dir", title: "选择 SnowLuma2 解压出来的根目录（里面有 app）", onPick: (picked) => detectSnowLuma(picked) }),
-                h(Btn, { kind: "qbw-btn2", onClick: () => act("start-snowluma"), disabled: !!busy }, "只打开 SnowLuma")),
+                h(Btn, { kind: "qbw-btn2", onClick: () => act("start-snowluma"), disabled: !!busy }, "只打开 SnowLuma"),
+                h(Btn, { kind: "qbw-btn3", onClick: () => act("stop-snowluma"), disabled: !!busy }, "关闭 SnowLuma")),
               h("div", { className: "qbw-hint" }, "检测只会在常见位置里猜。装在别处（例如 D:\软件\SnowLuma2）就点「手动选择已安装的 SnowLuma」，选 SnowLuma.exe 或 app\launcher.bat（也可以直接选解压根目录）。"),
               h("div", { className: "qbw-hint" }, "「手动选择」只是告诉插件你装好的 SnowLuma 在哪：不下载、不安装、不移动、不删除任何文件。"),
               h("div", { className: "qbw-hint" }, "SurfCore 只负责检测、打开和查看连接状态；SnowLuma2 本体按 EULA 不随插件分发，安装与扫码仍需你完成。")),

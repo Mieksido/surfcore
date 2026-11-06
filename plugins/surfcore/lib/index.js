@@ -2350,6 +2350,55 @@ ${body}`;
     return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
   }
 
+  /**
+   * 2026-11-06 事故：SnowLuma 是插件 spawn 出来的子进程，DSH 退出（每次更新都会退出）时会被
+   * 一起结束；而 `cmd /c start` 还会留一个黑框——用户关掉黑框就等于关掉 QQ 网关。
+   *
+   * 做法（真机验证过，1 秒拉起）：
+   *   写一个 VBS（`sh.Run ..., 0, False` = 隐藏窗口）
+   *   → 用 explorer.exe 打开它（explorer 不属于 DSH 的 Job，天然的脱离点）
+   *   → wscript 退出后 node 变成孤儿进程，taskkill /T DSH 也带不走它。
+   * 失败时返回 ok:false，调用方回退旧逻辑（保持原有行为不变）。
+   */
+  function spawnSnowLumaDetached({ launcher, cwd, env }) {
+    if (process.platform !== 'win32') return { ok: false, error: '非 Windows 平台' };
+    if (/["\r\n]/.test(String(launcher)) || /["\r\n]/.test(String(cwd))) {
+      return { ok: false, error: '启动路径含引号或换行，拒绝写入 VBS' };
+    }
+    try {
+      const appDir = path.dirname(launcher);
+      const entry = path.join(appDir, 'index.mjs');
+      const lower = launcher.toLowerCase();
+      const isBatch = lower.endsWith('.bat') || lower.endsWith('.cmd');
+      let target;
+      if (isBatch && fs.existsSync(entry)) {
+        // 直接起 node：绕开 launcher.bat 里的 cmd 窗口和末尾的 pause
+        target = `"${process.execPath}" "${entry}"`;
+      } else if (isBatch) {
+        target = `"${process.env.ComSpec || 'cmd.exe'}" /d /c ""${launcher}""`;
+      } else {
+        target = `"${launcher}"`;
+      }
+      const vbsEsc = (value) => String(value).replace(/"/g, '""');
+      const stateDir = path.join(QQBOT_ROOT, 'state');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const vbsPath = path.join(stateDir, 'snowluma-launch.vbs');
+      fs.writeFileSync(vbsPath, [
+        "' 由 SurfCore 生成：隐藏窗口（样式 0）启动 SnowLuma，避免留黑框",
+        "' explorer.exe 打开本文件 → wscript 退出后 node 成为孤儿进程，脱离 DSH 进程树",
+        'Set sh = CreateObject("WScript.Shell")',
+        `sh.CurrentDirectory = "${vbsEsc(cwd)}"`,
+        `sh.Run "${vbsEsc(target)}", 0, False`,
+        '',
+      ].join('\r\n'), 'utf8');
+      const explorer = path.join(process.env.SystemRoot || 'C:\\Windows', 'explorer.exe');
+      spawn(explorer, [vbsPath], { detached: true, stdio: 'ignore', env, windowsHide: true }).unref();
+      return { ok: true, method: 'explorer+vbs' };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
   async function launchSnowLuma({ openWebui = true, hideConsoles = false } = {}) {
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
@@ -2385,7 +2434,15 @@ ${body}`;
     try {
       const cwd = path.dirname(launcher);
       const lower = launcher.toLowerCase();
-      if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
+      // 2026-11-06：默认「隐藏 + 脱离 DSH 进程树」。想恢复旧行为（可见控制台、随 DSH 退出），
+      // 设置 snowluma.launchMode = "legacy" 即可（不写默认 detached）。
+      const launchMode = String(cfg.launchMode ?? 'detached').toLowerCase();
+      let launchedBy = 'legacy';
+      if (launchMode !== 'legacy') {
+        const detachedResult = spawnSnowLumaDetached({ launcher, cwd, env: nodePathEnv() });
+        if (detachedResult.ok) launchedBy = detachedResult.method;
+      }
+      if (launchedBy === 'legacy' && (lower.endsWith('.bat') || lower.endsWith('.cmd'))) {
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
         // 现在整条路径作为「verbatim 参数」交给 cmd，并且拒绝含引号/换行的路径。
         if (/["\r\n]/.test(launcher)) return { ok: false, error: '启动脚本路径含引号或换行，拒绝执行' };
@@ -2409,7 +2466,7 @@ ${body}`;
             cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: false, windowsVerbatimArguments: true,
           }).unref();
         }
-      } else {
+      } else if (launchedBy === 'legacy') {
         spawn(launcher, [], { cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: hideConsoles === true }).unref();
       }
       // 等 WebUI 端口起来（最多 10 秒）：起来了就打开浏览器；没起来也给出地址让用户自己点。
@@ -2425,6 +2482,7 @@ ${body}`;
             opened,
             webui: webui.url,
             launcher,
+            launchMode: launchedBy,
             message: opened ? `已启动 SnowLuma 并打开控制台 ${webui.url}` : `已启动 SnowLuma：${webui.url}`,
           };
         }
@@ -2433,6 +2491,59 @@ ${body}`;
     } catch (error) {
       return { ok: false, error: `打开 SnowLuma 失败：${error?.message ?? error}` };
     }
+  }
+
+  /**
+   * 关闭 SnowLuma（包括 explorer+wscript 拉起的孤儿进程）。
+   * 不按进程名盲杀：先用 5099/3000/3001 找 PID，再看命令行是否像 SnowLuma/index.mjs；
+   * 找不到端口时再按命令行兜底。失败返回结构化原因。
+   */
+  async function stopSnowLuma() {
+    if (process.platform !== 'win32') {
+      return { ok: false, code: 'SNOWLUMA_STOP_UNSUPPORTED', error: '当前平台不支持自动关闭 SnowLuma', hint: '请手动结束 SnowLuma 进程' };
+    }
+    const script = [
+      '$ports=@(5099,3000,3001)',
+      '$pids=@()',
+      'foreach($p in $ports){ try { $pids += (Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess) } catch {} }',
+      '$pids=$pids | Sort-Object -Unique',
+      '$rows=@()',
+      'foreach($id in $pids){ $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue; if($proc -and $proc.CommandLine -match \'index\\.mjs|SnowLuma\'){ $rows += [pscustomobject]@{pid=$id} } }',
+      'if($rows.Count -eq 0){ Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match \'SnowLuma.*index\\.mjs\' } | ForEach-Object { $rows += [pscustomobject]@{pid=$_.ProcessId} } }',
+      '$rows | ConvertTo-Json -Compress',
+    ].join('; ');
+    const run = (file, args) => new Promise((resolve) => {
+      execFile(file, args, { windowsHide: true, timeout: 15000 }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
+    });
+    const found = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    if (found.error) {
+      return { ok: false, code: 'SNOWLUMA_STOP_FAILED', error: `查找 SnowLuma 进程失败：${found.error.message}`, hint: '可在任务管理器结束 node.exe（命令行含 SnowLuma/index.mjs）' };
+    }
+    let rows = [];
+    try {
+      const parsed = JSON.parse(found.stdout.trim() || '[]');
+      rows = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {}
+    const pids = [...new Set(rows.map((row) => Number(row?.pid)).filter((pid) => Number.isInteger(pid) && pid > 0))];
+    if (!pids.length) {
+      return { ok: true, stopped: [], message: '没找到运行中的 SnowLuma（5099/3000/3001 没有匹配进程）' };
+    }
+    const stopped = [];
+    const errors = [];
+    for (const pid of pids) {
+      const result = await run('taskkill.exe', ['/PID', String(pid), '/T', '/F']);
+      if (result.error || result.stderr.trim()) errors.push({ pid, error: result.error?.message || result.stderr.trim() });
+      else stopped.push(pid);
+    }
+    return {
+      ok: errors.length === 0,
+      stopped,
+      errors,
+      message: errors.length
+        ? `已结束 ${stopped.length} 个，失败 ${errors.length} 个`
+        : `已关闭 SnowLuma（PID ${stopped.join(', ')}）`,
+      hint: errors.length ? '可能有子进程仍在运行，任务管理器结束 node.exe 或重启 DSH' : '',
+    };
   }
 
   // ── 启动完成弹窗 ────────────────────────────────────────────────────────
@@ -3263,6 +3374,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (action === 'start-snowluma') {
       json(res, 200, await launchSnowLuma());
+      return;
+    }
+    if (action === 'stop-snowluma') {
+      json(res, 200, await stopSnowLuma());
       return;
     }
     if (action === 'detect-snowluma') {
