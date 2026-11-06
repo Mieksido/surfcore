@@ -6,6 +6,10 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-05 | [约定提醒：从「记得住」到「到点会响」](2026-11-05-promise-watch.md) | 旁挂账本 + 60s tick + 提醒窗口；promiseDue 走全套闸门，先记后投 | 待发布 |
+| 2026-11-05 | [表情「只按文字理解」丢了 emojiId/summary](2026-11-05-sticker-textonly-meta.md) | 短路分支补回定位字段；默认形状与下载分支各一条用例 | 待发布 |
+| 2026-11-05 | [星图：实时脑图 + 7 天回放](2026-11-05-brain-live.md) | 搬入 brain-feed/replay/brain.html，数据源换记忆卡全量档；开关 brain.enabled | 待发布 |
+| 2026-11-05 | [记忆检索升级为 BM25 + 本地向量混合](2026-11-05-memory-rag-index.md) | FTS5 索引 + Qwen3-Embedding 向量 + RRF；embedding 挂自动降级 | 待发布 |
 | 2026-11-03 | [人格语气层重复/未进目的提示词](2026-11-03-persona-tone-dedup.md) | tone 不再回退 core；相同内容去重；purpose 接语气层 | 待发布 |
 | 2026-11-03 | [群里的 #sl 刷屏指令不唤醒 SurfCore](2026-11-03-ignore-hash-commands.md) | 非主人纯 # 短指令过滤；主人/@/引用放行 | 待发布 |
 | 2026-11-03 | [B站 @ 鱼不在“我那一层”回复](2026-11-03-bili-at-floor-reply.md) | @ 一级评论补 root=source；digest 给 @ 打坐标；修 resolveLatestReply | 待发布 |

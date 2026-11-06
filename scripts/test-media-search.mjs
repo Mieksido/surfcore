@@ -166,6 +166,10 @@ await test('emojiCdnCandidates 只接受十六进制 id（防任意 URL 拼接�
 
 await test('fetchMediaData 标注表情/图片，并保留 summary 与 emojiId', async () => {
   const h = await bridgeHarness({
+    // 这条用例测的是「下载原图」那条分支；而本地补丁默认不下表情原图
+    // （`socialV2.vision.stickerTextOnly` 缺省按 'true' 走短路），所以显式关掉它。
+    // 默认短路形状由下一条用例「表情默认不下原图」单独锁。
+    config: { socialV2: { vision: { stickerTextOnly: 'false' } } },
     globals: {
       safeFetchBuffer: async (url) => {
         if (String(url).includes('gxh.vip.qq.com')) return { buffer: GIF, mimeType: 'image/gif' };
@@ -188,6 +192,25 @@ await test('fetchMediaData 标注表情/图片，并保留 summary 与 emojiId',
     const failed = await h.fetchMediaData([{ kind: 'image', file: 'abc.jpg', url: 'https://multimedia.nt.qq.com.cn/x' }]);
     assert.equal(failed[0].kind, 'image');
     assert.match(String(failed[0].text), /图片获取失败/, '失败必须明确标注为图片');
+  } finally { await h.close(); }
+});
+
+// 本地补丁（2026-11-05）默认让表情包只按文字标签理解、不下载原图。
+// 这条锁住默认形状：不下载**不等于**丢掉「这是什么表情」的定位字段——
+// 下游 `emojiCdnCandidates` 靠 emojiId 推 CDN、`stickerMetaFor` 靠 id 配收藏列表备注。
+await test('fetchMediaData：表情默认不下原图，但仍带 emojiId 与 summary', async () => {
+  const h = await bridgeHarness();
+  try {
+    const out = await h.fetchMediaData([
+      { kind: 'sticker', emojiId: 'f96bf2d2d93c3530d5eb148f55206fb1', summary: '[给你糖吃]' }
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].kind, 'sticker');
+    assert.equal(out[0].imageOmitted, true, '默认不下载原图');
+    assert.equal(out[0].data, undefined, '默认不该带 base64 图片数据');
+    assert.equal(out[0].emojiId, 'f96bf2d2d93c3530d5eb148f55206fb1');
+    assert.equal(out[0].summary, '[给你糖吃]');
+    assert.match(String(out[0].text), /【表情：\[给你糖吃\]】/);
   } finally { await h.close(); }
 });
 

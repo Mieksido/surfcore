@@ -1,3 +1,48 @@
+## [0.9.0] - 2026-11-06
+
+### 新增 · 记忆六件（从「存得住」到「想得起来」）
+
+- **记忆检索**：唤醒时按对方这句话去记忆库里捞相关旧事，关键词（SQLite FTS5，中文按单字+二元组切）
+  与向量（本地 `Qwen3-Embedding-0.6B`，127.0.0.1:8091）两路 RRF 融合；向量服务不可用时自动降级纯关键词。
+  只回答「对方提到的那件事是什么」，由触发词决定要不要查。控制台 `POST /api/memory/search`。
+- **星图**：记忆的可视化（`/brain`），含节点、衰减曲线、7 天回放与检索探针；
+  `/api/brain/snapshot`、`/api/brain/replay`、`/api/brain/decay-curve`、`/api/brain/stream`（SSE）等七条路由。
+  控制台侧栏新增「星图」入口。
+- **记忆强度分**：按遗忘曲线估 R（可提取性）/ S（稳固度）/ D（难度），保护类（钉住 / 最初 / 主人重要）不衰减；
+  星图衰减曲线从「档位阶梯」换成真的 R/S/D 曲线。
+- **建议候选**：从入站消息里按人称锚点抽「关于他自己的事」（称呼/生日/忌口/过敏/喜好/住处/工作/宠物），
+  唤醒时最多递一句；只收私聊与主人，不写记忆卡，提满两次自动作废。
+- **约定提醒**：从记忆里认出「答应了什么、什么时候」，到点在唤醒里提一句；当天没提成可顺延，
+  过期标掉；`at/until/maxPerDay/graceDays` 可配。
+- **联想**：唤醒时顺带注入一条**快淡忘的旧事**（`【忽然想起】`，R 落在中间段的才提），
+  提过冷却 7 天；对方正在「回忆」时让位给检索，两者不同时注入。
+
+### 变更
+
+- `decay` 字段换了语义：`S` 从「第几天冻结」变成「稳固度」，`shape` 从 `clarity-ladder` 变成 `fsrs-strength`。
+  **页面与桥接必须同版本**——旧页面会把 `S` 当「天」显示（数字撒谎，不报错）。
+- 唤醒提示词新增四段可选注入（检索 / 候选 / 约定 / 联想），都有开关且失败静默跳过；
+  没有内容时提示词一个字节都不加。
+- 新增四个配置段（都可缺省）：`memoryRecall`、`promiseWake`、`ledgerSuggest`、`memoryAssociate`，
+  见 `docs/guides/DATA-AND-CONFIG.md` §1.12。
+- 控制台新增 `GET /api/memory/suggestions`、`POST /api/memory/suggestions/{probe,dismiss}`、
+  `POST /api/memory/associate/preview`、`GET|POST /api/promise/*`。
+
+### 修复
+
+- `/api/memory-card/notify` 每次 500（`"[object Object]" is not valid JSON`）：`readBody()` 已经解析过，
+  又 `JSON.parse` 了一次 —— 容量告警私聊因此从未发出。
+- 约定提醒的三处真 bug：`25:99` 这种到不了的钟点被当合法；「N日后」的中文写法认不出；
+  悬空待提条目没有保鲜期、正文被「取走即删」吃掉（真机 00:01 复现）。
+
+### 发布/测试
+
+- 新增测试：`test:memory-index`、`test:memory-recall`、`test:memory-strength`、`test:brain`（四套）、
+  `test:promise`、`test:suggest`、`test:associate`；`test:audit` 155/156（唯一失败是 dev 分支的清单门禁，发布后归零）。
+- 调查记录：[记忆检索与星图](docs/cases/2026-11-05-brain-live.md)、
+  [强度分](docs/cases/2026-11-06-memory-strength.md)、[建议候选](docs/cases/2026-11-06-ledger-suggest.md)、
+  [联想](docs/cases/2026-11-06-memory-associate.md)。
+
 ## [0.8.8] - 2026-11-03
 
 ### 修复
