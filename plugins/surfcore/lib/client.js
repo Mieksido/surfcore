@@ -1063,7 +1063,54 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
     }
 
     // ── 字段描述 ────────────────────────────────────────────────────────────
-    const F = (path, label, hint, kind = "text", extra = {}) => ({ path: p(path), label, hint, kind, ...extra });
+    // 成本标签 + 重启标记（2026-11-06 用户第 6、13 条）：
+    // 每个会影响 token 花费的设置项，在界面上直接标出来（💰 数量=影响档位），
+    // 需要重启 DSH 才生效的，badge 里写成"改完需重启 DSH"。
+    const FIELD_META = {
+      "socialV2.engine.mode": { cost: 3, why: "机器模式最省" },
+      "socialV2.cost.peakOffload": { cost: 1 },
+      "socialV2.wait.mode": { cost: 2 },
+      "socialV2.context.wakeMaxChars": { cost: 3 },
+      "socialV2.context.wakeMessageLimit": { cost: 2 },
+      "socialV2.context.wakeRecentLimit": { cost: 1 },
+      "socialV2.context.rolloverTokens": { cost: 3 },
+      "socialV2.context.rolloverTurns": { cost: 2 },
+      "socialV2.wake.batchWindowMs": { cost: 2 },
+      "socialV2.wake.batchWindowPrivateMs": { cost: 2 },
+      "socialV2.wake.batchWindowDirectMs": { cost: 1 },
+      "socialV2.wake.localFilterEnabled": { cost: 1, why: "省 token" },
+      "socialV2.wake.localFilterRateMax": { cost: 1 },
+      "socialV2.wake.recommendedProbability": { cost: 3 },
+      "socialV2.proactive.enabled": { cost: 3 },
+      "socialV2.proactive.probability": { cost: 3 },
+      "socialV2.sticker.includeInPrompt": { cost: 2 },
+      "socialV2.sticker.promptMaxStickers": { cost: 2 },
+      "socialV2.sticker.matchEveryNWakes": { cost: 2 },
+      "socialV2.vision.imageInput": { cost: 3, restart: true },
+      "socialV2.voice.enabled": { cost: 1, restart: true },
+      "tokenGuard.maxWakesPerDay": { cost: 3 },
+      "tokenGuard.perGroupDailyCostCNY": { cost: 3 },
+      "slang.enabled": { cost: 2 },
+      "purpose.gapMinMs": { cost: 3 },
+      "purpose.dailyMax": { cost: 3 },
+      "biliBridge.dynamics.enabled": { cost: 2 },
+      "biliBridge.share.enabled": { cost: 2 },
+      "biliBridge.share.times": { cost: 2 },
+    };
+    const costBadgeOf = (pathStr, extra) => {
+      if (extra && extra.badge) return extra.badge;
+      let meta = FIELD_META[pathStr];
+      if (!meta && /^socialV2\.tools\./.test(pathStr)) meta = { cost: 2, restart: true };
+      if (!meta) return undefined;
+      const coins = meta.cost ? "💰".repeat(meta.cost) : "";
+      const tail = meta.restart ? "改完需重启 DSH" : (meta.why ?? "");
+      return [coins, tail].filter(Boolean).join(" · ") || undefined;
+    };
+    const F = (path, label, hint, kind = "text", extra = {}) => {
+      const key = Array.isArray(path) ? path.join(".") : String(path);
+      const badge = costBadgeOf(key, extra);
+      return { path: p(path), label, hint, kind, ...extra, ...(badge ? { badge } : {}) };
+    };
     // 原生选择框：浏览器拿不到绝对路径，只能让宿主进程弹 Windows 对话框。
     const Browse = ({ mode = "dir", onPick, title, label = "浏览…" }) => h(Btn, {
       kind: "qbw-btn2",
@@ -1178,6 +1225,8 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { group: "Token 防爆破", note: "和鱼群守则同时生效：鱼群守则先拦，再按这里限制唤醒次数/单次发送条数；每日花费/额度已迁移到「Token 额度」页（按自然日，QQ/B站/总额分开管）", fields: [
         F("socialV2.tokenGuard.enabled", "启用 Token 防爆破", "默认开；关掉 = 只按旧限频", "switch"),
         F("socialV2.tokenGuard.maxWakesPerDay", "单会话每天最多醒", "默认 20；群聊；超过后不再唤醒", "number", { min: 0, max: 200 }),
+        F("socialV2.tokenGuard.perGroupEnabled", "每会话额度（按群/按私聊）", "默认关；开启后每个群或私聊单独计当日花费，防止一个大群把额度吃光", "switch"),
+        F("socialV2.tokenGuard.perGroupDailyCostCNY", "每会话每日上限（元）", "默认 0=不限；例如 1.5 = 单个群/私聊每天最多花 ¥1.5，超了就只保留 @/私聊/引用等硬触发", "number", { min: 0 }),
         F("socialV2.tokenGuard.privateMaxWakesPerDay", "私聊每天最多醒", "默认 10；私聊爆破先卡这里", "number", { min: 0, max: 200 }),
         F("socialV2.tokenGuard.replyCheckFree", "回复后回访不占次数", "默认开；回完话的「他回没回」回访不算一次对话，不再吃掉每日次数（仍受 2 分钟间隔/小时限频/额度约束）", "switch"),
         F("socialV2.tokenGuard.minWakeGapMs", "两次苏醒最小间隔（ms）", "默认 120000；普通消息再多也先合并", "number", { min: 0, max: 3600000 }),
@@ -3281,13 +3330,103 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     // ── 花费与会话（2026-11-04）──────────────────────────────────────────
     // 想回答两个问题："今天谁在烧钱" + "这条会话是不是该换了"。
     // 数据全部来自桥接的 token 账本（按会话 key 聚合），换会话走 /api/session/reset。
+    // ── 省钱清单（2026-11-06 修正交付位置）────────────────────────────────
+    // 用户第 13 条原话：要在「Token 额度页最上方」看到「如何省 token」按钮，点开**弹窗**列出
+    // 所有能省 token 的设置。之前做在 QQ 页卡片里属于位置错误；这里抽成共享组件：
+    // Token 额度页最上方 + QQ 页花费卡片都用它。
+    const SAVE_TOKEN_TIPS = [
+      ["会话太长自动换新会话", "默认 8 万 token 换一次；阈值调小更省，但交接更频繁", "QQ 页 · 二代 · 等待与上下文"],
+      ["唤醒合并窗口", "被 @/叫名字 3 秒、私聊 4 秒、群聊 6 秒；调大更省，但回应更慢", "QQ 页 · 唤醒与收尾"],
+      ["唤醒上下文最大字符", "默认 6000；调小只带更少的未读", "QQ 页 · 等待与上下文"],
+      ["工具面开关", "关掉用不到的工具：每关一个，每次请求都少付一段说明", "QQ 页 · 二代 · 工具开关"],
+      ["回合形态", "机器模式=一次唤醒一次请求、不做工具循环，最省", "QQ 页 · 回合形态与成本"],
+      ["峰时顺延", "价格 ×2 的时段不跑后台任务", "QQ 页 · 回合形态与成本"],
+      ["本地唤醒判断", "免费漏斗：垃圾消息/刚回过/醒太勤不唤醒", "QQ 页 · 唤醒与收尾"],
+      ["主动搭话 / 目的机制", "频率和每日上限直接决定钱包；不需要就关", "目的页"],
+      ["黑话学习", "后台会定期跑模型；关掉或拉长冷却更省", "QQ 页 · 黑话学习"],
+      ["B站四类动态 / 定时分享", "每次发布都是一次完整回合", "B站 页"],
+      ["表情包注入条数", "每轮都随提示词发一遍", "QQ 页 · 表情包"],
+    ];
+
+    const SAVE_TOKEN_PRESETS = {
+      省钱: [
+        ["socialV2.context.rolloverTokens", 60000],
+        ["socialV2.context.wakeMaxChars", 3000],
+        ["socialV2.wake.batchWindowMs", 12000],
+        ["socialV2.wake.batchWindowPrivateMs", 6000],
+        ["socialV2.wake.batchWindowDirectMs", 3000],
+        ["socialV2.sticker.promptMaxStickers", 4],
+        ["socialV2.proactive.enabled", false],
+        ["socialV2.cost.peakOffload", true],
+      ],
+      均衡: [
+        ["socialV2.context.rolloverTokens", 80000],
+        ["socialV2.context.wakeMaxChars", 6000],
+        ["socialV2.wake.batchWindowMs", 6000],
+        ["socialV2.wake.batchWindowPrivateMs", 4000],
+        ["socialV2.wake.batchWindowDirectMs", 3000],
+        ["socialV2.sticker.promptMaxStickers", 8],
+        ["socialV2.proactive.enabled", true],
+        ["socialV2.cost.peakOffload", true],
+      ],
+      活跃: [
+        ["socialV2.context.rolloverTokens", 150000],
+        ["socialV2.context.wakeMaxChars", 8000],
+        ["socialV2.wake.batchWindowMs", 4000],
+        ["socialV2.wake.batchWindowPrivateMs", 3000],
+        ["socialV2.wake.batchWindowDirectMs", 2000],
+        ["socialV2.sticker.promptMaxStickers", 12],
+        ["socialV2.proactive.enabled", true],
+        ["socialV2.cost.peakOffload", false],
+      ],
+    };
+
+    function applySaveTokenPreset(name, set, toast) {
+      const patch = SAVE_TOKEN_PRESETS[name];
+      if (!patch) return;
+      if (!set) { toast?.("✗ 当前页面拿不到配置写入句柄，请手动改设置"); return; }
+      for (const [key, value] of patch) set(key.split("."), value);
+      toast?.(`✓ 已套用「${name}」预设，点底部「保存」生效`);
+    }
+
+    /** 省钱清单弹窗：额度页和 QQ 页共用。 */
+    function SaveTokenTipsModal({ set, onClose, toast }) {
+      return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
+        h("div", { className: "qbw-modal", style: { maxWidth: "820px", maxHeight: "84vh", overflow: "auto" } },
+          h("h3", null, "怎么省 token"),
+          h("p", { className: "qbw-hint" },
+            "下面这些都是能直接改的开关；调小/关掉省钱，但会牺牲一点体验。点「套用」只改表单，记得点底部「保存」。"),
+          h("div", { style: { display: "flex", gap: "8px", margin: "8px 0 10px", flexWrap: "wrap" } },
+            h(Btn, { kind: "qbw-btn2", onClick: () => applySaveTokenPreset("省钱", set, toast) }, "套用「省钱」"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => applySaveTokenPreset("均衡", set, toast) }, "套用「均衡」"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => applySaveTokenPreset("活跃", set, toast) }, "套用「活跃」")),
+          h("table", { className: "qbw-table" },
+            h("thead", null, h("tr", null, h("th", null, "设置"), h("th", null, "怎么影响花费"), h("th", null, "在哪一页"))),
+            h("tbody", null, SAVE_TOKEN_TIPS.map(([name, why, where]) => h("tr", { key: name },
+              h("td", null, name), h("td", null, why), h("td", null, where))))),
+          h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
+            h(Btn, { onClick: () => onClose?.() }, "知道了"))));
+    }
+
+    /** 「怎么省 token」入口条：额度页最上方 + QQ 页花费卡片共用。 */
+    function SaveTokenEntry({ set, toast, compact }) {
+      const [open, setOpen] = useState(false);
+      return h("div", { className: compact ? "" : "qbw-card" },
+        h("div", { className: "qbw-row", style: { borderBottom: "none", paddingBottom: 0 } },
+          h("div", null,
+            h("div", { className: "qbw-kicker" }, "怎么省 token"),
+            h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
+              "一次弹窗列全：哪些设置影响花费、在哪改、有三档预设。")),
+          h(Btn, { onClick: () => setOpen(true) }, "打开省钱清单")),
+        open ? h(SaveTokenTipsModal, { set, toast, onClose: () => setOpen(false) }) : null);
+    }
+
     function CostCard({ toast, set }) {
       const [data, setData] = useState(null);
       const [err, setErr] = useState("");
       const [msg, setMsg] = useState("");
       const [busyKey, setBusyKey] = useState("");
       const [lf, setLf] = useState(null);
-      const [tips, setTips] = useState(false);
 
       const load = async () => {
         try {
@@ -3331,57 +3470,6 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         return k;
       };
 
-      const tipsList = [
-        ["会话太长自动换新会话", "默认 8 万 token 换一次；阈值调小更省，但交接更频繁", "QQ 页 · 二代 · 等待与上下文"],
-        ["唤醒合并窗口", "被 @/叫名字 3 秒、私聊 4 秒、群聊 6 秒；调大更省，但回应更慢", "QQ 页 · 唤醒与收尾"],
-        ["唤醒上下文最大字符", "默认 6000；调小只带更少的未读", "QQ 页 · 等待与上下文"],
-        ["工具面开关", "关掉用不到的工具：每关一个，每次请求都少付一段说明", "QQ 页 · 二代 · 工具开关"],
-        ["主动搭话 / 目的机制", "频率和每日上限直接决定钱包；不需要就关", "目的页"],
-        ["黑话学习", "后台会定期跑模型；关掉或拉长冷却更省", "QQ 页 · 黑话学习"],
-        ["B站四类动态 / 定时分享", "每次发布都是一次完整回合", "B站 页"],
-        ["表情包注入条数", "每轮都随提示词发一遍", "QQ 页 · 表情包"],
-      ];
-
-      // 三档预设（2026-11-04）：293 个开关没人调得明白，先给三个能一键套用的组合。
-      // 只改本地表单（标脏），用户点底部「保存」才真正写盘——和页面其它字段一致。
-      const applyPreset = (name) => {
-        if (!set) { setMsg("✗ 当前页面拿不到配置写入句柄，请手动改设置"); return; }
-        const patches = {
-          "省钱": [
-            ["socialV2.context.rolloverTokens", 60000],
-            ["socialV2.context.wakeMaxChars", 3000],
-            ["socialV2.wake.batchWindowMs", 12000],
-            ["socialV2.wake.batchWindowPrivateMs", 6000],
-            ["socialV2.wake.batchWindowDirectMs", 3000],
-            ["socialV2.sticker.promptMaxStickers", 4],
-            ["socialV2.proactive.enabled", false],
-            ["socialV2.cost.peakOffload", true],
-          ],
-          "均衡": [
-            ["socialV2.context.rolloverTokens", 80000],
-            ["socialV2.context.wakeMaxChars", 6000],
-            ["socialV2.wake.batchWindowMs", 6000],
-            ["socialV2.wake.batchWindowPrivateMs", 4000],
-            ["socialV2.wake.batchWindowDirectMs", 3000],
-            ["socialV2.sticker.promptMaxStickers", 8],
-            ["socialV2.proactive.enabled", true],
-            ["socialV2.cost.peakOffload", true],
-          ],
-          "活跃": [
-            ["socialV2.context.rolloverTokens", 150000],
-            ["socialV2.context.wakeMaxChars", 8000],
-            ["socialV2.wake.batchWindowMs", 4000],
-            ["socialV2.wake.batchWindowPrivateMs", 3000],
-            ["socialV2.wake.batchWindowDirectMs", 2000],
-            ["socialV2.sticker.promptMaxStickers", 12],
-            ["socialV2.proactive.enabled", true],
-            ["socialV2.cost.peakOffload", false],
-          ],
-        }[name];
-        for (const [path, value] of patches) set(path.split("."), value);
-        setMsg(`✓ 已套用「${name}」预设，记得点底部「保存」生效`);
-      };
-
       return h("div", { className: "qbw-card" },
         h("div", { className: "qbw-row", style: { borderBottom: "none", paddingBottom: 0 } },
           h("div", null,
@@ -3391,9 +3479,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               + (Number(totals.unattributedCost) > 0 ? ` · 另有 ¥${money(totals.unattributedCost)} 无法归到具体会话` : "")
               + (lf?.totals?.blocked ? ` · 本地判断${lf.config?.dryRun ? '（dry-run）' : ''}累计会拦 ${lf.totals.blocked} 条` : "")
               + (Number(data?.totals?.external?.todayCost) > 0 ? ` · 外部渠道 ¥${money(data.totals.external.todayCost)}` : ""))),
-          h("div", { style: { display: "flex", gap: "8px" } },
-            h(Btn, { kind: "qbw-btn2", onClick: () => void load() }, "刷新"),
-            h(Btn, { onClick: () => setTips(true) }, "怎么省 token"))),
+          h(Btn, { kind: "qbw-btn2", onClick: () => void load() }, "刷新")),
         err ? h("div", { className: "qbw-err", style: { marginTop: "8px" } }, err) : null,
         msg ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, msg) : null,
         !list.length && !err ? h("div", { className: "qbw-hint", style: { marginTop: "10px" } },
@@ -3416,21 +3502,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           }))) : null,
         h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
           "「换会话」只是换一段干净的对话上下文（省钱），记忆卡不会丢；旧会话仍然归档在 DSH 里。"),
-        tips ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--dsw-alias-border-l2)" } },
-          h("div", { className: "qbw-kicker" }, "怎么省 token"),
-          h("div", { className: "qbw-hint", style: { margin: "6px 0 8px" } },
-            "下面这些都能直接改；调小/关掉省钱，但会牺牲一点体验。"),
-          h("div", { style: { display: "flex", gap: "8px", marginBottom: "8px", flexWrap: "wrap" } },
-            h(Btn, { kind: "qbw-btn2", onClick: () => applyPreset("省钱") }, "套用「省钱」"),
-            h(Btn, { kind: "qbw-btn2", onClick: () => applyPreset("均衡") }, "套用「均衡」"),
-            h(Btn, { kind: "qbw-btn2", onClick: () => applyPreset("活跃") }, "套用「活跃」"),
-            h("span", { className: "qbw-hint" }, "只改本页表单，点底部「保存」才生效")),
-          h("table", { className: "qbw-table" },
-            h("thead", null, h("tr", null, h("th", null, "设置"), h("th", null, "怎么影响花费"), h("th", null, "在哪"))),
-            h("tbody", null, tipsList.map(([name, why, where]) => h("tr", { key: name },
-              h("td", null, name), h("td", null, why), h("td", null, where))))),
-          h("div", { style: { marginTop: "8px", display: "flex", justifyContent: "flex-end" } },
-            h(Btn, { kind: "qbw-btn2", onClick: () => setTips(false) }, "收起"))) : null);
+      );
     }
 
     function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext, dirty }) {
@@ -3446,6 +3518,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         F("socialV2.sticker.maxListCount", "列表上限", "", "number", { min: 1 }),
         F("socialV2.sticker.includeInPrompt", "注入提示词", "", "switch"),
         F("socialV2.sticker.promptMaxStickers", "提示词最多几张", "", "number", { min: 0 }),
+        F("socialV2.sticker.matchEveryNWakes", "每几次唤醒才带表情推荐", "默认 1=每次都带；调大=隔几次才带一次，省表情匹配与判断的 token（消息本身照常处理）", "number", { min: 1 }),
         F("socialV2.sticker.collect.enabled", "允许收藏表情", "", "switch"),
         F("socialV2.sticker.collect.maxPerMinute", "每分钟最多收藏", "", "number", { min: 0 }),
         F("socialV2.sticker.collect.maxPerHour", "每小时最多收藏", "", "number", { min: 0 }),
@@ -7195,7 +7268,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         extra ? h("div", { className: "qbw-budget-extra" }, extra) : null);
     }
 
-    function TokenTab({ budget, limits, onChange, disabled, alertedToday, onSave, busy, toast }) {
+    function TokenTab({ budget, limits, onChange, disabled, alertedToday, onSave, busy, toast, set }) {
       useStyleOnce();
       if (!budget || !limits) {
         return h("div", { className: "qbw-hint" }, "正在读取额度与今日用量…");
@@ -7212,6 +7285,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const totalRatio = Math.max(ratios.total?.cny ?? 0, ratios.total?.tokens ?? 0);
       const alertedText = alertedToday?.at ? fmtTime(new Date(alertedToday.at).toISOString()) : "";
       return h("div", null,
+        h(SaveTokenEntry, { set, toast }),
+        h(CostCard, { toast, set }),
         h("div", { className: "qbw-budget-summary" },
           h("div", null,
             h("div", { className: "qbw-kicker" }, `今日 · ${budget.day ?? "—"} · 每天 00:00 重置`),
@@ -7752,7 +7827,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
-        if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify });
+        if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });

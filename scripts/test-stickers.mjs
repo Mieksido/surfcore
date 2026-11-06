@@ -174,8 +174,11 @@ console.log('## bridge 路由/函数存在性');
   // 2026-10-24 实测：消息在 qq_wait_for_messages 期间到达时不会重建唤醒提示，
   // 所以 wait / unread 的返回也必须带同一份推荐，否则「表情匹配」只在一半路径上存在。
   ok(bridge.includes('function stickerMatchFor'), 'bridge 有统一的 stickerMatchFor');
-  ok(/const stickerMatch = newMessages\.length \? stickerMatchFor\(newMessages\) : null/.test(bridge), 'wait 返回带 stickerMatch');
-  ok(/const stickerMatch = stickerMatchFor\(messages\);/.test(bridge), 'unread 返回带 stickerMatch');
+  // 2026-11-06：加了「每 N 次唤醒才带推荐」的频率闸门（sticker.matchEveryNWakes），
+  // 语义不变——默认 1 = 每次都带；这里钉住「仍然调用 stickerMatchFor 且经过闸门」。
+  ok(/const stickerMatch = newMessages\.length && stickerMatchDueV2\(key\) \? stickerMatchFor\(newMessages\) : null/.test(bridge), 'wait 返回带 stickerMatch（经频率闸门）');
+  ok(/const stickerMatch = stickerMatchDueV2\(key\) \? stickerMatchFor\(messages\) : null/.test(bridge), 'unread 返回带 stickerMatch（经频率闸门）');
+  ok(bridge.includes('every <= 1) return true'), '频率闸门默认（每 1 次）= 每次都带，行为与旧版一致');
   ok(bridge.includes('...(stickerMatch ? { stickerMatch } : {})'), 'wait/unread 响应序列化 stickerMatch');
   const hint = buildStickerStrategyHint();
   ok(hint.includes('stickerMatch'), '策略提示告知 wait/unread 也会带推荐');

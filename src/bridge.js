@@ -1089,6 +1089,8 @@ function loadConfig() {
         replyCheckFree: true,         // 回复后回访不占每日次数（仍受间隔/限频/花费约束）
         maxOutboundPerTurn: 8,       // 一次醒来最多发 8 条（burst/单发/表情/拍一拍/语音都算）
         maxDailyCostCNY: 8,          // 近 24h 全局花费上限；0 = 不限
+        perGroupEnabled: false,      // 每会话额度（按群/按私聊单独计当日花费）
+        perGroupDailyCostCNY: 0,     // 每会话每日上限；0 = 不限
       },
       wait: {
         mode: 'model',            // model = 模型在回合里等；bridge = 桥接等（模型说完就散）
@@ -1106,6 +1108,7 @@ function loadConfig() {
         maxListCount: 100,         // qq_list_stickers 单次最大返回数
         includeInPrompt: true,     // 是否在 qq_get_prompt / 唤醒提示里附带表情摘要与策略
         promptMaxStickers: 8,      // 提示里最多列出的常用表情数
+        matchEveryNWakes: 1,       // 每几次读取/唤醒才带表情推荐（1=每次；调大省 token）
         collect: {
           enabled: true,           // AI 收藏他人表情总开关
           maxPerMinute: 2,         // 每分钟最多收藏次数
@@ -6591,7 +6594,7 @@ async function main() {
             : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
           const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
           // 翻未读是最常见的新消息入口，同样带上表情推荐
-          const stickerMatch = stickerMatchFor(messages);
+          const stickerMatch = stickerMatchDueV2(key) ? stickerMatchFor(messages) : null;
           sendJson({ ok: true, key, unreadCount: st.unread.length, ...(stickerMatch ? { stickerMatch } : {}), messages, readThroughSeq, ...(unreadNoticeV2(st) || {}) });
           return;
         }
@@ -8536,7 +8539,7 @@ async function main() {
             : replyWait ? [...st.recentMessages].reverse().find((m) => m && !m.isSelf) : null;
           const lastMessageUnfinished = lastNew ? looksLikeUnfinished(String(lastNew.tail || lastNew.plain || lastNew.text || '')) : false;
           // 等待期间到的新消息也带表情推荐（没有唤醒提示可依赖，见 stickerMatchFor 注释）
-          const stickerMatch = newMessages.length ? stickerMatchFor(newMessages) : null;
+          const stickerMatch = newMessages.length && stickerMatchDueV2(key) ? stickerMatchFor(newMessages) : null;
           // 等到消息 → 这是正常工作，不是空转，清零连续等待计数。
           if (arrived) waitStreaks.delete(leaseKey);
           finishWait();
@@ -11777,6 +11780,40 @@ async function main() {
     };
   }
 
+  /**
+   * 表情推荐频率（2026-11-06 用户第 6 条）：`sticker.matchEveryNWakes` > 1 时，
+   * 只在第 N 次读取/唤醒时附带表情匹配。省掉"每回合都做一次表情语义判断"的开销，
+   * 消息本身照常处理（只是这一次不给推荐）。
+   */
+  const stickerMatchTicks = new Map();
+  function stickerMatchDueV2(key) {
+    const every = Math.max(1, Math.round(Number(cfg.socialV2?.sticker?.matchEveryNWakes) || 1));
+    if (every <= 1) return true;
+    const n = (Number(stickerMatchTicks.get(key)) || 0) + 1;
+    stickerMatchTicks.set(key, n);
+    return n % every === 0;
+  }
+
+  /**
+   * 每个会话当日的花费（缓存 60 秒）。
+   * 为什么要缓存：tokenLedger.summary() 要重建索引，逐次唤醒调用太贵；
+   * 而额度判断只需要分钟级精度。
+   */
+  let perGroupCostCache = { at: 0, map: new Map() };
+  function perGroupSpentToday(key, now = Date.now()) {
+    if (now - perGroupCostCache.at > 60_000) {
+      let map = new Map();
+      try {
+        const s2 = tokenLedger.summary({ since: localDayStart() });
+        for (const c of s2.conversations ?? []) map.set(String(c.key), Number(c.todayCost) || 0);
+      } catch {
+        map = perGroupCostCache.map; // 读失败就沿用旧缓存，别把唤醒全卡住
+      }
+      perGroupCostCache = { at: now, map };
+    }
+    return Number(perGroupCostCache.map.get(String(key))) || 0;
+  }
+
   function tokenGuardWakeBlock(key, st, { direct = false, reason = '' } = {}) {
     const g = tokenGuardCfg();
     // 额度是独立的（设置页「Token 额度」），不随「Token 防爆破」总开关一起关掉。
@@ -11791,6 +11828,19 @@ async function main() {
         hits: budget.hits,
         usage,
       };
+    }
+    // 每会话额度（2026-11-06 用户第 6 条）：单群/单私聊当日花费上限。
+    // 默认关闭；开了以后到顶只拦这个会话，别把整个账号停掉。
+    const perGroupLimit = Number(g.perGroupDailyCostCNY) || 0;
+    if (g.perGroupEnabled === true && perGroupLimit > 0) {
+      const spent = perGroupSpentToday(key);
+      if (spent >= perGroupLimit) {
+        return {
+          error: `该会话今天已花 ¥${spent.toFixed(2)}，超过每会话上限 ¥${perGroupLimit.toFixed(2)}`,
+          retryAfterMs: 0,
+          reason: 'per-group-budget',
+        };
+      }
     }
     if (g.enabled === false) return null;
     const r = evaluateWakeBudget({

@@ -298,7 +298,9 @@
       "directBypassDay": true,
       "replyCheckFree": true,
       "maxOutboundPerTurn": 8,
-      "maxDailyCostCNY": 8
+      "maxDailyCostCNY": 8,
+      "perGroupEnabled": false,
+      "perGroupDailyCostCNY": 0
     },
     "wait": {
       "mode": "model",
@@ -314,6 +316,7 @@
       "maxListCount": 100,
       "includeInPrompt": true,
       "promptMaxStickers": 8,
+      "matchEveryNWakes": 1,
       "match": {
         "topK": 2,
         "minScore": 0.34

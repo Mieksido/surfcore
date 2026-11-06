@@ -279,4 +279,53 @@ console.log('\n## 11. 峰时闸门 + 云端 embedding 记账')
   ok(vm.includes('reportDirectCloudUsage('), '插件直连云端的 embedding 用量也会记账')
 }
 
+console.log('## 11. 交付位置：省钱入口必须在 Token 额度页最上方')
+{
+  const ui = read('plugins/surfcore/lib/client.js')
+  const start = ui.indexOf('function TokenTab(')
+  ok(start > 0, '存在 TokenTab')
+  const body = ui.slice(start, start + 2600)
+  const entryAt = body.indexOf('SaveTokenEntry')
+  const summaryAt = body.indexOf('qbw-budget-summary')
+  ok(entryAt > -1, '额度页里有省钱入口')
+  ok(summaryAt > -1 && entryAt < summaryAt, '省钱入口排在预算卡片之前（即页面最上方）')
+  ok(body.includes('CostCard'), '额度页也显示按会话花费（用户第 8 条：额度栏位里也要有）')
+  ok(ui.includes('toast: notify, set: setQqPath'), '额度页拿得到配置写入句柄（预设才能真正落地）')
+  ok(ui.includes('function SaveTokenTipsModal('), '省钱清单是弹窗（用户第 13 条原话）')
+  ok(ui.includes('打开省钱清单'), '入口是一个明确的按钮')
+}
+
+console.log('## 12. 成本标签 / 重启标记 / 每会话额度 / 表情频率 / 搜索框')
+{
+  const ui = read('plugins/surfcore/lib/client.js')
+  const bridge = read('src/bridge.js')
+  const example = JSON.parse(read('config.example.json'))
+
+  ok(ui.includes('const FIELD_META = {'), '设置页有成本标签表')
+  ok(ui.includes('"💰".repeat(meta.cost)'), '标签按档位显示 💰')
+  ok(ui.includes('改完需重启 DSH'), '需要重启的设置项有明确标记')
+  ok(ui.includes('^socialV2\\.tools\\.'), '工具开关自动带"重启"标记（工具表在 DSH 启动时固化）')
+  ok(ui.includes('badge: f.badge'), '字段渲染会把 badge 传下去')
+
+  ok(ui.includes('socialV2.sticker.matchEveryNWakes'), '设置页有表情推荐频率')
+  ok(ui.includes('socialV2.tokenGuard.perGroupEnabled'), '设置页有每会话额度开关')
+  ok(ui.includes('socialV2.tokenGuard.perGroupDailyCostCNY'), '设置页有每会话每日上限')
+
+  ok(bridge.includes('function stickerMatchDueV2('), '桥接有表情推荐频率闸门')
+  ok(bridge.includes('stickerMatchDueV2(key) ? stickerMatchFor(messages)'), 'unread 路径接了频率闸门')
+  ok(bridge.includes('stickerMatchDueV2(key) ? stickerMatchFor(newMessages)'), 'wait 路径接了频率闸门')
+  ok(bridge.includes('function perGroupSpentToday('), '桥接有按会话当日花费查询（带缓存）')
+  ok(bridge.includes('per-group-budget'), '超每会话额度会结构化拒绝唤醒')
+
+  ok(example.socialV2?.sticker?.matchEveryNWakes === 1, '示例配置：表情推荐默认每次都带')
+  ok(example.socialV2?.tokenGuard?.perGroupEnabled === false, '示例配置：每会话额度默认关')
+  ok(example.socialV2?.tokenGuard?.perGroupDailyCostCNY === 0, '示例配置：每会话上限默认 0')
+
+  // 搜索框：QQ 页与全部参数页都要有（用户第 13 条：293 项靠翻找不到）
+  const qqStart = ui.indexOf('function QQTab(')
+  const advStart = ui.indexOf('function AdvancedTab(')
+  ok(qqStart > 0 && ui.slice(qqStart, qqStart + 800).includes('setQuery'), 'QQ 页有搜索框')
+  ok(advStart > 0 && ui.slice(advStart, advStart + 800).includes('setQuery'), '全部参数页有搜索框')
+}
+
 console.log(`\n🚀 会话滚动 + 合并窗口测试通过（${passed} 项）`)
