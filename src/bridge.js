@@ -13158,6 +13158,9 @@ async function main() {
       queued.set(key, items);
       return { ok: true, queued: true };
     }
+    // 所有投递路径（唤醒 / 目的 / 历史 / 分享）统一判断是否该换会话：
+    // 换会话必须在建会话之前，否则这一轮还会落在旧会话上。
+    maybeRollSessionV2(key);
     let sessionId;
     try {
       sessionId = await ensureSession(key);
@@ -13194,6 +13197,19 @@ async function main() {
           promptText += '\n其中 history=true 的是上线补看的历史消息（离线期间发生），只用于补上下文；不要逐条回复旧消息，也不要当成刚刚发生。';
         }
       }
+    }
+    // 正文已经最终成型（wake 分支会重建），此时再贴交接与形态说明才不会被覆盖。
+    {
+      const shapeNotes = [];
+      if (engineMode() === 'machine') {
+        shapeNotes.push('【机器模式】你这一轮的**最后一条文本会被桥接直接发到 QQ**；不要调用任何发送类工具（qq_send_message / qq_send_group_message / qq_reply / qq_send_burst）。需要看更多消息就用快照或读工具，然后直接写你要说的话。');
+      }
+      if (cfg.socialV2?.wait?.mode === 'bridge') {
+        shapeNotes.push('【桥接等待】不要调用 qq_wait_for_messages 等我：说完直接结束回合。有新消息由桥接负责再叫醒你。');
+      }
+      const handoffBlock = consumeHandoffV2(key);
+      if (handoffBlock) promptText = `${handoffBlock}\n\n${promptText}`;
+      if (shapeNotes.length) promptText = `${shapeNotes.join('\n')}\n\n${promptText}`;
     }
     if (opts.wakeReason) {
       telemetryWakeSeq += 1;
@@ -15249,30 +15265,14 @@ async function main() {
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
     saveSocialV2State();
-    // 会话滚动（2026-11-04）：这一枪打出去之前，先看看当前会话是不是已经太长。
-    // 放在这里而不是 turn/end，是因为"发出去之前"才是省钱的唯一时机：
-    // 一旦开始发，这次的全量上下文就已经计费了。退役后下面的 deliverPrompt 会
-    // 自动建一条新会话，交接块贴在唤醒包最前面（只注入一次）。
-    maybeRollSessionV2(key);
-    // 向量记忆召回（dev2 引入）：放在拼提示词之前，作为唤醒包的一部分。
-    // 机器模式刻意跳过：那个模式的目标就是"最省"，一次 embedding 调用 + 一段注入
-    // 换来的只是更丰富的上下文，和"答完就散"的定位相反。
+    // 唤醒正文统一在 deliverPromptNow 里构建（那里才拿得到最终会话与向量召回块）。
+    // 2026-11-06 实测：以前在这里拼好的正文会被 deliverPromptNow 覆盖，
+    // 导致"交接块 / 机器模式说明"被静默丢掉；换会话判断也只在这一条路径上，
+    // 目的机制那类主动回合永远不换会话。两块逻辑已下沉到 deliverPromptNow。
     const vectorBlock = engineMode() === 'machine'
       ? ''
       : await vectorRecallBlockForWake(key).catch(() => '');
-    let promptText = buildWakePromptV2(key, reason, vectorBlock);
-    // 机器模式 / 桥接侧等待：这两条是"回合形态"的覆盖说明，必须压在最前面，
-    // 否则下面那一大段（工具协议、等待规则）会把它们盖过去。
-    const shapeNotes = [];
-    if (engineMode() === 'machine') {
-      shapeNotes.push('【机器模式】你这一轮的**最后一条文本会被桥接直接发到 QQ**；不要调用任何发送类工具（qq_send_message / qq_send_group_message / qq_reply / qq_send_burst）。需要看更多消息就用快照或读工具，然后直接写你要说的话。');
-    }
-    if (cfg.socialV2?.wait?.mode === 'bridge') {
-      shapeNotes.push('【桥接等待】不要调用 qq_wait_for_messages 等我：说完直接结束回合。有新消息由桥接负责再叫醒你。');
-    }
-    if (shapeNotes.length) promptText = `${shapeNotes.join('\n')}\n\n${promptText}`;
-    const handoff = consumeHandoffV2(key);
-    if (handoff) promptText = `${handoff}\n\n${promptText}`;
+    const promptText = '';
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);

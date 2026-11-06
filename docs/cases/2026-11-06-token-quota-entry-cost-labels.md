@@ -11,13 +11,16 @@
   - `SaveTokenEntry` + `SaveTokenTipsModal` 放到 Token 额度页最上方（预算卡片之前）；
   - 额度页加按会话花费表（今日花费 / 换会话）；
   - `FIELD_META` 成本标签表 + `F()` 自动 badge；需要重启的项标「改完需重启 DSH」；
-  - 新增 `sticker.matchEveryNWakes`、`tokenGuard.perGroupEnabled`、`tokenGuard.perGroupDailyCostCNY` 设置项。
+  - 新增 `sticker.matchEveryNWakes`、`tokenGuard.perGroupEnabled`、`tokenGuard.perGroupDailyCostCNY` 设置项；
+  - 三档预设改为「可编辑差异表」：点预设先列出将改的设置、当前值和目标值，可直接改，
+    再点「应用改动」写表单；不再无声改一堆设置；
+  - 预设新增 `persona.mode`：省钱/均衡默认拆分注入，活跃默认整卡注入；省钱清单的参考表也加了人格卡拆分说明。
 - `src/bridge.js`：
   - `stickerMatchDueV2()`：每 N 次读取/唤醒才带表情推荐，默认 1 = 每次都带；
   - `perGroupSpentToday()`（60s 缓存）+ `tokenGuardWakeBlock` 每会话额度判断，默认关；
   - 超限返回 `reason=per-group-budget`，只拦该会话。
 - `config.example.json`：三个新默认值。
-- 测试：`test-session-rollover` 148 项（新增位置/行为断言）；`test-stickers` 更新赋值行断言并钉默认行为。
+- 测试：`test-session-rollover` 150 项（新增位置/行为断言）；`test-stickers` 更新赋值行断言并钉默认行为。
 
 ## 验证
 

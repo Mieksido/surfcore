@@ -3346,6 +3346,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       ["黑话学习", "后台会定期跑模型；关掉或拉长冷却更省", "QQ 页 · 黑话学习"],
       ["B站四类动态 / 定时分享", "每次发布都是一次完整回合", "B站 页"],
       ["表情包注入条数", "每轮都随提示词发一遍", "QQ 页 · 表情包"],
+      ["人格卡拆分注入", "整卡完整但费 token；拆分省 token，但人格可能不完整", "角色页 · 人格注入方式"],
     ];
 
     const SAVE_TOKEN_PRESETS = {
@@ -3358,6 +3359,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         ["socialV2.sticker.promptMaxStickers", 4],
         ["socialV2.proactive.enabled", false],
         ["socialV2.cost.peakOffload", true],
+        ["persona.mode", "split"],
       ],
       均衡: [
         ["socialV2.context.rolloverTokens", 80000],
@@ -3368,6 +3370,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         ["socialV2.sticker.promptMaxStickers", 8],
         ["socialV2.proactive.enabled", true],
         ["socialV2.cost.peakOffload", true],
+        ["persona.mode", "split"],
       ],
       活跃: [
         ["socialV2.context.rolloverTokens", 150000],
@@ -3378,38 +3381,119 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         ["socialV2.sticker.promptMaxStickers", 12],
         ["socialV2.proactive.enabled", true],
         ["socialV2.cost.peakOffload", false],
+        ["persona.mode", "full"],
       ],
     };
 
-    function applySaveTokenPreset(name, set, toast) {
-      const patch = SAVE_TOKEN_PRESETS[name];
-      if (!patch) return;
-      if (!set) { toast?.("✗ 当前页面拿不到配置写入句柄，请手动改设置"); return; }
-      for (const [key, value] of patch) set(key.split("."), value);
-      toast?.(`✓ 已套用「${name}」预设，点底部「保存」生效`);
-    }
+    const SAVE_TOKEN_FIELDS = [
+      { path: "socialV2.context.rolloverTokens", label: "会话滚动阈值", type: "number", min: 20000, max: 300000, step: 10000, unit: "token", hint: "到阈值就换新会话；调小更省，但交接更频繁", where: "QQ 页 · 等待与上下文" },
+      { path: "socialV2.context.wakeMaxChars", label: "唤醒上下文最大字符", type: "number", min: 1000, max: 16000, step: 500, unit: "字", hint: "每次唤醒最多带多少未读", where: "QQ 页 · 等待与上下文" },
+      { path: "socialV2.wake.batchWindowMs", label: "群聊合并窗口", type: "number", min: 1000, max: 30000, step: 1000, unit: "ms", hint: "多条消息合并成一次唤醒", where: "QQ 页 · 唤醒与收尾" },
+      { path: "socialV2.wake.batchWindowPrivateMs", label: "私聊合并窗口", type: "number", min: 1000, max: 30000, step: 1000, unit: "ms", hint: "私聊连续消息合并", where: "QQ 页 · 唤醒与收尾" },
+      { path: "socialV2.wake.batchWindowDirectMs", label: "点名合并窗口", type: "number", min: 1000, max: 30000, step: 1000, unit: "ms", hint: "@/叫名字/拍一拍后等多久", where: "QQ 页 · 唤醒与收尾" },
+      { path: "socialV2.sticker.promptMaxStickers", label: "表情包注入条数", type: "number", min: 0, max: 30, step: 1, unit: "条", hint: "每轮随提示词带几条；0 = 不带", where: "QQ 页 · 表情包" },
+      { path: "socialV2.proactive.enabled", label: "主动搭话", type: "bool", hint: "她主动找话题的次数；关掉最省", where: "目的页" },
+      { path: "socialV2.cost.peakOffload", label: "峰时顺延", type: "bool", hint: "价格 ×2 的时段不跑后台任务", where: "QQ 页 · 回合形态与成本" },
+      { path: "persona.mode", label: "人格注入方式", type: "select", options: [["full", "整卡（完整，费 token）"], ["split", "拆分（省 token，可能不完整）"]], hint: "拆分用核心/语气/场景/日常；整卡用整份人格卡", where: "角色页 · 人格注入方式" },
+    ];
 
-    /** 省钱清单弹窗：额度页和 QQ 页共用。 */
-    function SaveTokenTipsModal({ set, onClose, toast }) {
+    /** 省钱清单弹窗：额度页最上方；三档预设先把目标值填进可编辑表，再统一写入。 */
+    function SaveTokenTipsModal({ set, setUnified, qq, unified, onClose, toast }) {
+      const currentOf = (path) => path.startsWith("persona.")
+        ? getPath(unified, path.split("."))
+        : getPath(qq, path.split("."));
+      const write = (path, value) => {
+        if (path.startsWith("persona.")) setUnified?.(path.split("."), value);
+        else set?.(path.split("."), value);
+      };
+      const [draft, setDraft] = useState(() => Object.fromEntries(SAVE_TOKEN_FIELDS.map((field) => [field.path, currentOf(field.path)])));
+      const [presetName, setPresetName] = useState("");
+      const [applied, setApplied] = useState("");
+      const choosePreset = (name) => {
+        const patch = SAVE_TOKEN_PRESETS[name];
+        if (!patch) return;
+        setDraft((prev) => ({ ...prev, ...Object.fromEntries(patch) }));
+        setPresetName(name);
+        setApplied("");
+      };
+      const changed = SAVE_TOKEN_FIELDS.filter((field) => String(draft[field.path] ?? "") !== String(currentOf(field.path) ?? ""));
+      const format = (field, value) => {
+        if (field.type === "bool") return value === true ? "开" : "关";
+        if (field.type === "select") return (field.options ?? []).find(([id]) => id === value)?.[1] ?? String(value ?? "—");
+        return value == null || value === "" ? "—" : `${value}${field.unit ? ` ${field.unit}` : ""}`;
+      };
+      const editor = (field) => {
+        if (field.type === "bool") {
+          return h("input", {
+            type: "checkbox", className: "qbw-switch",
+            checked: draft[field.path] === true,
+            onChange: (e) => { setDraft((prev) => ({ ...prev, [field.path]: e.target.checked })); setApplied(""); },
+          });
+        }
+        if (field.type === "select") {
+          return h("select", {
+            className: "qbw-input",
+            value: String(draft[field.path] ?? ""),
+            onChange: (e) => { setDraft((prev) => ({ ...prev, [field.path]: e.target.value })); setApplied(""); },
+          }, (field.options ?? []).map(([id, label]) => h("option", { key: id, value: id }, label)));
+        }
+        return h("input", {
+          type: "number", className: "qbw-input", style: { width: "130px" },
+          min: field.min, max: field.max, step: field.step,
+          value: draft[field.path] ?? "",
+          onChange: (e) => { setDraft((prev) => ({ ...prev, [field.path]: Number(e.target.value) })); setApplied(""); },
+        });
+      };
+      const apply = () => {
+        if (!changed.length) { toast?.("没有需要应用的改动"); return; }
+        for (const field of changed) write(field.path, draft[field.path]);
+        setApplied(`已写入 ${changed.length} 项；请点页面底部「保存」生效`);
+        toast?.(`✓ 已写入 ${changed.length} 项，点底部「保存」生效`);
+      };
+      const reset = () => {
+        setDraft(Object.fromEntries(SAVE_TOKEN_FIELDS.map((field) => [field.path, currentOf(field.path)])));
+        setPresetName("");
+        setApplied("");
+      };
       return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
-        h("div", { className: "qbw-modal", style: { maxWidth: "820px", maxHeight: "84vh", overflow: "auto" } },
+        h("div", { className: "qbw-modal", style: { maxWidth: "920px", maxHeight: "88vh", overflow: "auto" } },
           h("h3", null, "怎么省 token"),
           h("p", { className: "qbw-hint" },
-            "下面这些都是能直接改的开关；调小/关掉省钱，但会牺牲一点体验。点「套用」只改表单，记得点底部「保存」。"),
-          h("div", { style: { display: "flex", gap: "8px", margin: "8px 0 10px", flexWrap: "wrap" } },
-            h(Btn, { kind: "qbw-btn2", onClick: () => applySaveTokenPreset("省钱", set, toast) }, "套用「省钱」"),
-            h(Btn, { kind: "qbw-btn2", onClick: () => applySaveTokenPreset("均衡", set, toast) }, "套用「均衡」"),
-            h(Btn, { kind: "qbw-btn2", onClick: () => applySaveTokenPreset("活跃", set, toast) }, "套用「活跃」")),
-          h("table", { className: "qbw-table" },
-            h("thead", null, h("tr", null, h("th", null, "设置"), h("th", null, "怎么影响花费"), h("th", null, "在哪一页"))),
-            h("tbody", null, SAVE_TOKEN_TIPS.map(([name, why, where]) => h("tr", { key: name },
-              h("td", null, name), h("td", null, why), h("td", null, where))))),
+            "点三档预设会把目标值填进下面的表，表里直接改；点「应用改动」只写表单，最后点页面底部「保存」生效。"),
+          h("div", { style: { display: "flex", gap: "8px", margin: "8px 0 10px", flexWrap: "wrap", alignItems: "center" } },
+            h(Btn, { kind: "qbw-btn2", onClick: () => choosePreset("省钱") }, "套用「省钱」"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => choosePreset("均衡") }, "套用「均衡」"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => choosePreset("活跃") }, "套用「活跃」"),
+            h("span", { className: "qbw-hint" }, presetName ? `当前预览：${presetName}` : "先选一个预设，或直接改下面的值")),
+          h("div", { className: "qbw-hint", style: { marginBottom: "6px" } },
+            changed.length ? `将改动 ${changed.length} 项；标了「将改」的行就是会变的设置。` : "没有改动；选预设或改数值后，这里会列出差异。"),
+          changed.length ? h("table", { className: "qbw-table" },
+            h("thead", null, h("tr", null, h("th", null, "设置"), h("th", null, "当前"), h("th", null, "改成"))),
+            h("tbody", null, changed.map((field) => h("tr", { key: field.path, style: { background: "color-mix(in srgb, var(--qbw-warn) 7%, transparent)" } },
+              h("td", null,
+                h("b", null, field.label),
+                h("span", { className: "qbw-chip on", style: { marginLeft: "6px" } }, "将改"),
+                h("div", { className: "qbw-hint" }, field.hint || ""),
+                h("div", { className: "qbw-hint" }, field.where || "")),
+              h("td", null, format(field, currentOf(field.path))),
+              h("td", null,
+                h("div", { className: "qbw-actions", style: { marginTop: 0, paddingTop: 0, borderTop: "none" } }, editor(field)),
+                h("div", { className: "qbw-hint" }, format(field, draft[field.path]))))))) : null,
+          applied ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-ok-text)", marginTop: "8px" } }, applied) : null,
           h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
-            h(Btn, { onClick: () => onClose?.() }, "知道了"))));
+            h(Btn, { kind: "qbw-btn2", onClick: reset }, "恢复当前值"),
+            h(Btn, { onClick: apply, disabled: !changed.length }, "应用改动"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => onClose?.() }, "关闭")),
+          h("div", { style: { marginTop: "12px" } },
+            h("div", { className: "qbw-label" }, "所有影响花费的设置（参考）"),
+            h("table", { className: "qbw-table" },
+              h("thead", null, h("tr", null, h("th", null, "设置"), h("th", null, "怎么影响花费"), h("th", null, "在哪一页"))),
+              h("tbody", null, SAVE_TOKEN_TIPS.map(([name, why, where]) => h("tr", { key: name },
+                h("td", null, name), h("td", null, why), h("td", null, where))))))));
     }
 
     /** 「怎么省 token」入口条：额度页最上方 + QQ 页花费卡片共用。 */
-    function SaveTokenEntry({ set, toast, compact }) {
+    function SaveTokenEntry({ set, setUnified, qq, unified, toast, compact }) {
       const [open, setOpen] = useState(false);
       return h("div", { className: compact ? "" : "qbw-card" },
         h("div", { className: "qbw-row", style: { borderBottom: "none", paddingBottom: 0 } },
@@ -3418,7 +3502,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
               "一次弹窗列全：哪些设置影响花费、在哪改、有三档预设。")),
           h(Btn, { onClick: () => setOpen(true) }, "打开省钱清单")),
-        open ? h(SaveTokenTipsModal, { set, toast, onClose: () => setOpen(false) }) : null);
+        open ? h(SaveTokenTipsModal, { set, setUnified, qq, unified, toast, onClose: () => setOpen(false) }) : null);
     }
 
     function CostCard({ toast, set }) {
@@ -7268,7 +7352,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         extra ? h("div", { className: "qbw-budget-extra" }, extra) : null);
     }
 
-    function TokenTab({ budget, limits, onChange, disabled, alertedToday, onSave, busy, toast, set }) {
+    function TokenTab({ budget, limits, onChange, disabled, alertedToday, onSave, busy, toast, set, setUnified, qq, unified }) {
       useStyleOnce();
       if (!budget || !limits) {
         return h("div", { className: "qbw-hint" }, "正在读取额度与今日用量…");
@@ -7285,7 +7369,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const totalRatio = Math.max(ratios.total?.cny ?? 0, ratios.total?.tokens ?? 0);
       const alertedText = alertedToday?.at ? fmtTime(new Date(alertedToday.at).toISOString()) : "";
       return h("div", null,
-        h(SaveTokenEntry, { set, toast }),
+        h(SaveTokenEntry, { set, setUnified, qq, unified, toast }),
         h(CostCard, { toast, set }),
         h("div", { className: "qbw-budget-summary" },
           h("div", null,
@@ -7827,7 +7911,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
-        if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath });
+        if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath, setUnified: setUnifiedPath, qq: normalizedQq, unified });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });

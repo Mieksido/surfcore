@@ -121,11 +121,18 @@ console.log('## 6. 接线钉子（防"写了模块但没接上"）')
   ok(bridge.includes("from './session-rollover.js'"), 'bridge 引入会话滚动模块')
   ok(bridge.includes("from './wake-batch.js'"), 'bridge 引入合并窗口模块')
   ok(/function maybeRollSessionV2\(key\)/.test(bridge), 'bridge 有 maybeRollSessionV2')
-  // 必须在拼提示词之前判断，否则这一轮的上下文已经花掉了
-  const rollIdx = bridge.indexOf('maybeRollSessionV2(key);')
-  const promptIdx = bridge.indexOf('let promptText = buildWakePromptV2(key, reason, vectorBlock);')
-  ok(rollIdx > 0 && promptIdx > rollIdx, '换会话判断发生在拼唤醒提示词之前')
-  ok(bridge.includes('consumeHandoffV2(key)'), '交接块会被注入一次')
+  // 2026-11-06 实测修正：换会话与会话交接必须放在 deliverPromptNow 里，
+  // 否则「目的机制」这类不走 sendWakePromptV2 的投递路径永远不会换会话，
+  // 而唤醒路径里贴好的交接块又会被 deliverPromptNow 重建正文时覆盖。
+  const deliverIdx = bridge.indexOf('async function deliverPromptNow(')
+  const rollIdx = bridge.indexOf('maybeRollSessionV2(key);', deliverIdx)
+  const ensureIdx = bridge.indexOf('sessionId = await ensureSession(key);', deliverIdx)
+  ok(deliverIdx > 0 && rollIdx > deliverIdx && ensureIdx > rollIdx, '所有投递路径在建会话前判断换会话（唤醒/目的共用）')
+  const rebuildIdx = bridge.indexOf('promptText = buildWakePromptV2(key, opts.wakeReason, vectorBlock);', deliverIdx)
+  const handoffIdx = bridge.indexOf('const handoffBlock = consumeHandoffV2(key);', deliverIdx)
+  ok(rebuildIdx > 0 && handoffIdx > rebuildIdx, '交接块在正文重建之后才贴（不会被覆盖）')
+  ok(!bridge.includes('const handoff = consumeHandoffV2(key);'), '唤醒路径不再重复消费交接（否则会被覆盖/丢）')
+  ok(bridge.includes('await deliverPrompt(key, prompt)'), '目的机制走 deliverPrompt（因此共享换会话与交接）')
   ok(/const batchMs = batchWindowFor\(key, reason/.test(bridge), '合并窗口走分场景函数（不再是写死的 8 秒）')
   ok(!/batchWindowMs\) \|\| 8000/.test(bridge), '旧的写死 8000 已清除')
   ok(bridge.includes('st.sessionBaseTokens = tokenLedger.sessionTotal(sessionId)'), '新建会话会记基线')
@@ -201,6 +208,8 @@ console.log('## 8. 回合形态 / 峰时 / 等待方式（接线 + 默认值）'
   ok(ui.includes('socialV2.cost.peakOffload'), '设置页有峰时顺延开关')
   ok(ui.includes('socialV2.wait.mode'), '设置页有等待方式开关')
   ok(ui.includes('applyPreset(') && ui.includes('套用「省钱」'), '花费页有三档省钱预设')
+  ok(ui.includes('SAVE_TOKEN_FIELDS') && ui.includes('将改') && ui.includes('应用改动'), '预设展开后可看到改动项并直接编辑')
+  ok(ui.includes('persona.mode') && ui.includes('人格卡拆分注入'), '省钱预设包含人格卡拆分，且弹窗有说明')
   ok(/h\(CostCard, \{ toast, set \}\)/.test(ui), '花费页拿得到配置写入句柄（预设才能真正落地）')
 }
 
