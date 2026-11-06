@@ -376,4 +376,18 @@ console.log('## 14. 桥接启动时序：监听前不跑 ACL，等待 30 秒')
   ok(indexSrc.includes("path.join(appDir, 'index.mjs')"), 'SnowLuma 隐藏启动直接起 node index.mjs')
 }
 
+console.log('## 15. 更新 busy 锁：必须说人话并自动复位')
+{
+  const upd = read('plugins/surfcore/lib/updates.js')
+  const ui = read('plugins/surfcore/lib/client.js')
+  ok(upd.includes('applyingSince'), '记录 apply 开始时间（用于卡死自愈）')
+  ok(upd.includes('APPLY_STUCK_MS'), '有卡死判定阈值')
+  ok(upd.includes("code: 'apply.busy'"), '忙时返回结构化 code')
+  ok(upd.includes('results: [busy]'), '忙时 results 不为空（前端只读 results[0]）')
+  ok(upd.includes('reason:') && upd.includes('hint:'), '忙时带人读原因和下一步')
+  ok((ui.match(/const f = failed\[0\] \?\? \{ code: r\.code, reason: r\.reason/g) || []).length >= 2,
+    '两处更新入口都在 results 为空时回落到顶层 error/reason')
+  ok(ui.includes('r.code === "apply.busy"'), '忙锁时保留更新弹窗，方便锁释放后重试')
+}
+
 console.log(`\n🚀 会话滚动 + 合并窗口测试通过（${passed} 项）`)

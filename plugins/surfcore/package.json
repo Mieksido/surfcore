@@ -1,6 +1,6 @@
 {
   "name": "surfcore",
-  "version": "0.8.8-dev.8",
+  "version": "0.8.8-dev.9",
   "private": true,
   "description": "SurfCore —— QQ × B站合体插件：统一设置窗口、双向脱敏记忆、QQ/B站身份对齐、鱼群保护、可扩展的平台接入层（贴吧预留）与插件接口。",
   "type": "module",

@@ -1673,10 +1673,14 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             onStaged?.(staged.length);
           } else if (r.ok) toast(`✓ 已更新 ${r.updated} 个组件${r.restartRequired ? "，请重启对应服务" : ""}`);
           else {
-            const f = failed[0] ?? {};
+            // 2026-11-06：服务端有时只回顶层 error（例如 "正在更新中，请稍候"），
+            // 以前只看 results[0] → 显示"原因不明"。这里把顶层也纳入兜底。
+            const f = failed[0] ?? { code: r.code, reason: r.reason, error: r.error, hint: r.hint };
             toast(`✗ 更新失败${f.code ? `（${f.code}）` : ""}：${f.reason ?? f.error ?? "原因不明"}${f.hint ? `；建议：${f.hint}` : ""}`);
           }
-          onDone?.(r);
+          if (r.code === "apply.busy") {
+            // 忙锁不是失败结束：保留弹窗，让用户能看到原因并在锁释放后重试。
+          } else onDone?.(r);
         } catch (e) { toast(`✗ 更新失败：${e.message}`); }
         finally { clearInterval(poll); setWorking(false); }
       };
@@ -2520,7 +2524,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                       }
                       else if (r.ok) toast(`✓ 已更新 ${r.updated} 个组件${r.restartRequired ? "，请重启对应服务" : ""}`);
                       else {
-                        const f = failed[0] ?? {};
+                        const f = failed[0] ?? { code: r.code, reason: r.reason, error: r.error, hint: r.hint };
                         toast(`✗ 更新失败${f.code ? `（${f.code}）` : ""}：${f.reason ?? f.error ?? "原因不明"}${f.hint ? `；建议：${f.hint}` : ""}`);
                       }
                       await reload();
