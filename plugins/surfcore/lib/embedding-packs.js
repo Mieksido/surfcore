@@ -15,6 +15,7 @@ import { effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, r
 import { activeMemoryPaths } from '../../../src/character-persona.js';
 import { STATE_DIR } from './paths.js';
 import { readUnified, saveUnified } from './store.js';
+import { consoleBase, consoleToken } from './bridge.js';
 
 const ROOT = embeddingPacksRoot(STATE_DIR);
 const QUARANTINE = path.join(STATE_DIR, '_quarantine', 'embedding-packs');
@@ -526,6 +527,14 @@ function runtimeEnv() {
   if (space) env.SURFCORE_EMBED_CLOUD_SPACE = space;
   if (apiKey) env.SURFCORE_EMBED_API_KEY = apiKey;
   if (config.allowRemote === true) env.SURFCORE_EMBED_ALLOW_REMOTE = 'true';
+  // 云端 embedding 用量回传桥接账本；token 只走环境变量，不落日志。
+  try {
+    const token = consoleToken();
+    if (token) {
+      env.SURFCORE_LEDGER_URL = `${consoleBase()}/api/tokens/external`;
+      env.SURFCORE_LEDGER_TOKEN = token;
+    }
+  } catch {}
   return env;
 }
 

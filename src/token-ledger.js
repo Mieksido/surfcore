@@ -118,6 +118,20 @@ export function createTokenLedger({
   const sessionKeys = new Map();
   /** sessionId -> 被淘汰（只剩累计值、无法再拆到某一轮）的采样汇总 */
   const evicted = new Map();
+  /**
+   * 外部渠道用量（2026-11-04）：桌宠、代办、独立脚本这些**不走桥接会话**的花费，
+   * 由调用方自己报进来。不报就没有——它只负责"有地方记、能看见"，
+   * 不假装自己能采集到。
+   */
+  const externals = [];
+  /**
+   * sessionId -> 该会话的采样键集合。
+   *
+   * 为什么需要它：会话滚动（见 session-rollover.js）每回合结束都要问一次
+   * "这条会话已经用了多少 token"。没有索引就只能遍历全部采样（上限 maxLines 条），
+   * 而这种情况发生在每一条 QQ 消息的回合尾部，属于热路径。
+   */
+  const samplesBySession = new Map();
   let evictedDirty = false;
   /** sessionId -> 最近一次活动时间 */
   const sessionSeen = new Map();
@@ -144,6 +158,12 @@ export function createTokenLedger({
   // ── 载入 ────────────────────────────────────────────────────────────────
   function applyRecord(record, { fromDisk }) {
     if (!record || typeof record !== 'object') return false;
+    // 外部渠道上报：不是会话，没有 sid，必须放在 sid 校验**之前**处理。
+    if (record.k === 'ext') {
+      if (!Number(record.tokens) && !Number(record.cost)) return false;
+      renderExternal(record);
+      return true;
+    }
     const sid = record.sid;
     if (typeof sid !== 'string' || !sid) return false;
     if (record.key) sessionKeys.set(sid, record.key);
@@ -211,6 +231,13 @@ export function createTokenLedger({
         provider: record.provider,
         buckets
       });
+      // 会话 → 采样键索引：让 sessionTotal() 只看这条会话自己的采样。
+      let own = samplesBySession.get(sid);
+      if (!own) {
+        own = new Set();
+        samplesBySession.set(sid, own);
+      }
+      own.add(sk);
       const axis = retryAxis.get(sid);
       if (!axis || axis.seq <= seq) retryAxis.set(sid, { turn, step, retry, seq });
       if (t > (sessionSeen.get(sid) ?? 0)) sessionSeen.set(sid, t);
@@ -222,6 +249,8 @@ export function createTokenLedger({
   function load() {
     baselines.clear();
     samples.clear();
+    samplesBySession.clear();
+    externals.length = 0;
     retryAxis.clear();
     sessionKeys.clear();
     sessionSeen.clear();
@@ -324,6 +353,11 @@ export function createTokenLedger({
     for (let i = 0; i < overflow; i += 1) {
       const [sampleId, sample] = ordered[i];
       samples.delete(sampleId);
+      const own = samplesBySession.get(sample.sessionId);
+      if (own) {
+        own.delete(sampleId);
+        if (own.size === 0) samplesBySession.delete(sample.sessionId);
+      }
       const acc = evicted.get(sample.sessionId) ?? {
         sessionId: sample.sessionId,
         key: sample.key,
@@ -437,6 +471,14 @@ export function createTokenLedger({
       sessionId, key, seq, t, turn, step, retry,
       model: record.model, provider: record.provider, buckets
     });
+    // 实时摄入也要进「会话 → 采样键」索引：sessionTotal() 靠它按会话求和，
+    // 只在 applyRecord 里维护的话，live 采样的会话会一直读到 0（会话滚动就永远不触发）。
+    let ownSamples = samplesBySession.get(sessionId);
+    if (!ownSamples) {
+      ownSamples = new Set();
+      samplesBySession.set(sessionId, ownSamples);
+    }
+    ownSamples.add(sk);
     if (t > (sessionSeen.get(sessionId) ?? 0)) sessionSeen.set(sessionId, t);
     lastIngestAt = now();
     appendLine(record);
@@ -565,14 +607,31 @@ export function createTokenLedger({
     return index;
   }
 
+  /**
+   * 会话 key → 渠道。给"按渠道统计"和 UI 分组用；`qzone` 现在还没有写入方，
+   * 但先把口径定下来（以后接了 QQ 空间说说，账本不用再改结构）。
+   */
+  function channelOfKey(key) {
+    const k = String(key ?? '');
+    if (k.startsWith('group:')) return 'qq-group';
+    if (k.startsWith('private:')) return 'qq-private';
+    if (k.startsWith('qzone:') || k === 'qzone') return 'qzone';
+    if (k.startsWith('bili')) return 'bili';
+    return 'other';
+  }
+
   /** 把一个会话的索引项 + 投影基线合成「会话视图」。 */
-  function sessionView(key, sessionIds, index) {
+  function sessionView(key, sessionIds, index, since = 0) {
     const view = {
       key,
+      channel: channelOfKey(key),
       sessionIds,
       sessions: sessionIds.length,
       buckets: { ...ZERO_BUCKETS },
       cost: 0,
+      // 今日（或 since 之后）的用量：会话列表要按"今天这个群烧了多少"排序。
+      todayBuckets: { ...ZERO_BUCKETS },
+      todayCost: 0,
       unattributedCost: 0,
       attributedCost: 0,
       byTier: { peak: 0, off: 0 },
@@ -611,6 +670,12 @@ export function createTokenLedger({
           view.steps += row.steps;
           if (!view.firstAt || row.startedAt < view.firstAt) view.firstAt = row.startedAt;
           if (row.endedAt > view.lastAt) view.lastAt = row.endedAt;
+          // 「今天这个群烧了多少」：逐轮明细里有结束时间，超过 since 的才计入。
+          // 只有累计基线、没有逐轮的历史（老会话）不计入今日——它本来就不是今天的量。
+          if (since > 0 && row.endedAt >= since) {
+            view.todayBuckets = addBuckets(view.todayBuckets, row.buckets);
+            view.todayCost += row.cost;
+          }
         }
         view.turns += entry.turns.size;
       }
@@ -620,6 +685,7 @@ export function createTokenLedger({
       view.unattributedCost += Math.max(0, cost - attributed);
     }
     view.models = [...models];
+    view.todayTokens = totalTokensOf(view.todayBuckets);
     for (const sid of sessionIds) {
       const t = sessionSeen.get(sid);
       if (t && t > view.lastAt) view.lastAt = t;
@@ -685,7 +751,7 @@ export function createTokenLedger({
   }
 
   /** 汇总：全局 + 每个会话。 */
-  function summary({ limit = 200 } = {}) {
+  function summary({ limit = 200, since = 0 } = {}) {
     const index = buildIndex();
     const byKey = new Map();
     for (const sid of allSessionIds()) {
@@ -695,12 +761,17 @@ export function createTokenLedger({
       byKey.get(bucketKey).push(sid);
     }
     const conversations = [];
-    for (const [key, sids] of byKey) conversations.push(sessionView(key, sids, index));
-    conversations.sort((a, b) => b.cost - a.cost || totalTokensOf(b.buckets) - totalTokensOf(a.buckets));
+    for (const [key, sids] of byKey) conversations.push(sessionView(key, sids, index, since));
+    // 有今日数据时按今日花费排（会话页要回答"今天谁在烧钱"），否则退回累计。
+    if (since > 0) conversations.sort((a, b) => b.todayCost - a.todayCost || b.todayTokens - a.todayTokens);
+    else conversations.sort((a, b) => b.cost - a.cost || totalTokensOf(b.buckets) - totalTokensOf(a.buckets));
 
     const totals = {
       buckets: { ...ZERO_BUCKETS },
       cost: 0,
+      todayTokens: 0,
+      todayCost: 0,
+      byChannel: {},
       attributedCost: 0,
       unattributedCost: 0,
       byTier: { peak: 0, off: 0 },
@@ -712,6 +783,14 @@ export function createTokenLedger({
     for (const c of conversations) {
       totals.buckets = addBuckets(totals.buckets, c.buckets);
       totals.cost += c.cost;
+      totals.todayTokens += c.todayTokens ?? 0;
+      totals.todayCost += c.todayCost ?? 0;
+      const ch = c.channel ?? 'other';
+      const row = totals.byChannel[ch] ?? { tokens: 0, cost: 0, conversations: 0 };
+      row.tokens += c.todayTokens ?? 0;
+      row.cost += c.todayCost ?? 0;
+      row.conversations += 1;
+      totals.byChannel[ch] = row;
       totals.attributedCost += c.attributedCost;
       totals.unattributedCost += c.unattributedCost;
       totals.byTier.peak += c.byTier.peak;
@@ -720,6 +799,22 @@ export function createTokenLedger({
       totals.steps += c.steps;
       totals.estimated ||= c.estimated;
     }
+    // 外部渠道（桌宠/代办/独立脚本）单独一栏：它们没有会话，不能硬塞进 conversations。
+    const external = { tokens: 0, cost: 0, todayTokens: 0, todayCost: 0, byChannel: {}, records: externals.length };
+    for (const e of externals) {
+      external.tokens += e.tokens;
+      external.cost += e.cost;
+      if (since > 0 && e.t >= since) {
+        external.todayTokens += e.tokens;
+        external.todayCost += e.cost;
+      }
+      const row = external.byChannel[e.channel] ?? { tokens: 0, cost: 0 };
+      row.tokens += e.tokens;
+      row.cost += e.cost;
+      external.byChannel[e.channel] = row;
+    }
+    totals.external = external;
+
     const totalTok = totalTokensOf(totals.buckets);
     const inputTok = totals.buckets.cacheMiss + totals.buckets.cacheHit + totals.buckets.cacheWrite;
     return {
@@ -753,6 +848,60 @@ export function createTokenLedger({
   }
 
   /** 单会话明细：汇总 + 逐轮（新的在前）。 */
+  /**
+   * 某条会话自己的累计 token（基线 + 基线之后的采样）。
+   *
+   * 会话滚动用它判断"这条是不是该换了"：换会话的唯一意义是别再重发历史，
+   * 所以依据必须是**这条会话从建立起花掉的全部 token**，而不是今天所有会话的总量。
+   *
+   * 口径与 sessionView 一致：投影基线本身是权威累计（含桥接启动前的历史），
+   * `seq <= 基线 seq` 的采样已经包含在基线里，再相加就是重复计费。
+   */
+  function sessionTotal(sessionId) {
+    const sid = String(sessionId ?? '');
+    if (!sid) return 0;
+    const base = baselines.get(sid);
+    let total = base ? totalTokensOf(base.buckets) : 0;
+    const own = samplesBySession.get(sid);
+    if (own) {
+      for (const sk of own) {
+        const sample = samples.get(sk);
+        if (!sample) continue;
+        if (base && Number(sample.seq) >= 0 && Number(sample.seq) <= Number(base.seq)) continue;
+        total += totalTokensOf(sample.buckets);
+      }
+    }
+    return total;
+  }
+
+  /**
+   * 外部渠道上报一条用量（桌宠/代办/独立脚本）。
+   * 幂等性由调用方负责（这里只追加，不做去重键）。
+   */
+  function ingestExternal({ channel = 'other', tokens = 0, cost = 0, note = '', at = now() } = {}) {
+    const ch = String(channel || 'other').slice(0, 24);
+    const tk = Math.max(0, Math.round(Number(tokens) || 0));
+    const c = Math.max(0, Number(cost) || 0);
+    if (!tk && !c) return false;
+    const t = Number.isFinite(Number(at)) ? Number(at) : now();
+    const record = { k: 'ext', t, channel: ch, tokens: tk, cost: c, note: String(note ?? '').slice(0, 80) };
+    renderExternal(record);
+    appendLine(record);
+    return true;
+  }
+
+  /** 把一条外部记录并进内存（load 与 ingest 共用）。 */
+  function renderExternal(record) {
+    externals.push({
+      t: Number(record.t) || 0,
+      channel: String(record.channel ?? 'other'),
+      tokens: Math.max(0, Math.round(Number(record.tokens) || 0)),
+      cost: Math.max(0, Number(record.cost) || 0),
+      note: String(record.note ?? '').slice(0, 80)
+    });
+    if (externals.length > 2000) externals.splice(0, externals.length - 2000);
+  }
+
   function conversation(key, { turnLimit = 200 } = {}) {
     if (typeof key !== 'string' || !key) return null;
     const sids = [];
@@ -956,6 +1105,8 @@ export function createTokenLedger({
   function reset() {
     baselines.clear();
     samples.clear();
+    samplesBySession.clear();
+    externals.length = 0;
     retryAxis.clear();
     sessionKeys.clear();
     sessionSeen.clear();
@@ -983,9 +1134,11 @@ export function createTokenLedger({
     ingestEvent,
     ingestBaseline,
     ingestSnapshotRecords,
+    ingestExternal,
     summary,
     dailyUsage,
     conversation,
+    sessionTotal,
     series,
     recent,
     stats,

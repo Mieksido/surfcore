@@ -49,7 +49,7 @@ import {
   markPurposeDelivered, markPurposeSkip, minePurposeSeeds, normalizePurposeConfig,
   normalizePurposeState, parsePurposeMemo, planNextFire, selectPurpose, summarizePurposeState,
 } from './purpose-engine.js';
-import { resolvePriceTable } from './model-prices.js';
+import { resolvePriceTable, isPeakAt } from './model-prices.js';
 import { catalogChoices, findCatalogModel, pickCatalogFallback } from './model-options.js';
 import { createOutbox } from './outbox.js';
 import {
@@ -67,6 +67,11 @@ import {
 import { isOwnerOnlyFrame, canConsumePending, buildQuestionAnswers } from './question-answers.js';
 import { createOwnerAudit } from './owner-audit.js';
 import { createTokenLedger } from './token-ledger.js';
+import {
+  buildHandoffBlock, handoffIsUseful, normalizeRolloverConfig, shouldRollSession,
+} from './session-rollover.js';
+import { batchWindowFor, normalizeBatchWindows } from './wake-batch.js';
+import { evaluateLocalFilter, normalizeLocalFilter, FILTER_LABELS } from './wake-filter.js';
 import { createTurnGuard } from './turn-guard.js';
 import { createGateEventStore } from './gate-events.js';
 import { normalizeAllowlist, pickBacklogSessions } from './allowlist.js';
@@ -1030,7 +1035,17 @@ function loadConfig() {
         recommendedQuestion: true,
         recommendedPoke: true,
         recommendedHint: '如果你要潜水，推荐先调用 qq_wait_for_messages(timeoutMs=300000) 完成一次沉睡前观察：5 分钟内没人说话就可以设置下一次唤醒并沉睡；若期间有人发新消息，先查看 newMessages，判断不需要你参与可直接沉睡，若参与了则下次想睡需再等观察窗口。潜水时长推荐 5~120 分钟，普通消息概率 0.05；@/名字/关键词/提问唤醒建议保持开启。需要等特定某人/某几人时，可额外设置 triggers.speakerIds。',
-        batchWindowMs: 8000,
+        batchWindowMs: 6000,             // 群聊合并窗口（2026-11-04 用户定 6 秒；原 8 秒）
+        batchWindowPrivateMs: 4000,      // 私聊合并窗口（私聊节奏快，8 秒太慢）
+        batchWindowDirectMs: 3000,       // @/叫名字/拍一拍：被点名就立刻应
+        // ── 本地判断（免费漏斗，2026-11-04）────────────────────────────────
+        // 默认关闭；打开后先 dry-run 统计，看见效果再切真拦。硬触发（@/名字/拍一拍/私聊）永不拦。
+        localFilterEnabled: false,
+        localFilterDryRun: true,
+        localFilterJunk: true,
+        localFilterRecentReplyMs: 0,     // 0 = 不看"刚刚才回过"
+        localFilterRateWindowMs: 0,      // 0 = 不看"这个群醒太勤"
+        localFilterRateMax: 0,
         maxWakePerMinute: 1,
         maxWakePerHour: 12,
         noActionLimit: 3,
@@ -1056,6 +1071,14 @@ function loadConfig() {
         recommendedHint: '普通闲聊建议一次 1~3 条，条间 1~3 秒；讲故事/回忆可以 5~10 秒间隔；不要连续刷屏。'
       },
       // 2026-10-23 用户定：Token 防爆破。鱼群守则管“鱼多不多”，这里管“这次醒来的开销”。
+      // 回合形态与成本策略（2026-11-04）
+      engine: {
+        mode: 'human',            // human = 常驻 agent；machine = 一次唤醒一次请求（AstrBot 式）
+        machinePreset: 'qq-chat'  // 机器模式用的预设：文本自动转发、禁止调用发送工具
+      },
+      cost: {
+        peakOffload: true         // 峰时（价格 ×2）把后台任务顺延到谷时
+      },
       tokenGuard: {
         enabled: true,
         maxWakesPerDay: 20,          // 单会话每天最多真实唤醒次数（群）
@@ -1068,6 +1091,7 @@ function loadConfig() {
         maxDailyCostCNY: 8,          // 近 24h 全局花费上限；0 = 不限
       },
       wait: {
+        mode: 'model',            // model = 模型在回合里等；bridge = 桥接等（模型说完就散）
         defaultMs: 30000,
         minMs: 5000,
         maxMs: 600000,
@@ -1114,6 +1138,16 @@ function loadConfig() {
         // 唤醒快照从"最近"往回取：更早的未读折叠成一条计数（PITFALLS #76）。
         // false = 恢复旧行为（从最早未读开始塞，积压时会先回老消息）。
         wakeFoldOld: true,
+        // ── 会话滚动（2026-11-04）────────────────────────────────────────────
+        // 一条 DSH 会话聊太久，每一步都要把整段历史重发一遍：实测 19.5 小时能到 43.5 万
+        // token/步。到阈值就退役会话 + 留一段交接，下一段从这里接着聊。
+        rolloverEnabled: true,
+        rolloverTokens: 80000,           // 这条会话累计用掉多少 token 就换（0 = 不按 token）
+        rolloverTurns: 0,                // 或聊够多少轮就换（0 = 不按轮数）
+        rolloverSummary: true,           // 换会话时给下一段留交接块
+        rolloverKeepRecent: 24,          // 交接块里带最近几句
+        rolloverSummaryMaxChars: 700,    // 交接块字数上限
+        rolloverMinTurns: 2,             // 刚建的会话不滚（避免和空气交接）
       },
       // 上线补历史消息（2026-10-24 用户要求：默认勾选打开）：
       // 桥接启动 / QQ 账号重新上线时，用 OneBot 历史接口补看掉线期间错过的白名单会话。
@@ -3634,11 +3668,53 @@ async function main() {
   }
 
   /** 当前模式下的会话预设；返回 undefined 表示「该模式下没有可安全使用的 preset」 */
+  /**
+   * 回合形态（2026-11-04）：
+   *   human   = 现在这样：常驻 agent、有工具、有主动性（默认）
+   *   machine = AstrBot 那套：一次唤醒一次请求，文本由桥接自动转发，不做工具循环
+   *
+   * 机器模式不是"另一套代码"，而是三个开关同时拨过去：
+   *   · preset 换成自动转发的 `qq-chat`（那个 preset 里模型被禁止调用发送工具）；
+   *   · 会话寿命 = 1 轮（用完就换，绝不累积历史）；
+   *   · 后台自动任务全停（目的/B站 tick/主动检查/黑话）。
+   */
+  function engineMode() {
+    return cfg.socialV2?.engine?.mode === 'machine' ? 'machine' : 'human';
+  }
+
+  /**
+   * 峰时顺延闸门（2026-11-04）：峰时（价格 ×2 的时段）把后台任务推到谷时，
+   * 群聊只保留硬触发。`socialV2.cost.peakOffload` 默认开，可关。
+   */
+  function peakOffloadActive(at = Date.now()) {
+    if (cfg.socialV2?.cost?.peakOffload === false) return false;
+    try {
+      return isPeakAt(Number(at), priceTable);
+    } catch {
+      return false;
+    }
+  }
+
+  /** 后台自动任务能不能跑：机器模式全停；峰时默认顺延。 */
+  function backgroundTasksAllowed(at = Date.now()) {
+    if (engineMode() === 'machine') return false;
+    if (peakOffloadActive(at)) return false;
+    return true;
+  }
+
   function modePreset(key, mode, cfg) {
     if (mode === 'closed-agent') {
       const chosen = resolvePresetName(closedAgentPreset);
       if (!chosen) log('⚠️ 无法确定 closed-agent 的 preset（DSH preset 清单未知），将按 DSH 默认 preset 建会话');
       return chosen || undefined;
+    }
+    // 机器模式：换成"文本自动转发"的预设，模型不再持有发送工具。
+    if (mode === 'reserved2' && engineMode() === 'machine') {
+      const lite = resolvePresetName(cfg.socialV2?.engine?.machinePreset || 'qq-chat', { strict: true });
+      if (!lite) {
+        throw new Error(`机器模式需要 preset "qq-chat"，但它不在 DSH 可用清单中（${dshPresetIds.join(', ') || '未知'}）：请先运行 node scripts/setup-dsh.mjs 并重启 DSH`);
+      }
+      return lite;
     }
     // 二代仿真模式优先使用 socialV2.agentPreset；未配置时回退到默认聊天预设。
     // 非 closed-agent 一律 strict：宁可建不出会话，也不给群聊套上带本地工具的默认 preset。
@@ -4633,7 +4709,9 @@ async function main() {
         // 管理端专用 v2 接口：带 agent token 的请求一律拒绝，防止 MCP 工具越权访问控制台功能
         // /api/socialV2/initial-prompt 也在这里：它是操作者写给 AI 的"环境背景"，
         // 让 AI 自己读/改等于把控制台的管理输入（以及未来可能写入的其它群信息）交给会话主体。
-        const adminOnlyV2Paths = ['/api/socialV2/config', '/api/socialV2/activity', '/api/socialV2/reset', '/api/socialV2/states', '/api/socialV2/wake', '/api/socialV2/initial-prompt', '/api/socialV2/history-catchup'];
+        // 本地判断统计：跨会话汇总（哪个群被拦了多少），属于管理信息，agent token 一律拒绝。
+        // 不加这条的话它落在 /api/socialV2/ 前缀里，QQ 侧的模型能读到别的群的拦截统计。
+        const adminOnlyV2Paths = ['/api/socialV2/config', '/api/socialV2/activity', '/api/socialV2/reset', '/api/socialV2/states', '/api/socialV2/wake', '/api/socialV2/initial-prompt', '/api/socialV2/history-catchup', '/api/socialV2/local-filter'];
         if (req.headers['x-agent-token'] && (adminOnlyV2Paths.includes(url.pathname) || (url.pathname === '/api/socialV2/feedback' && req.method === 'GET') || (url.pathname === '/api/socialV2/tool-log' && req.method === 'GET'))) {
           sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
           return;
@@ -6060,7 +6138,7 @@ async function main() {
           // wake：数值与字符串数组归一化
           if (body.wake && typeof body.wake === 'object') {
             merged.wake = { ...(current.wake ?? {}), ...body.wake };
-            for (const k of ['sleepMinMs', 'sleepMaxMs', 'recommendedSleepMinMs', 'recommendedSleepMaxMs', 'recommendedProbability', 'batchWindowMs', 'maxWakePerMinute', 'maxWakePerHour', 'noActionLimit', 'backlogMaxSessions', 'maxWakeConfigReminders', 'preSleepWaitMs']) {
+            for (const k of ['sleepMinMs', 'sleepMaxMs', 'recommendedSleepMinMs', 'recommendedSleepMaxMs', 'recommendedProbability', 'batchWindowMs', 'batchWindowPrivateMs', 'batchWindowDirectMs', 'maxWakePerMinute', 'maxWakePerHour', 'noActionLimit', 'backlogMaxSessions', 'maxWakeConfigReminders', 'preSleepWaitMs']) {
               if (merged.wake[k] !== undefined) {
                 const n = Number(merged.wake[k]);
                 merged.wake[k] = Number.isFinite(n) ? n : current.wake?.[k] ?? 0;
@@ -6182,6 +6260,20 @@ async function main() {
               const n = Number(merged.context[name] ?? fallback);
               merged.context[name] = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
             }
+            // 会话滚动（2026-11-04）：阈值必须收敛到安全区间——0 = 该维度不启用，
+            // 但 0 也是"每次都换"的危险值，所以 token/轮数阈值允许 0，其余有下限。
+            for (const [name, fallback, min, max] of [
+              ['rolloverTokens', 80000, 0, 2_000_000],
+              ['rolloverTurns', 0, 0, 100_000],
+              ['rolloverKeepRecent', 24, 4, 200],
+              ['rolloverSummaryMaxChars', 700, 120, 4000],
+              ['rolloverMinTurns', 2, 0, 1000]
+            ]) {
+              const n = Number(merged.context[name] ?? fallback);
+              merged.context[name] = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+            }
+            if (merged.context.rolloverEnabled !== undefined) merged.context.rolloverEnabled = merged.context.rolloverEnabled !== false;
+            if (merged.context.rolloverSummary !== undefined) merged.context.rolloverSummary = merged.context.rolloverSummary !== false;
             if (merged.context.inlineWakeMessages !== undefined) merged.context.inlineWakeMessages = merged.context.inlineWakeMessages === true;
             // 2026-10-26：唤醒快照默认"从最近往回看"（更早的未读折叠）；显式 false 可恢复旧行为。
             if (merged.context.wakeFoldOld !== undefined) merged.context.wakeFoldOld = merged.context.wakeFoldOld !== false;
@@ -6203,17 +6295,44 @@ async function main() {
             'recommendedSleepMinMs', 'recommendedSleepMaxMs',
             'recommendedProbability', 'recommendedKeywords',
             'recommendedAtMention', 'recommendedNameMention', 'recommendedQuestion', 'recommendedPoke',
-            'sleepMinMs', 'sleepMaxMs', 'batchWindowMs'
+            'sleepMinMs', 'sleepMaxMs', 'batchWindowMs',
+            'batchWindowPrivateMs', 'batchWindowDirectMs'
           ];
           const wakeDefaultChanged = body.wake && typeof body.wake === 'object' &&
             WAKE_DEFAULT_KEYS.some((k) => Object.prototype.hasOwnProperty.call(body.wake, k));
           if (wakeDefaultChanged) refreshAllDefaultWakeConfigsV2();
+          // 工具面变了必须换会话（2026-11-04）：工具定义是缓存前缀的一部分，
+          // 中途增删会让整段前缀失效；而 MCP 工具表在 DSH 启动时就已固化，
+          // 只有新建出来的会话才会拿到新工具面。
+          if (body.tools && typeof body.tools === 'object') {
+            const keys = Object.keys(state.sessions);
+            for (const k of keys) retireSession(k);
+            if (keys.length) log(`控制台：工具开关变化，已退役 ${keys.length} 个会话（下次唤醒按新工具面新建）`);
+          }
           log('控制台：二代仿真配置已更新');
           sendJson({ ok: true, config: cfg.socialV2 });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/activity') {
           sendJson({ ok: true, paused: socialV2.paused });
+          return;
+        }
+        // 本地判断（免费漏斗）统计：设置页要在开真拦之前先看"会拦掉多少"。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/local-filter') {
+          const config = normalizeLocalFilter(cfg.socialV2?.wake ?? {});
+          const totals = { blocked: 0, byReason: {} };
+          const conversations = [];
+          for (const [key, st] of socialV2.conversations.entries()) {
+            const s = st?.localFilterStats;
+            if (!s || !Number(s.blocked)) continue;
+            totals.blocked += Number(s.blocked) || 0;
+            for (const [r, n] of Object.entries(s.byReason ?? {})) {
+              totals.byReason[r] = (Number(totals.byReason[r]) || 0) + (Number(n) || 0);
+            }
+            conversations.push({ key, blocked: Number(s.blocked) || 0, byReason: s.byReason ?? {}, lastAt: s.lastAt ?? 0, lastLabel: s.lastLabel ?? '' });
+          }
+          conversations.sort((a, b) => b.blocked - a.blocked);
+          sendJson({ ok: true, config, totals, conversations: conversations.slice(0, 50) });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/activity') {
@@ -8490,7 +8609,10 @@ async function main() {
           if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return; }
           if (req.method === 'GET' && url.pathname === '/api/tokens/summary') {
             const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
-            sendJson({ ...tokenLedger.summary({ limit }), ledger: tokenLedger.stats() });
+            // since：会话页要"今天谁在烧钱"，所以默认按本地零点；显式传 0 = 看累计。
+            const sinceParam = url.searchParams.get('since');
+            const since = sinceParam === null ? localDayStart() : Math.max(0, Number(sinceParam) || 0);
+            sendJson({ ...tokenLedger.summary({ limit, since }), since, ledger: tokenLedger.stats() });
             return;
           }
           if (req.method === 'GET' && url.pathname === '/api/tokens/daily') {
@@ -8517,6 +8639,19 @@ async function main() {
           if (req.method === 'GET' && url.pathname === '/api/tokens/recent') {
             const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 50));
             sendJson({ ok: true, symbol: priceTable.symbol, entries: tokenLedger.recent(limit) });
+            return;
+          }
+          if (req.method === 'POST' && url.pathname === '/api/tokens/external') {
+            // 外部渠道上报（桌宠/代办/独立脚本）：它们不走桥接会话，只能自己报用量。
+            const body = await readBody();
+            const ok = tokenLedger.ingestExternal({
+              channel: body.channel ?? 'other',
+              tokens: body.tokens,
+              cost: body.cost,
+              note: body.note,
+            });
+            if (!ok) { sendJson({ ok: false, code: 'external.empty', error: 'tokens 与 cost 不能同时为 0', hint: '至少报一个非零值' }, 400); return; }
+            sendJson({ ok: true });
             return;
           }
           if (req.method === 'POST' && url.pathname === '/api/tokens/reset') {
@@ -10718,6 +10853,14 @@ async function main() {
       state.sessionPolicies[key] = policy;
       reverse.set(sessionId, key);
       saveState();
+      // 会话滚动的起点（2026-11-04）：新会话从 0 开始计数，基线取它此刻的累计用量。
+      // DSH 侧新会话理论上是 0，但重建（DSH 重启后找回同一条）时可能带历史，所以取实测值。
+      {
+        const st = getSocialV2State(key);
+        st.sessionStartedAt = Date.now();
+        st.sessionTurns = 0;
+        st.sessionBaseTokens = tokenLedger.sessionTotal(sessionId);
+      }
       await ensureChatModel(sessionId);
       if (epoch !== sessionEpoch || !isCurrentSession(key, sessionId)) {
         if (state.sessions[key] === sessionId) retireSession(key);
@@ -10831,7 +10974,15 @@ async function main() {
         anyMessage: defaultMode === 'active',
         probability: Math.min(1, Math.max(0, Number(w.recommendedProbability) || 0))
       },
-      batchWindowMs: Math.max(1000, Number(w.batchWindowMs) || 8000),
+      // 合并窗口三个值都写进会话配置：set_wake_config 改了哪个都只影响这个会话。
+      ...(() => {
+        const windows = normalizeBatchWindows(w);
+        return {
+          batchWindowMs: windows.groupMs,
+          batchWindowPrivateMs: windows.privateMs,
+          batchWindowDirectMs: windows.directMs
+        };
+      })(),
       lastWakeAt: 0,
       wakeCount: 0,
       noActionCount: 0,
@@ -12650,6 +12801,8 @@ async function main() {
 
   async function purposeTick() {
     if (purposeEvaluating || purposeRun || purposeWarming) return;
+    // 机器模式没有主动性；峰时把主动搭话顺延到谷时（用户可关）。
+    if (!backgroundTasksAllowed()) return;
     // 载体切到桌宠后，桥接不再自动出发（手动「立即试一次」/ 桌宠离线回落仍可走 runPurpose）。
     if (purposeCarrierNow() === 'pet') return;
     // 桌宠专注模式：连 QQ 载体的自动主动搭话也一起停，避免用户开着专注还被私聊。
@@ -13118,6 +13271,7 @@ async function main() {
   // 全局扫描：驱动观望期主动开话题、活跃期检测、冷场处理、试探回退
   function socialLoopTick() {
     if (!isSocialEnabled()) return;
+    if (!backgroundTasksAllowed()) return;
     const now = Date.now();
     // 所有"发过消息或已有状态"的群都参与状态机（观望中的群也做主动判定）
     const keys = new Set([...social.states.keys(), ...social.recentMessages.keys()]);
@@ -13687,6 +13841,7 @@ async function main() {
   async function checkProactiveAt() {
     const conf = cfg.chat?.proactive;
     if (!conf || conf.enabled === false || !dshReady) return;
+    if (!backgroundTasksAllowed()) return;
     if (currentMode !== 'chat') return;
     for (const key of [...presence.keys()]) {
       if (!key.startsWith('group:')) continue;
@@ -14389,6 +14544,44 @@ async function main() {
     return null;
   }
 
+  /**
+   * 本地判断（免费漏斗，2026-11-04）：在 scheduleWakeV2 之前再筛一遍，
+   * 被拦下的消息留在未读里，不花一分钱。
+   *
+   * 两条纪律：
+   *   · dryRun 时**只统计不拦** —— 用户能先看到"如果开了会拦掉多少"，再决定要不要真开；
+   *   · 统计落进 `st.localFilterStats`，设置页/状态接口能读到。
+   */
+  function evaluateLocalWakeFilterV2(key, st, reason, text, direct, isPrivate) {
+    const filter = normalizeLocalFilter(cfg.socialV2?.wake ?? {});
+    if (!filter.enabled) return { blocked: false, reason: '', label: '', dryRun: filter.dryRun };
+    const now = Date.now();
+    const verdict = evaluateLocalFilter({
+      reason,
+      text,
+      direct,
+      isPrivate,
+      recentReplyAt: Number(st.lastAiReplyAt) || 0,
+      wakeTimes: Array.isArray(st.wakeTimes) ? st.wakeTimes : [],
+      now,
+      filter
+    });
+    if (!verdict.blocked) return verdict;
+    const stats = st.localFilterStats && typeof st.localFilterStats === 'object'
+      ? st.localFilterStats
+      : { blocked: 0, byReason: {} };
+    stats.blocked = (Number(stats.blocked) || 0) + 1;
+    stats.byReason = stats.byReason && typeof stats.byReason === 'object' ? stats.byReason : {};
+    stats.byReason[verdict.reason] = (Number(stats.byReason[verdict.reason]) || 0) + 1;
+    stats.lastAt = now;
+    stats.lastReason = verdict.reason;
+    stats.lastLabel = verdict.label;
+    st.localFilterStats = stats;
+    saveSocialV2State();
+    log(`[本地判断${filter.dryRun ? '/dry-run' : ''}] ${key} ${verdict.blocked ? '会拦下' : ''} ${reason}：${FILTER_LABELS[verdict.reason] ?? verdict.reason}`);
+    return verdict;
+  }
+
   // Only messages actually offered to the model authorize cursor-based acknowledgement.
   // Keep this receipt in memory: after a restart the model must fetch unread again.
   /**
@@ -14789,6 +14982,69 @@ async function main() {
     return `${roleLine}${identityLine}${conversationIdentityLineV2(key)}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
   }
 
+  /**
+   * 会话滚动：当前会话累计用量到阈值就换一条新的。
+   *
+   * 为什么在"唤醒之前"调用：换会话的价值在于**别再把旧历史发一遍**。如果等回合结束再换，
+   * 这一轮的钱已经花完了。所以判断点必须在 buildWakePromptV2 / deliverPrompt 之前。
+   *
+   * 交接：记忆卡每轮都注入，所以"她记得什么"不会丢；丢的是对话流，只需要补一句"刚才聊到哪"。
+   * 交接块由 buildHandoffBlock 规则拼出（不额外花模型调用），下一条唤醒注入一次即清空。
+   */
+  function maybeRollSessionV2(key) {
+    const sessionId = state.sessions[key];
+    if (!sessionId) return null;
+    const st = getSocialV2State(key);
+    if (!st || st.rolling) return null;
+    // 机器模式：每条唤醒一条干净会话（AstrBot 那套「答完就散」），不累积历史。
+    const baseRollCfg = normalizeRolloverConfig(cfg.socialV2?.context ?? {});
+    const rollCfg = engineMode() === 'machine'
+      ? { ...baseRollCfg, enabled: true, tokens: 0, turns: 1, minTurnsBeforeRoll: 0, summary: true }
+      : baseRollCfg;
+    if (rollCfg.enabled === false) return null;
+    const used = Math.max(0, tokenLedger.sessionTotal(sessionId) - (Number(st.sessionBaseTokens) || 0));
+    const wakes = (Number(st.sessionTurns) || 0) + 1;
+    st.sessionTurns = wakes;
+    st.sessionTokens = used;
+    if (!shouldRollSession({ usedTokens: used, turns: wakes, config: rollCfg })) {
+      saveSocialV2State();
+      return null;
+    }
+    // 防重入：retireSession 会同步清状态，但同一 tick 里可能有并发唤醒。
+    st.rolling = true;
+    try {
+      const closureSummary = String(st.closure?.summary ?? '').trim();
+      const block = rollCfg.summary
+        ? buildHandoffBlock({
+          key,
+          recent: Array.isArray(st.recentMessages) ? st.recentMessages : [],
+          closure: closureSummary,
+          config: rollCfg,
+        })
+        : '';
+      st.handoffPending = handoffIsUseful(block) ? block : '';
+      st.sessionTurns = 0;
+      st.sessionTokens = 0;
+      st.sessionBaseTokens = 0;
+      saveSocialV2State();
+      retireSession(key);
+      log(`[rollover] ${key} 已用 ${used} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? '（带交接）' : ''}`);
+      return { used, wakes, handoff: Boolean(st.handoffPending) };
+    } finally {
+      st.rolling = false;
+    }
+  }
+
+  /** 取出并清空待注入的交接块（只在换会话后的第一条唤醒注入一次）。 */
+  function consumeHandoffV2(key) {
+    const st = getSocialV2State(key);
+    const block = String(st?.handoffPending ?? '').trim();
+    if (!block) return '';
+    st.handoffPending = '';
+    saveSocialV2State();
+    return block;
+  }
+
   async function sendWakePromptV2(key, reason) {
     if (cfg.socialV2?.enabled === false) return;
     if (currentMode !== 'reserved2' || socialV2.paused) return;
@@ -14943,8 +15199,30 @@ async function main() {
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
     saveSocialV2State();
-    const vectorBlock = await vectorRecallBlockForWake(key).catch(() => '');
-    const promptText = buildWakePromptV2(key, reason, vectorBlock);
+    // 会话滚动（2026-11-04）：这一枪打出去之前，先看看当前会话是不是已经太长。
+    // 放在这里而不是 turn/end，是因为"发出去之前"才是省钱的唯一时机：
+    // 一旦开始发，这次的全量上下文就已经计费了。退役后下面的 deliverPrompt 会
+    // 自动建一条新会话，交接块贴在唤醒包最前面（只注入一次）。
+    maybeRollSessionV2(key);
+    // 向量记忆召回（dev2 引入）：放在拼提示词之前，作为唤醒包的一部分。
+    // 机器模式刻意跳过：那个模式的目标就是"最省"，一次 embedding 调用 + 一段注入
+    // 换来的只是更丰富的上下文，和"答完就散"的定位相反。
+    const vectorBlock = engineMode() === 'machine'
+      ? ''
+      : await vectorRecallBlockForWake(key).catch(() => '');
+    let promptText = buildWakePromptV2(key, reason, vectorBlock);
+    // 机器模式 / 桥接侧等待：这两条是"回合形态"的覆盖说明，必须压在最前面，
+    // 否则下面那一大段（工具协议、等待规则）会把它们盖过去。
+    const shapeNotes = [];
+    if (engineMode() === 'machine') {
+      shapeNotes.push('【机器模式】你这一轮的**最后一条文本会被桥接直接发到 QQ**；不要调用任何发送类工具（qq_send_message / qq_send_group_message / qq_reply / qq_send_burst）。需要看更多消息就用快照或读工具，然后直接写你要说的话。');
+    }
+    if (cfg.socialV2?.wait?.mode === 'bridge') {
+      shapeNotes.push('【桥接等待】不要调用 qq_wait_for_messages 等我：说完直接结束回合。有新消息由桥接负责再叫醒你。');
+    }
+    if (shapeNotes.length) promptText = `${shapeNotes.join('\n')}\n\n${promptText}`;
+    const handoff = consumeHandoffV2(key);
+    if (handoff) promptText = `${handoff}\n\n${promptText}`;
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
@@ -15127,7 +15405,9 @@ async function main() {
       st.sleepTimer = null;
     }
     st.pendingWakeReason = reason;
-    const batchMs = Math.max(1000, Number(st.wakeConfig?.batchWindowMs) || 8000);
+    // 合并窗口分场景（2026-11-04）：@/叫名字/拍一拍 3 秒、私聊 4 秒、群聊 6 秒。
+    // 原来一律 8 秒 —— 被点名也要干等 8 秒，体感上就是"明明在线却装死"。
+    const batchMs = batchWindowFor(key, reason, st.wakeConfig ?? {});
     st.pendingWakeTimer = setTimeout(() => {
       st.pendingWakeTimer = null;
       const finalReason = st.pendingWakeReason || reason;
@@ -15492,6 +15772,8 @@ async function main() {
 
   function scheduleProactiveCheckV2(key) {
     if (cfg.socialV2?.proactive?.enabled === false) return;
+    // 机器模式不做主动搭话；峰时顺延（下一轮 setupSleepTimer 之后会重排）。
+    if (!backgroundTasksAllowed()) return;
     if (socialV2.paused || currentMode !== 'reserved2') return;
     if (!isSessionAllowedInCurrentMode(key)) return;
     const st = getSocialV2State(key);
@@ -15966,7 +16248,13 @@ async function main() {
             appendActivity(`${key} [收尾] 冷却中，跳过 ${reason} 唤醒：${textContent.slice(0, 60)}`);
             log(`[收尾] ${key} 冷却中，跳过 ${reason} 唤醒`);
           } else {
-            scheduleWakeV2(key, reason);
+            // 本地判断（免费漏斗）：命中也不一定值一轮模型。硬触发不拦，dryRun 只统计。
+            const gate = evaluateLocalWakeFilterV2(key, st, reason, plainContent, directed, kind === 'private');
+            if (gate.blocked && !gate.dryRun) {
+              appendActivity(`${key} [本地判断] 拦下 ${reason}：${gate.label || gate.reason}`);
+            } else {
+              scheduleWakeV2(key, reason);
+            }
           }
         }
       }
@@ -17336,16 +17624,21 @@ async function main() {
       t.unref?.();
     }
     if (cfg.biliBridge.dynamics.enabled && dynamicsGroups.length) {
-      biliDynamics = createBiliDynamicsSync({
-        stateDir: PLATFORM_STATE_DIR,
-        log,
-        sendToQQ,
-        groups: dynamicsGroups,
-        isReady: () => snowlumaHealth.connected === true,
-        intervalMs: cfg.biliBridge.dynamics.pollIntervalMs,
-        selfName: biliMemory.selfName?.() ?? '',
-      });
-      biliDynamics.start();
+      // 机器模式不做后台主动内容（否则它仍会自己开回合说话）。
+      if (engineMode() === 'machine') {
+        log('[B站动态] 机器模式：跳过后台动态同步');
+      } else {
+        biliDynamics = createBiliDynamicsSync({
+          stateDir: PLATFORM_STATE_DIR,
+          log,
+          sendToQQ,
+          groups: dynamicsGroups,
+          isReady: () => snowlumaHealth.connected === true,
+          intervalMs: cfg.biliBridge.dynamics.pollIntervalMs,
+          selfName: biliMemory.selfName?.() ?? '',
+        });
+        biliDynamics.start();
+      }
     } else if (cfg.biliBridge.dynamics.enabled) {
       log('[B站动态] 没有白名单群，未启动');
     }

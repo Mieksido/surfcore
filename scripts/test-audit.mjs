@@ -272,6 +272,8 @@ const tests = [
   'test-group-policy.mjs',
   // 上下文快照：合并读取 + brief/caps/refs + tool profile。
   'test-context-snapshot.mjs',
+  // 会话滚动 + 合并窗口：换会话阈值、交接块、分场景窗口、接线钉子。
+  'test-session-rollover.mjs',
   // 会话映射：重复 sessionId 必须全部重建，防止上下文串成一条。
   'test-session-map.mjs',
   // 记忆卡手动操作：toast 不能阻断 reload，不能引用 item。

@@ -57,6 +57,25 @@ function estimatedTokens(text) {
   return Math.max(1, Math.ceil(String(text).length / 3));
 }
 
+/** 云端 embedding 用量回传桥接账本；失败不影响编码，只记一行日志。 */
+async function reportCloudUsage(model, texts, usage = null) {
+  const url = String(process.env.SURFCORE_LEDGER_URL || '').trim();
+  const token = String(process.env.SURFCORE_LEDGER_TOKEN || '').trim();
+  if (!url || !token) return;
+  const tokens = Math.max(0, Math.round(Number(usage?.total_tokens ?? usage?.prompt_tokens) || texts.reduce((sum, text) => sum + estimatedTokens(text), 0)));
+  if (!tokens) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-console-token': token },
+      body: JSON.stringify({ channel: 'embedding-cloud', tokens, cost: 0, note: String(model || '') }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (error) {
+    console.error(`[embedding] 云端用量记账失败：${error?.message ?? error}`);
+  }
+}
+
 function normalizeVector(value, expected) {
   if (!Array.isArray(value) || !value.length) return null;
   let norm = 0;
@@ -159,7 +178,7 @@ async function cloudEmbed(model, texts) {
   if (vectors.some((row) => row.length !== dimension)) {
     throw Object.assign(new Error('云端同一次返回的向量维度不一致'), { status: 502, code: 'dimension.mismatch', hint: '检查 provider 响应' });
   }
-  return { vectors, model: CLOUD.model, modelSpace: CLOUD.space, dimension };
+  return { vectors, model: CLOUD.model, modelSpace: CLOUD.space, dimension, usage: body?.usage ?? null };
 }
 
 function authorized(req) {
@@ -233,13 +252,18 @@ const server = http.createServer(async (req, res) => {
       const model = String(body.model || DEFAULT_MODEL);
       const useCloud = CLOUD.endpoint && CLOUD.model && model === CLOUD.model;
       const result = useCloud ? await cloudEmbed(model, input) : await ollamaEmbed(model, input);
+      const usage = {
+        prompt_tokens: input.reduce((sum, text) => sum + estimatedTokens(text), 0),
+        total_tokens: input.reduce((sum, text) => sum + estimatedTokens(text), 0),
+      };
+      if (useCloud) void reportCloudUsage(result.model, input, result.usage ?? usage);
       json(res, 200, {
         object: 'list',
         model: result.model,
         model_space: result.modelSpace,
         dimension: result.dimension,
         data: result.vectors.map((embedding, index) => ({ object: 'embedding', index, embedding })),
-        usage: { prompt_tokens: input.reduce((sum, text) => sum + estimatedTokens(text), 0), total_tokens: input.reduce((sum, text) => sum + estimatedTokens(text), 0) },
+        usage,
       });
       return;
     }

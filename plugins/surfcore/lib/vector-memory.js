@@ -15,6 +15,7 @@ import path from 'node:path';
 import { QQ_STATE_DIR, maskPath } from './paths.js';
 import { activeMemoryPaths, activePlatformStateDir } from '../../../src/character-persona.js';
 import { readUnified } from './store.js';
+import { consoleBase, consoleToken } from './bridge.js';
 import {
   DEFAULT_VECTOR_MEMORY_CONFIG, appendVectorRecords, effectiveVectorMemoryConfig, embedTexts,
   loadVectorRecords, mergeVectorRecords, missingForIndex, normalizeVectorMemoryConfig, rankVectorMemories, readVectorIndex, readVectorIndexMeta,
@@ -28,6 +29,27 @@ const EMPTY_CONFIG = normalizeVectorMemoryConfig({});
 let chain = Promise.resolve();
 let lastError = null;
 let lastRunAt = 0;
+
+/** 直连云端 provider 的 embedding 用量回传桥接账本；runtime 路径由 runtime 自己上报。 */
+async function reportDirectCloudUsage(config, usage, model, texts = []) {
+  if (config?.provider !== 'cloud' || !String(config?.serviceUrl || '').trim()) return;
+  const base = String(consoleBase() || '').trim();
+  const token = String(consoleToken() || '').trim();
+  if (!base || !token) return;
+  const tokens = Math.max(0, Math.round(Number(usage?.total_tokens ?? usage?.prompt_tokens)
+    || texts.reduce((sum, text) => sum + Math.max(1, Math.ceil(String(text ?? '').length / 3)), 0)));
+  if (!tokens) return;
+  try {
+    await fetch(`${base}/api/tokens/external`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-console-token': token },
+      body: JSON.stringify({ channel: 'embedding-cloud', tokens, cost: 0, note: String(model || '') }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (error) {
+    console.error(`[vector-memory] 云端 embedding 记账失败：${error?.message ?? error}`);
+  }
+}
 
 function serialized(task) {
   const next = chain.then(task, task);
@@ -219,7 +241,9 @@ export function runVectorMemoryMaintenance({
     try {
       for (let offset = 0; offset < batch.length; offset += config.batchSize) {
         const slice = batch.slice(offset, offset + config.batchSize);
-        const result = await embedTexts({ config: effective, texts: slice.map((record) => record.text) });
+        const texts = slice.map((record) => record.text);
+        const result = await embedTexts({ config: effective, texts });
+        void reportDirectCloudUsage(effective, result.usage, effective.model, texts);
         if (!dimension) dimension = result.dimension;
         if (dimension !== result.dimension) {
           const error = new Error(`Embedding 维度不一致：索引 ${dimension}，服务 ${result.dimension}`);
@@ -482,6 +506,7 @@ export async function searchVectorMemoryRecords({ config = vectorMemoryConfig(),
   }
   try {
     const result = await embedTexts({ config: effective, texts: [q] });
+    void reportDirectCloudUsage(effective, result.usage, effective.model, [q]);
     const hits = rankVectorMemories({
       query: q,
       queryVector: result.vectors[0],

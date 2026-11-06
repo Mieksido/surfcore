@@ -39,6 +39,7 @@ import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
+import { isPeakAt, resolvePriceTable } from '../../../src/model-prices.js'
 import {
   effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, rankVectorMemories,
   readVectorIndex, renderVectorRecallBlock, resolveVectorMemoryPaths,
@@ -514,6 +515,23 @@ export function startScheduler(ctx, opts) {
     }
     return false
   }
+  // 峰时顺延：B站插件的 4 个后台 tick 也走同一套价格表，不能绕过桥接的闸门。
+  let peakLoggedAt = 0
+  function peakOffloadActive(at = Date.now()) {
+    try {
+      const unified = readUnified().config
+      if (unified?.socialV2?.cost?.peakOffload === false) return false
+      return isPeakAt(at, resolvePriceTable(unified?.pricing))
+    } catch { return false }
+  }
+  function peakBlockedNow(where = '后台任务') {
+    if (!peakOffloadActive()) return false
+    if (Date.now() - peakLoggedAt > 30 * 60 * 1000) {
+      peakLoggedAt = Date.now()
+      log(`[bili-whale] 峰时顺延：${where} 暂停，谷时再跑（socialV2.cost.peakOffload=true）`)
+    }
+    return true
+  }
   async function vectorRecallBlockForBili(args) {
     const unified = readUnified().config
     if (unified.memory?.mode !== 'vector') return ''
@@ -724,6 +742,7 @@ export function startScheduler(ctx, opts) {
   async function tick() {
     if (waking) return
     if (!ctx.sessionController) return           // 服务还没就绪 → 下一 tick 再来
+    if (peakBlockedNow('生物钟叫醒')) return
     if (await budgetBlockedNow('生物钟叫醒')) return
     // 2026-10-23：每个 tick 都校正一次权限（会话可能在别处被切回 workspace-write）。
     ensurePermission('tick')
@@ -886,6 +905,7 @@ export function startScheduler(ctx, opts) {
     async function dmTick() {
       if (!interactEnabled()) return
       if (dmBusy) return
+      if (peakBlockedNow('私信叫醒')) return
       if (await budgetBlockedNow('私信叫醒')) return
       let cfg
       try { cfg = JSON.parse(fs.readFileSync(CFG_FILE_REF, "utf8")) } catch { cfg = {} }
@@ -945,6 +965,7 @@ export function startScheduler(ctx, opts) {
   async function listenTick() {
     if (!interactEnabled()) return
     if (listening) return
+    if (peakBlockedNow('评论区倾听')) return
     if (await budgetBlockedNow('评论区倾听')) return
     let cfg
     try { cfg = JSON.parse(fs.readFileSync(CFG_FILE_REF, 'utf8')) } catch { cfg = {} }
@@ -1025,6 +1046,16 @@ export function startScheduler(ctx, opts) {
         liveProc = null
         liveRetryAt = 0
         log('[bili-whale] 直播间监听已停（沉默逛开启 ✓）')
+      }
+      return
+    }
+    if (peakBlockedNow('直播间叫醒')) {
+      if (liveProc !== null) {
+        liveStopping = true
+        try { liveProc.kill() } catch {}
+        liveProc = null
+        liveRetryAt = 0
+        log('[bili-whale] 峰时暂停直播间监听')
       }
       return
     }
@@ -1141,6 +1172,7 @@ export function startScheduler(ctx, opts) {
   async function dynTick() {
     if (!interactEnabled()) return
     if (!ctx.sessionController) return
+    if (peakBlockedNow('动态提醒')) return
     if (await budgetBlockedNow('动态提醒')) return
     const cfgNow = config()
     const KINDS_NOW = kindsNow(cfgNow)

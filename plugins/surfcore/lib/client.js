@@ -1199,13 +1199,26 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.wake.recommendedNameMention", "推荐名字唤醒", "", "switch"),
         F("socialV2.wake.recommendedQuestion", "推荐提问唤醒", "", "switch"),
         F("socialV2.wake.recommendedPoke", "推荐拍一拍唤醒", "", "switch"),
-        F("socialV2.wake.batchWindowMs", "合并唤醒窗口（ms）", "", "number"),
+        F("socialV2.wake.batchWindowMs", "群聊合并窗口（ms）", "默认 6000；触发后先等这么久，把连发的几条收进同一个包只醒一次", "number", { min: 1000 }),
+        F("socialV2.wake.batchWindowPrivateMs", "私聊合并窗口（ms）", "默认 4000；私聊节奏快，太长会显得迟钝", "number", { min: 1000 }),
+        F("socialV2.wake.batchWindowDirectMs", "@/叫名字/拍一拍窗口（ms）", "默认 3000；被点名要立刻应，别干等", "number", { min: 1000 }),
+        F("socialV2.wake.localFilterEnabled", "本地唤醒判断（免费漏斗）", "默认关。开启后先用 dry-run 统计，看看会拦掉多少条再切真拦；@/名字/拍一拍/私聊永不拦", "switch"),
+        F("socialV2.wake.localFilterDryRun", "只统计不拦（dry-run）", "默认开；关掉才会真的拦下这些唤醒", "switch"),
+        F("socialV2.wake.localFilterJunk", "拦垃圾消息", "纯表情/纯「6」「草」/纯标点不唤醒（消息留在未读里）", "switch"),
+        F("socialV2.wake.localFilterRecentReplyMs", "刚回过就不插话（ms）", "0 = 关闭；例如 120000 = 两分钟内已经回过这个群，普通触发先不唤醒", "number", { min: 0 }),
+        F("socialV2.wake.localFilterRateWindowMs", "唤醒频率窗口（ms）", "0 = 关闭；配合下一项，例如 600000（10 分钟）", "number", { min: 0 }),
+        F("socialV2.wake.localFilterRateMax", "窗口内最多唤醒几次", "0 = 关闭；例如 3 = 10 分钟内已醒 3 次后普通触发不再唤醒", "number", { min: 0 }),
         F("socialV2.wake.maxWakePerMinute", "每分钟最多唤醒", "", "number", { min: 0 }),
         F("socialV2.wake.maxWakePerHour", "每小时最多唤醒", "", "number", { min: 0 }),
         F("socialV2.wake.noActionLimit", "无动作上限", "", "number", { min: 0 }),
         F("socialV2.wake.backlogMaxSessions", "启动补唤醒最多会话数", "backlog 冷启动最贵；默认 3，避免重启后一次叫醒太多会话", "number", { min: 1, max: 20 }),
         F("socialV2.wake.maxWakeConfigReminders", "唤醒配置提醒上限", "", "number", { min: 0 }),
         F("socialV2.wake.recommendedHint", "推荐提示词", "给模型的推荐说明", "textarea", { rows: 4 }),
+      ]},
+      { group: "二代 · 回合形态与成本", note: "机器模式=一次唤醒一次请求（文本自动转发、不做工具循环）；峰时顺延=价格 ×2 的时段只做硬触发，后台任务推到谷时", fields: [
+        F("socialV2.engine.mode", "回合形态", "human=现在这样（常驻 agent、有工具、有主动性）；machine=AstrBot 式：一次唤醒一次请求，文本由桥接自动转发，后台任务全停", "select", { options: [["human", "人类模式（agent）"], ["machine", "机器模式（一问一答）"]] }),
+        F("socialV2.cost.peakOffload", "峰时顺延后台任务", "默认开：9-12、14-18 点（价格 ×2）不跑背景任务，也不概率唤醒", "switch"),
+        F("socialV2.wait.mode", "等待方式", "model=模型在回合里调 qq_wait_for_messages 等；bridge=模型说完就结束回合，有新消息由桥接再叫醒（更省）", "select", { options: [["model", "模型等（现状）"], ["bridge", "桥接等（省 token）"]] }),
       ]},
       { group: "二代 · 对话收尾判断", note: "让每段对话有自然终点：判断该结束时不再补一句，而是记下收在哪、下次怎么接；不是潜水，被叫到/私聊仍会醒", fields: [
         F("socialV2.closure.enabled", "启用对话收尾判断", "默认开；关掉后模型不会收到收尾建议，也不能调用 qq_close_conversation", "switch"),
@@ -1254,6 +1267,12 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.context.wakeMessageLimit", "唤醒消息上限", "", "number"),
         F("socialV2.context.wakeRecentLimit", "唤醒最近消息上限", "", "number"),
         F("socialV2.context.wakeMaxChars", "唤醒上下文最大字符", "", "number"),
+        F("socialV2.context.rolloverEnabled", "会话太长自动换新会话", "默认开。一条会话聊太久，每次请求都要重发整段历史（实测 19.5 小时能到 43.5 万 token/步）", "switch"),
+        F("socialV2.context.rolloverTokens", "换会话阈值（token）", "默认 80000；这条会话累计用到这么多就换。0 = 不按 token 判断", "number", { min: 0 }),
+        F("socialV2.context.rolloverTurns", "换会话阈值（唤醒次数）", "默认 0 = 不按次数；两个阈值谁先到都算", "number", { min: 0 }),
+        F("socialV2.context.rolloverSummary", "换会话时留交接", "默认开。记忆卡每轮都注入，所以只补一句「刚才聊到哪」，不额外花模型调用", "switch"),
+        F("socialV2.context.rolloverKeepRecent", "交接里带最近几句", "默认 24", "number", { min: 4, max: 200 }),
+        F("socialV2.context.rolloverSummaryMaxChars", "交接块字数上限", "默认 700", "number", { min: 120, max: 4000 }),
       ]},
       { group: "二代 · 主动与反馈", fields: [
         F("socialV2.proactive.enabled", "主动搭话", "", "switch"),
@@ -3259,6 +3278,161 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           "这是 DSH 的 selectModel 行为，不是桥接额外改的；介意全局默认的话，改完可回 DSH 设置里单独调整。") : null);
     }
 
+    // ── 花费与会话（2026-11-04）──────────────────────────────────────────
+    // 想回答两个问题："今天谁在烧钱" + "这条会话是不是该换了"。
+    // 数据全部来自桥接的 token 账本（按会话 key 聚合），换会话走 /api/session/reset。
+    function CostCard({ toast, set }) {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState("");
+      const [msg, setMsg] = useState("");
+      const [busyKey, setBusyKey] = useState("");
+      const [lf, setLf] = useState(null);
+      const [tips, setTips] = useState(false);
+
+      const load = async () => {
+        try {
+          const r = await api("/bridge", { method: "POST", body: { action: "token-summary" } });
+          setData(r);
+          setErr("");
+          try {
+            const l = await api("/bridge", { method: "POST", body: { action: "local-filter" } });
+            setLf(l);
+          } catch { setLf(null); }
+        } catch (e) { setErr(`${e.message}${e.hint ? `（${e.hint}）` : ""}`); }
+      };
+      useEffect(() => { void load(); }, []);
+
+      const tok = (n) => {
+        const v = Number(n) || 0;
+        if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+        if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+        return String(Math.round(v));
+      };
+      const money = (n) => (Number(n) || 0).toFixed(2);
+
+      const list = Array.isArray(data?.conversations) ? data.conversations : [];
+      const totals = data?.totals ?? {};
+      const todayTotal = Number(totals.todayCost) || 0;
+
+      const resetSession = async (key, label) => {
+        if (!window.confirm(`给「${label}」换一条新会话？\n\n换完她会带一段交接接着聊；旧会话仍归档在 DSH 里，不会丢。`)) return;
+        setBusyKey(key); setMsg("");
+        try {
+          await api("/bridge", { method: "POST", body: { action: "session-reset", key } });
+          setMsg(`✓ 已给「${label}」换新会话`);
+          await load();
+        } catch (e) { setMsg(`✗ ${e.message}${e.hint ? `（${e.hint}）` : ""}`); } finally { setBusyKey(""); }
+      };
+
+      const labelOf = (c) => {
+        const k = String(c.key ?? "");
+        if (k.startsWith("group:")) return `群 ${k.slice(6)}`;
+        if (k.startsWith("private:")) return `私聊 ${k.slice(8)}`;
+        return k;
+      };
+
+      const tipsList = [
+        ["会话太长自动换新会话", "默认 8 万 token 换一次；阈值调小更省，但交接更频繁", "QQ 页 · 二代 · 等待与上下文"],
+        ["唤醒合并窗口", "被 @/叫名字 3 秒、私聊 4 秒、群聊 6 秒；调大更省，但回应更慢", "QQ 页 · 唤醒与收尾"],
+        ["唤醒上下文最大字符", "默认 6000；调小只带更少的未读", "QQ 页 · 等待与上下文"],
+        ["工具面开关", "关掉用不到的工具：每关一个，每次请求都少付一段说明", "QQ 页 · 二代 · 工具开关"],
+        ["主动搭话 / 目的机制", "频率和每日上限直接决定钱包；不需要就关", "目的页"],
+        ["黑话学习", "后台会定期跑模型；关掉或拉长冷却更省", "QQ 页 · 黑话学习"],
+        ["B站四类动态 / 定时分享", "每次发布都是一次完整回合", "B站 页"],
+        ["表情包注入条数", "每轮都随提示词发一遍", "QQ 页 · 表情包"],
+      ];
+
+      // 三档预设（2026-11-04）：293 个开关没人调得明白，先给三个能一键套用的组合。
+      // 只改本地表单（标脏），用户点底部「保存」才真正写盘——和页面其它字段一致。
+      const applyPreset = (name) => {
+        if (!set) { setMsg("✗ 当前页面拿不到配置写入句柄，请手动改设置"); return; }
+        const patches = {
+          "省钱": [
+            ["socialV2.context.rolloverTokens", 60000],
+            ["socialV2.context.wakeMaxChars", 3000],
+            ["socialV2.wake.batchWindowMs", 12000],
+            ["socialV2.wake.batchWindowPrivateMs", 6000],
+            ["socialV2.wake.batchWindowDirectMs", 3000],
+            ["socialV2.sticker.promptMaxStickers", 4],
+            ["socialV2.proactive.enabled", false],
+            ["socialV2.cost.peakOffload", true],
+          ],
+          "均衡": [
+            ["socialV2.context.rolloverTokens", 80000],
+            ["socialV2.context.wakeMaxChars", 6000],
+            ["socialV2.wake.batchWindowMs", 6000],
+            ["socialV2.wake.batchWindowPrivateMs", 4000],
+            ["socialV2.wake.batchWindowDirectMs", 3000],
+            ["socialV2.sticker.promptMaxStickers", 8],
+            ["socialV2.proactive.enabled", true],
+            ["socialV2.cost.peakOffload", true],
+          ],
+          "活跃": [
+            ["socialV2.context.rolloverTokens", 150000],
+            ["socialV2.context.wakeMaxChars", 8000],
+            ["socialV2.wake.batchWindowMs", 4000],
+            ["socialV2.wake.batchWindowPrivateMs", 3000],
+            ["socialV2.wake.batchWindowDirectMs", 2000],
+            ["socialV2.sticker.promptMaxStickers", 12],
+            ["socialV2.proactive.enabled", true],
+            ["socialV2.cost.peakOffload", false],
+          ],
+        }[name];
+        for (const [path, value] of patches) set(path.split("."), value);
+        setMsg(`✓ 已套用「${name}」预设，记得点底部「保存」生效`);
+      };
+
+      return h("div", { className: "qbw-card" },
+        h("div", { className: "qbw-row", style: { borderBottom: "none", paddingBottom: 0 } },
+          h("div", null,
+            h("div", { className: "qbw-kicker" }, "花费与会话"),
+            h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
+              `今日 ¥${money(todayTotal)} · ${tok(totals.todayTokens)} token · ${list.length} 条会话在册`
+              + (Number(totals.unattributedCost) > 0 ? ` · 另有 ¥${money(totals.unattributedCost)} 无法归到具体会话` : "")
+              + (lf?.totals?.blocked ? ` · 本地判断${lf.config?.dryRun ? '（dry-run）' : ''}累计会拦 ${lf.totals.blocked} 条` : "")
+              + (Number(data?.totals?.external?.todayCost) > 0 ? ` · 外部渠道 ¥${money(data.totals.external.todayCost)}` : ""))),
+          h("div", { style: { display: "flex", gap: "8px" } },
+            h(Btn, { kind: "qbw-btn2", onClick: () => void load() }, "刷新"),
+            h(Btn, { onClick: () => setTips(true) }, "怎么省 token"))),
+        err ? h("div", { className: "qbw-err", style: { marginTop: "8px" } }, err) : null,
+        msg ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, msg) : null,
+        !list.length && !err ? h("div", { className: "qbw-hint", style: { marginTop: "10px" } },
+          "还没有会话用量记录：桥接刚启动或还没人说话时是正常的。") : null,
+        list.length ? h("table", { className: "qbw-table", style: { marginTop: "10px" } },
+          h("thead", null, h("tr", null,
+            h("th", null, "会话"), h("th", null, "今日 token"), h("th", null, "今日 ¥"), h("th", null, "占比"), h("th", null, ""))),
+          h("tbody", null, list.slice(0, 20).map((c) => {
+            const share = todayTotal > 0 ? (Number(c.todayCost) / todayTotal) * 100 : 0;
+            return h("tr", { key: c.key },
+              h("td", null, labelOf(c)),
+              h("td", null, tok(c.todayTokens)),
+              h("td", null, `¥${money(c.todayCost)}`),
+              h("td", null, share > 0 ? `${share.toFixed(1)}%` : "—"),
+              h("td", null, h(Btn, {
+                kind: "qbw-btn2",
+                disabled: !!busyKey,
+                onClick: () => void resetSession(c.key, labelOf(c)),
+              }, busyKey === c.key ? "换会话中…" : "换个新会话")));
+          }))) : null,
+        h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
+          "「换会话」只是换一段干净的对话上下文（省钱），记忆卡不会丢；旧会话仍然归档在 DSH 里。"),
+        tips ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--dsw-alias-border-l2)" } },
+          h("div", { className: "qbw-kicker" }, "怎么省 token"),
+          h("div", { className: "qbw-hint", style: { margin: "6px 0 8px" } },
+            "下面这些都能直接改；调小/关掉省钱，但会牺牲一点体验。"),
+          h("div", { style: { display: "flex", gap: "8px", marginBottom: "8px", flexWrap: "wrap" } },
+            h(Btn, { kind: "qbw-btn2", onClick: () => applyPreset("省钱") }, "套用「省钱」"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => applyPreset("均衡") }, "套用「均衡」"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => applyPreset("活跃") }, "套用「活跃」"),
+            h("span", { className: "qbw-hint" }, "只改本页表单，点底部「保存」才生效")),
+          h("table", { className: "qbw-table" },
+            h("thead", null, h("tr", null, h("th", null, "设置"), h("th", null, "怎么影响花费"), h("th", null, "在哪"))),
+            h("tbody", null, tipsList.map(([name, why, where]) => h("tr", { key: name },
+              h("td", null, name), h("td", null, why), h("td", null, where))))),
+          h("div", { style: { marginTop: "8px", display: "flex", justifyContent: "flex-end" } },
+            h(Btn, { kind: "qbw-btn2", onClick: () => setTips(false) }, "收起"))) : null);
+    }
+
     function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext, dirty }) {
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
@@ -3315,6 +3489,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           overview,
         }),
         h(ModelSettingsCard, { busy, toast, reload }),
+        h(CostCard, { toast, set }),
         h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext, onSave: () => onSave?.(true), busy, canSave: dirty }),
         h(WhitelistCard, {
           allow: cfg?.allow ?? {},

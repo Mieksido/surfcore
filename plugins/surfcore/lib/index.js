@@ -3096,6 +3096,32 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
       return;
     }
+    // 本地判断（免费漏斗）：设置页开真拦之前先看"会拦掉多少"。
+    if (action === 'local-filter') {
+      const result = await callBridge('/api/socialV2/local-filter', { timeoutMs: 8000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    // 花费与会话（2026-11-04）：会话页要一张表回答"今天谁在烧钱、要不要换会话"。
+    if (action === 'token-summary') {
+      const since = Number.isFinite(Number(body.since)) ? Number(body.since) : '';
+      const qs = since === '' ? '' : `?since=${Math.max(0, Math.round(since))}`;
+      const result = await callBridge(`/api/tokens/summary${qs}`, { timeoutMs: 15000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    if (action === 'session-list') {
+      const result = await callBridge('/api/sessions', { timeoutMs: 8000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    if (action === 'session-reset') {
+      const key = String(body.key ?? '').trim();
+      if (!key) { json(res, 400, { ok: false, error: '缺少 key', hint: '先刷新会话列表再点换会话' }); return; }
+      const result = await callBridge('/api/session/reset', { method: 'POST', body: { key }, timeoutMs: 20000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
     if (action === 'refresh-bili') { json(res, 200, await refreshBiliToQq({ callBridge })); return; }
     json(res, 400, { ok: false, error: '未知 action' });
   }
