@@ -81,6 +81,10 @@ import {
   appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
 } from './memory-card.js';
 import {
+  effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, rankVectorMemories,
+  readVectorIndex, renderVectorRecallBlock, resolveVectorMemoryPaths,
+} from './vector-memory.js';
+import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
   readPersonaLayerText,
 } from './character-persona.js';
@@ -6367,10 +6371,16 @@ async function main() {
               return { key, kind: 'group', name: profile.name || '', memberCount: Number(profile.memberCount) || 0 };
             })(),
             role: (() => {
-              const personaMode = url.searchParams.get('mode') === 'full' ? 'full' : (key.startsWith('group:') ? 'tone' : 'full');
+              const personaMode = url.searchParams.get('mode') === 'full'
+                ? 'full'
+                : (personaInjectionMode() === 'split' ? 'tone' : 'full');
               return { name: roleState.role ?? null, mode: personaMode, hint: currentMode === 'reserved2' ? currentRoleHintV2(key, personaMode) : currentRoleHint(key, personaMode) };
             })(),
-            memoryCard: memoryCardPromptBlock(key),
+            memoryCard: memoryMode() === 'vector' ? '' : memoryCardPromptBlock(key),
+            memoryMode: memoryMode(),
+            memoryHint: memoryMode() === 'vector'
+              ? '当前是向量记忆模式：提示词里注入的是按消息检索到的旧事，不在工具里返回整张记忆卡。'
+              : '',
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -12964,7 +12974,11 @@ async function main() {
       // offline queue may have received more messages since this wake was queued.
       wakeState = getSocialV2State(key);
       wakeToken = wakeState.agentToken;
-      promptText = buildWakePromptV2(key, opts.wakeReason);
+      // 向量记忆检索是异步的（要调本机 Embedding 服务）；失败只记日志，不阻塞唤醒。
+      const vectorBlock = typeof opts.vectorBlock === 'string'
+        ? opts.vectorBlock
+        : await vectorRecallBlockForWake(key).catch(() => '');
+      promptText = buildWakePromptV2(key, opts.wakeReason, vectorBlock);
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_context_snapshot(afterSeq=readThroughSeq, include=["unread"]) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
@@ -13424,6 +13438,88 @@ async function main() {
     }
   }
 
+  // 记忆方式：只从合体层 config.json 读 memory.mode / vectorMemory，按 mtime 缓存。
+  // 文件缺失或损坏时回落到叙事记忆，绝不因为读不到配置而清空记忆块。
+  let unifiedMemoryCache = { key: '', mode: 'narrative', vectorMemory: normalizeVectorMemoryConfig({}) };
+  function readUnifiedMemorySettings() {
+    try {
+      const file = path.join(SURFCORE_DIR, 'config.json');
+      const stat = fs.statSync(file);
+      const key = `${stat.mtimeMs}:${stat.size}`;
+      if (unifiedMemoryCache.key === key) return unifiedMemoryCache;
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const mode = raw?.memory?.mode === 'vector' ? 'vector' : 'narrative';
+      unifiedMemoryCache = { key, mode, vectorMemory: normalizeVectorMemoryConfig(raw?.vectorMemory ?? {}) };
+      return unifiedMemoryCache;
+    } catch {
+      return { mode: 'narrative', vectorMemory: normalizeVectorMemoryConfig({}) };
+    }
+  }
+
+  function memoryMode() {
+    return readUnifiedMemorySettings().mode;
+  }
+
+  /**
+   * 向量记忆的会话隔离：群只召回本群；私聊只召回本人私聊/桌宠。
+   * 旧 inbox 没有 conversationKey 时，私聊只放行明确的主人记录；宁可少召回，
+   * 也不能把别的群/别人的私聊塞进当前提示词。
+   */
+  function vectorEntryVisibleForKey(key, entry) {
+    const target = String(key ?? '').trim();
+    if (target.startsWith('group:')) {
+      const groupId = target.slice('group:'.length);
+      return entry.conversationKey === target || Boolean(groupId && entry.groupId === groupId);
+    }
+    if (target.startsWith('private:')) {
+      const userId = target.slice('private:'.length);
+      if (entry.conversationKey === target) return true;
+      if (entry.scope === 'pet') return userId === String(cfg.ownerQQ ?? '');
+      return !entry.conversationKey && entry.private === true && entry.isOwner === true;
+    }
+    return false;
+  }
+
+  /** 向量记忆：按当前最后一条非自身消息检索，失败/未就绪时返回空串（不阻塞唤醒）。 */
+  async function vectorRecallBlockForWake(key) {
+    const settings = readUnifiedMemorySettings();
+    if (settings.mode !== 'vector' || settings.vectorMemory.enabled === false) return '';
+    const vectorConfig = effectiveVectorMemoryConfig(settings.vectorMemory);
+    const st = getSocialV2State(key);
+    const candidates = [
+      ...(Array.isArray(st?.unread) ? st.unread : []),
+      ...(Array.isArray(st?.recentMessages) ? st.recentMessages : []),
+    ].filter((message) => message && message.isSelf !== true);
+    candidates.sort((a, b) => (Number(b.time) || Number(b.seq) || 0) - (Number(a.time) || Number(a.seq) || 0));
+    const lastMessage = candidates[0];
+    const query = String(lastMessage?.text || lastMessage?.plain || '').trim().slice(0, 300);
+    if (query.length < 2) return '';
+    const paths = resolveVectorMemoryPaths(activeMemoryPaths().dir);
+    const index = readVectorIndex(paths, vectorConfig.modelSpace);
+    if (!index) return '';
+    if (index.manifest.modelSpace !== vectorConfig.modelSpace) {
+      logThrottled(`vector-memory:space:${key}`, 10 * 60_000,
+        `[向量记忆] 索引空间 ${index.manifest.modelSpace} 与配置 ${vectorConfig.modelSpace} 不一致；请重建索引`);
+      return '';
+    }
+    try {
+      const result = await embedTexts({ config: vectorConfig, texts: [query] });
+      const hits = rankVectorMemories({
+        query,
+        queryVector: result.vectors[0],
+        index,
+        config: vectorConfig,
+        platform: 'qq',
+        entryFilter: (entry) => vectorEntryVisibleForKey(key, entry),
+      });
+      return renderVectorRecallBlock(hits, { maxChars: vectorConfig.injectMaxChars });
+    } catch (error) {
+      logThrottled(`vector-memory:recall:${key}`, 10 * 60_000,
+        `[向量记忆] 检索失败（${error?.code ?? 'vector.recall-failed'}）：${error?.message ?? error}`);
+      return '';
+    }
+  }
+
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
   function personaIdentityText() {
@@ -13432,15 +13528,24 @@ async function main() {
     return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
   }
 
-  function roleHintForMode(mode, key = '', personaMode = 'full', opts = {}) {
-    const core = roleRawContent();
+  function personaInjectionMode() {
+    try {
+      const raw = readJsonSafe(path.join(SURFCORE_DIR, 'config.json'), {});
+      return raw?.persona?.mode === 'split' ? 'split' : 'full';
+    } catch { return 'full'; }
+  }
+
+  function roleHintForMode(mode, key = '', personaMode = '', opts = {}) {
+    const resolvedMode = personaMode || (personaInjectionMode() === 'split' ? 'tone' : 'full');
+    const split = resolvedMode === 'tone';
+    const core = split ? roleRawContent() : (readPersonaLayerText('full') || roleRawContent());
     const sceneId = personaSceneFromKey(key);
-    const scene = sceneId ? readPersonaLayerText('scene', sceneId) : '';
-    const daily = readPersonaLayerText('daily');
-    const tone = readPersonaLayerText('tone');
+    const scene = split && sceneId ? readPersonaLayerText('scene', sceneId) : '';
+    const daily = split ? readPersonaLayerText('daily') : '';
+    const tone = split ? readPersonaLayerText('tone') : '';
     const identity = personaIdentityText();
     const composed = composePersonaLayers({
-      core, scene, daily, tone, identity, personaMode, mode, maxChars: roleInjectMaxChars, sceneId,
+      core, scene, daily, tone, identity, personaMode: resolvedMode, mode, maxChars: roleInjectMaxChars, sceneId,
     });
     const base = composed.text || '';
     // personaOnly：只要人格卡正文（唤醒提示词用）。管理员规则 / B站简报 / 记忆卡
@@ -13457,7 +13562,7 @@ async function main() {
     const memoryBlock = memoryCardPromptBlock(key);
     return [base, adminBlock, biliBrief, memoryBlock, voiceStatusLine()].filter(Boolean).join('\n\n');
   }
-  function currentRoleHint(key = '', personaMode = 'full') {
+  function currentRoleHint(key = '', personaMode = '') {
     return roleHintForMode('v1', key, personaMode);
   }
 
@@ -13703,7 +13808,7 @@ async function main() {
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
   }
 
-  function currentRoleHintV2(key = '', personaMode = 'full') {
+  function currentRoleHintV2(key = '', personaMode = '') {
     // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
     const raw = roleHintForMode('v2', key, personaMode);
     if (!raw) return '';
@@ -14508,7 +14613,7 @@ async function main() {
     const roleState = readRoleState();
     let card = '';
     try {
-      card = roleHintForMode('v2', key, 'full', { personaOnly: true });
+      card = roleHintForMode('v2', key, '', { personaOnly: true });
     } catch (error) {
       log(`唤醒人格卡组装失败（降级为指针）：${error?.message ?? error}`);
     }
@@ -14520,7 +14625,7 @@ async function main() {
     return `【当前角色】${name}\n${card}\n（完整角色卡 / 场景语气 / 推荐值 / 可用工具：可调用 qq_get_prompt 查看）\n\n`;
   }
 
-  function buildWakePromptV2(key, reason) {
+  function buildWakePromptV2(key, reason, vectorBlock = '') {
     const roleState = readRoleState();
     const roleLine = personaWakeBlockV2(key);
     // B站 记忆简报关掉时（biliBridge.memory.enabled=false），B站 侧的自我锚点会整段消失；
@@ -14615,8 +14720,10 @@ async function main() {
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))
       : '';
     const biliLine = biliBrief || biliRecall ? `${biliBrief}${biliRecall ? `${biliRecall}\n` : ''}\n` : '';
-    // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
-    const memoryCardText = memoryCardPromptBlock(key);
+    // 记忆方式二选一：narrative 注入预渲染记忆卡；vector 注入按当前消息检索到的旧事。
+    // 两套存储都在后台继续写，这里只决定读哪一份（2026-11-02 用户要求）。
+    // 叙事侧必须带 key：dev 的按会话记忆隔离靠 memoryCardPromptBlock(key)。
+    const memoryCardText = memoryMode() === 'vector' ? String(vectorBlock || '').trim() : memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
@@ -14836,7 +14943,8 @@ async function main() {
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
     saveSocialV2State();
-    const promptText = buildWakePromptV2(key, reason);
+    const vectorBlock = await vectorRecallBlockForWake(key).catch(() => '');
+    const promptText = buildWakePromptV2(key, reason, vectorBlock);
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
@@ -14850,7 +14958,7 @@ async function main() {
     try {
       pendingWakeKeys.add(key);
       armPendingWakeLease(key);
-      const result = await deliverPrompt(key, promptText, { wakeReason: reason });
+      const result = await deliverPrompt(key, promptText, { wakeReason: reason, vectorBlock });
       const restoreFiniteSleep = () => {
         if (hadFiniteSleep) {
           st.wakeConfig.sleepUntil = prevSleepUntil;

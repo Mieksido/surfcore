@@ -44,6 +44,7 @@ import * as sessionMap from '../src/session-map.js';
 import * as dshHealth from '../src/dsh-health.js';
 import * as contextTelemetry from '../src/context-telemetry.js';
 import * as memoryCard from '../src/memory-card.js';
+import * as vectorMemory from '../src/vector-memory.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
@@ -270,7 +271,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...vectorMemory, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...conversationClosure,

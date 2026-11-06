@@ -8,6 +8,13 @@
 
 **一个会话、一条分支、一批 3–5 条建议；做完一批合一次，不攒到最后。**
 
+## 0.1 角色边界（2026-11-04 用户明确）
+
+- **用户**：决定做什么、优先级、验收标准；
+- **优化会话（含测试机 DSH）**：实现、跑测试、做技术可行性评估；
+- **协调会话**：队列编号、文件/冲突协调、门禁、合并、发版；
+- 协调会话**不替用户选功能**，也不因为评估里“建议做”就开工；内容取舍由用户拍板。
+
 ## 1. 唯一的队列
 
 | 项 | 值 |
@@ -22,9 +29,9 @@
 
 | ID | 用户建议（一句话） | 涉及文件 | 优先级 | 状态 | 指标（改前→改后） | commit |
 | --- | --- | --- | --- | --- | --- | --- |
-| OPT-001 | 主人私聊可读白名单群记忆；私聊仍不进群；指定群互通（已有） | `src/memory-card.js`、`plugins/surfcore/lib/memory-card.js`、`plugins/surfcore/lib/client.js`、`scripts/test-memory-*.mjs` | P0（用户点名） | 待合并 | 主人私聊块 2190→2892 字（+702 群近况，私聊主块不挤）；非主人私聊 399 字无群块；13 条无 key 旧私聊不再串号；audit 143/143 | `feat/optimize` HEAD |
+| OPT-001 | 主人私聊可读白名单群记忆；私聊仍不进群；指定群互通（已有） | `src/memory-card.js`、`plugins/surfcore/lib/memory-card.js`、`plugins/surfcore/lib/client.js`、`scripts/test-memory-*.mjs` | P0（用户点名） | 已合并（`50410c9`，随 `0.8.8-dev.1` 发布） | 主人私聊块 2190→2892 字（+702 群近况，私聊主块不挤）；非主人私聊 399 字无群块；13 条无 key 旧私聊不再串号；audit 143/143 | `cbaa613` |
 | OPT-002 | B站 看视频接 dsh-video-storyboard + 时间线日志 | `plugins/surfcore/tools/commands/bili-watch.mjs` 等 | P2 | 不做（暂缓，用户 2026-11-04 决定） | 只有评估，无改动；评估见 handoff 2026-11-04 | — |
-| OPT-003 | 情绪触发 B站 动态发布 / QQ 空间说说 | `plugins/surfcore/lib/scheduler.js` / 桥接 qzone 通道 | P1 | 待评估 | 只有分析，无改动，等用户定 | — |
+| OPT-003 | 情绪触发 B站 动态发布 / QQ 空间说说 | `plugins/surfcore/lib/scheduler.js` / 桥接 qzone 通道 | P1 | 评估完成（待用户裁决） | 评估见 `docs/handoffs/2026-11-04-opt-003-emotion-trigger-eval.md`；结论：B站草稿+人工发布，qzone 仅自己可见，全自动不做 | — |
 
 状态约定：
 

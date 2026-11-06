@@ -5,6 +5,63 @@
 
 ---
 
+## 快照：2026-11-05 17:45（向量记忆 UI / 一键启动自检 / 完整重建）
+
+### 当前事实
+
+- **分支/工作树**：`feat/vector-memory-next` @ 以分支 tip 为准（代码基线 `69d26e7`），worktree `D:\deepseekwork\surfcore-memory-impl`；
+  main `dev` 仍是 `7972822`，未被本批修改。
+- **合 dev 交接**：见 [`docs/handoffs/2026-11-05-vector-memory-dev-handoff.md`](handoffs/2026-11-05-vector-memory-dev-handoff.md)。
+- **范围纠正（2026-11-05 21:40）**：启动 UI 的 partial/preflight 改动已用 `1016b7e` revert，
+  本分支只保留向量记忆；一键启动回到原逻辑。runtime 的 voice-packs/voice-tts junction 和
+  SnowLuma config 恢复是环境修复，不在代码提交里。
+- **live 插件**：`~/.dsh/plugins/surfcore` 临时 junction 到本 worktree；
+  旧指向备份 `~/.dsh/plugins/surfcore.live-main-20261105`。
+- **测试**：`test:audit 151/151`；`test:regressions` 通过；插件测试通过；client contract / UI 对比度通过。
+- **真实数据**：`char-mvk6wth4/memory/vector-memory.jsonl` raw 4107 行 / unique 3273；
+  `bge-m3@1024-f16-v1` 索引 **3267 / 3267，pending 0**（1536 → 3072 后遇空文本 400，修复后补完 195）。
+- **真实服务**：11435 / 18765 listening；bge-m3 自检 1024 维、2541ms、L2≈1；
+  检索「主人今天有点累，想抱抱」top1 0.633。
+- **当前记忆方式**：`memory.mode=narrative`；索引已全量，但 QQ/B站 暂时不会读取向量；
+  UI 已加提示，切到「向量记忆」后生效。
+- **语音包路径修复**：live 插件/桥接切到 feature worktree 后，`state/voice-packs` 不在新 worktree，
+  UI 曾误报“未安装”。已建 junction：
+  `surfcore-memory-impl/state/voice-packs -> surfcore/state/voice-packs`，
+  `voice-tts` 同理；桥接 `/api/voice/packs` 现在返回两个包 `installed:true`。
+  `installed.json` 里 `enabled:false` 是之前的停用状态，不是卸载。
+- **SnowLuma 配置修复**：feature worktree 的 `config.json` 是空默认，live 插件因此看不到
+  `allowLaunch/launcherPath/accessToken`，一键启动不再打开 SnowLuma。已从主 worktree
+  `surfcore/config.json` 复制回来；备份
+  `~/.dsh/surfcore/backups/config-feature-before-main-restore-20261105-211239.json`。
+  注意：这是**拷贝**，不是共享文件；在 feature worktree 里保存 QQ 配置会写这份拷贝。
+
+### 本批内容
+
+- 「Embedding 功能」分本地模型 / 云端模型两个 Tab；本地三模型单选 + 一键启动；
+- 去掉「向量记忆」栏里重复的 provider / 本地模型 / 云端字段；
+- 真实 self-test（不是只查 `/health`），显示 model/dimension/latency；
+- discovery 假在线检测：`service.pid` 不在 → `vector.service-stale`；
+- 启动只注册当前选中模型；云端一键启动会先停旧 runtime 再加载新配置；
+- `rebuildVectorMemory` 循环到 `pending=0`，不再一次只编 256 条。
+
+### 待验证 / 下一步
+
+1. **重启 DSH**（加载新 client/plugin）→ 确认索引显示 3267/3267、pending 0；
+   再点一次「测试服务」确认自检；
+2. 真机 QQ 发一条能命中旧事的话，确认提示词出现 `【想起的旧事】`；
+3. B站 vector 模式真实 prompt 验证；
+4. 云端真实 key；
+5. 干净 Windows VM（包安装/路径/卸载）；
+6. 后续优化：重建进度轮询（当前一次请求可能几分钟）。
+
+### 回滚
+
+- live junction 可指回 `surfcore.live-main-20261105`；
+- 代码 `git revert` 本批提交；
+- 索引可删/改名后重建；不要删 `vector-memory.jsonl`。
+
+---
+
 ## 快照：2026-11-03 04:40（v0.8.8 正式发布）
 
 ### 当前事实

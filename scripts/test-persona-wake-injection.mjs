@@ -24,12 +24,12 @@ const bridge = fs.readFileSync(path.join(root, 'src/bridge.js'), 'utf8');
 assert.match(bridge, /function personaWakeBlockV2\(key\) \{/, '缺少 personaWakeBlockV2（唤醒侧随身身份证）');
 assert.match(
   bridge,
-  /roleHintForMode\('v2', key, 'full', \{ personaOnly: true \}\)/,
+  /roleHintForMode\('v2', key, '', \{ personaOnly: true \}\)/,
   '唤醒人格卡没有走统一的组装函数（会和 qq_get_prompt 分成两份手抄）',
 );
 assert.match(
   bridge,
-  /function buildWakePromptV2\(key, reason\) \{\s*const roleState = readRoleState\(\);\s*const roleLine = personaWakeBlockV2\(key\);/,
+  /function buildWakePromptV2\(key, reason[^)]*\) \{\s*const roleState = readRoleState\(\);\s*const roleLine = personaWakeBlockV2\(key\);/,
   '唤醒提示词没有注入人格卡（又退回只给指针？）',
 );
 assert.match(

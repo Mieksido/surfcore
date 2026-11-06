@@ -91,6 +91,7 @@ function copyFile(src, dest) {
 /** 复制核心/日常/场景三层人格文件（不存在的层跳过）。 */
 function copyPersonaLayers(paths, fixtureRoot) {
   copyFile(paths.persona, path.join(fixtureRoot, 'persona.md'));
+  copyFile(paths.personaFull, path.join(fixtureRoot, 'persona.full.md'));
   copyFile(paths.personaDaily, path.join(fixtureRoot, 'persona.daily.md'));
   copyFile(paths.personaTone, path.join(fixtureRoot, 'persona.tone.md'));
   for (const [scene, file] of Object.entries(paths.personaScenes || {})) {
@@ -135,6 +136,7 @@ export function characterPaths(id) {
     dir,
     manifest: path.join(dir, 'character.json'),
     persona: path.join(dir, 'persona.md'),
+    personaFull: path.join(dir, 'persona.full.md'),
     personaDaily: path.join(dir, 'persona.daily.md'),
     personaTone: path.join(dir, 'persona.tone.md'),
     personaScenesDir: path.join(dir, 'persona.scenes'),
@@ -217,20 +219,22 @@ export function activePersonaFile() {
 export function readPersonaLayerText(kind = 'core', scene = '') {
   const layers = activePersonaLayers();
   if (!layers) return '';
-  const file = kind === 'daily'
-    ? layers.daily
-    : kind === 'scene'
-      ? (layers.scenes?.[scene] || '')
-      : kind === 'tone'
-        ? layers.tone
-        : kind === 'core'
-          ? layers.core
-          : (() => {
-            try {
-              console.warn(`[persona] 未知人格层 "${kind}"，回退核心；请检查调用方`);
-            } catch {}
-            return layers.core;
-          })();
+  const file = kind === 'full'
+    ? (layers.full || layers.core)
+    : kind === 'daily'
+      ? layers.daily
+      : kind === 'scene'
+        ? (layers.scenes?.[scene] || '')
+        : kind === 'tone'
+          ? layers.tone
+          : kind === 'core'
+            ? layers.core
+            : (() => {
+              try {
+                console.warn(`[persona] 未知人格层 "${kind}"，回退核心；请检查调用方`);
+              } catch {}
+              return layers.core;
+            })();
   try { return file ? fs.readFileSync(file, 'utf8') : ''; } catch { return ''; }
 }
 
@@ -242,6 +246,7 @@ export function activePersonaLayers() {
   return {
     id: cur.id,
     core: p.persona,
+    full: p.personaFull,
     daily: p.personaDaily,
     tone: p.personaTone,
     scenesDir: p.personaScenesDir,
@@ -410,6 +415,7 @@ export function createCharacter({ name, personaText, memoryCard, fullRecords, id
   ensureDir(paths.snapshotsDir);
   const persona = String(personaText ?? '').trim() || defaultPersona(cleanName);
   fs.writeFileSync(paths.persona, `${persona}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.writeFileSync(paths.personaFull, `${persona}\n`, { encoding: 'utf8', mode: 0o600 });
   if (memoryCard && typeof memoryCard === 'object') {
     atomicWriteJson(paths.memoryJson, memoryCard);
   }
@@ -440,6 +446,7 @@ export function updateCharacter(id, { name, personaText, memoryCard, now = Date.
   if (!manifest) throw new Error(`角色不存在：${id}`);
   if (typeof personaText === 'string') {
     fs.writeFileSync(paths.persona, `${personaText.trim()}\n`, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(paths.personaFull, `${personaText.trim()}\n`, { encoding: 'utf8', mode: 0o600 });
   }
   if (memoryCard && typeof memoryCard === 'object') atomicWriteJson(paths.memoryJson, memoryCard);
   const next = {

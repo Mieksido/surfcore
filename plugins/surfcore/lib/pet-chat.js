@@ -262,19 +262,22 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     try { cur = readCurrentCharacter(); } catch {}
     let personaFile = '';
     try { personaFile = resolvePersonaFile() || ''; } catch {}
+    const split = unifiedConfig()?.persona?.mode === 'split';
     const personaCore = personaFile ? textFile(personaFile) : '';
+    const fullPersona = split ? personaCore : (readPersonaLayerText('full') || personaCore);
     const persona = composePersonaLayers({
-      core: personaCore,
+      core: fullPersona,
       // 身份底座：桌宠也要知道“我是谁、主人是谁”，不依赖用户是否拆分人格。
-      identity: buildPersonaIdentity({ name: personaNameFromCard(personaCore, cur?.name || '这个角色'), owner: ownerInfo().name }),
-      // 语气层：桌宠也用同一套说话方式。
-      tone: readPersonaLayerText('tone'),
-      scene: readPersonaLayerText('scene', 'pet'),
-      daily: readPersonaLayerText('daily'),
+      identity: buildPersonaIdentity({ name: personaNameFromCard(fullPersona, cur?.name || '这个角色'), owner: ownerInfo().name }),
+      // 拆分模式才带语气/场景/日常；整卡模式只注入整卡。
+      tone: split ? readPersonaLayerText('tone') : '',
+      scene: split ? readPersonaLayerText('scene', 'pet') : '',
+      daily: split ? readPersonaLayerText('daily') : '',
+      personaMode: split ? 'tone' : 'full',
       mode: 'v2',
       maxChars: 4200,
       sceneId: 'pet',
-    }).text || personaCore;
+    }).text || fullPersona;
     let name = String(cur?.name || '').trim();
     if (!name) {
       const heading = persona.match(/^#\s*([^\n#]{1,40})/m);
@@ -316,12 +319,17 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     };
   }
 
-  // ── 记忆卡：把对话写进和 QQ / B站 同一张卡 ─────────────────────────────
-  // 只追加 inbox（轻量、原子），真正的评分/脱敏/衰减由插件的记忆卡维护器做。
+  // ── 记忆：把对话写进和 QQ / B站 共用的 inbox ─────────────────────────────
+  // 只追加 inbox（轻量、原子），真正的评分/脱敏/衰减由插件维护器做。
+  // inbox 是叙事记忆与向量记忆共同的原料：只要任意一套存储还开着，就必须继续写；
+  // 不能因为用户关掉「叙事记忆卡」就顺带饿死独立的向量记忆。
   function rememberEvents(events) {
     if (!Array.isArray(events) || !events.length) return 0;
     if (!settings().chat.remember) return 0;
-    if (unifiedConfig()?.memoryCard?.enabled === false) return 0;
+    const unified = unifiedConfig();
+    const cardEnabled = unified?.memoryCard?.enabled !== false;
+    const vectorEnabled = unified?.vectorMemory?.enabled !== false;
+    if (!cardEnabled && !vectorEnabled) return 0;
     let written = 0;
     try {
       const paths = activeMemoryPaths();

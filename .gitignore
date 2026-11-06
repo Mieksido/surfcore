@@ -76,3 +76,7 @@ dist/*.zip
 # 运行时安装证据（由更新流程写入安装目录，不进仓库）
 .installed-manifest.json
 .installed-meta.json
+
+# embedding runtime local pid/log
+plugins/surfcore/runtime/service.pid
+plugins/surfcore/runtime/service.log

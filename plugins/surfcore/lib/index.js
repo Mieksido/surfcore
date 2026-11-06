@@ -84,6 +84,15 @@ import {
   memoryCardStatusNow, notifyOwnerIfNeeded, restoreMemoryCardBackup, runMemoryCardMaintenance,
   startMemoryCardTimer,
 } from './memory-card.js';
+import {
+  listVectorMemoryRecords, rebuildAllVectorIndexes, rebuildVectorMemory, runVectorMemoryMaintenance as runVectorMemoryMaintenanceNow,
+  searchVectorMemoryRecords, startVectorMemoryTimer, vectorMemoryIdle, vectorMemorySnapshot, vectorMemoryStatusNow,
+} from './vector-memory.js';
+import {
+  embeddingPacksStatus, getCloudProviderProfile, getEmbeddingPackJob, openEmbeddingShare, registerAllInstalledModels, removeEmbeddingPack,
+  saveCloudPackConfig, activateCloudProvider, selectEmbeddingPack, startEmbeddingPackInstall, startEmbeddingRuntime, stopEmbeddingRuntime,
+  testEmbeddingPack,
+} from './embedding-packs.js';
 import { readWatchHistory } from '../tools/lib/watch-history.mjs';
 import { enrichWatchHistory } from '../tools/lib/watch-actions.mjs';
 import { scanPreferences } from '../tools/lib/pref-scan.mjs';
@@ -215,6 +224,7 @@ export function apply(ctx) {
   let biliSessionEpoch = 0;
   let syncTimer = null;
   let memoryCardTimer = null;
+  let vectorMemoryTimer = null;
   let characterTimer = null;
 
   // ── 每日 token 额度 / 用量采集（2026-10-23 用户要求）────────────────────
@@ -542,6 +552,7 @@ export function apply(ctx) {
     const target = characterDetail(id).character;
     const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
     await memoryCardIdle();
+    await vectorMemoryIdle();
     const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
     let schedulerWasRunning = !skipPlatform && Boolean(scheduler && schedulerStatus.running);
     try {
@@ -600,6 +611,8 @@ export function apply(ctx) {
   // 记忆卡：插件宿主是唯一维护者。启动 8 秒后整理一次（摄取桥接 inbox + B站记忆），
   // 之后每 10 分钟一次；每日衰减由 memory-card 自己按 dailyHour 判断。
   memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge });
+  // 向量记忆：独立存储/独立开关，默认与记忆卡并行写入；memory.mode 只影响读取。
+  vectorMemoryTimer = startVectorMemoryTimer({ log: pluginLog });
 
   // 角色自动存档：启动 10 秒后跑一次，之后每 6 小时检查（每天最多一份 + 11 个年龄档轮换）。
   const runCharacterAutoSave = () => {
@@ -756,6 +769,7 @@ export function apply(ctx) {
       bili,
       memory,
       memoryCard: memoryCardStatusNow(),
+      vectorMemory: vectorMemoryStatusNow(),
       admin: adminSummary(all.unified?.admin),
       alignment: alignStats(),
       platforms: platforms.list(),
@@ -1075,6 +1089,7 @@ export function apply(ctx) {
         const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
         const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
         await memoryCardIdle();
+    await vectorMemoryIdle();
         if (!skipPlatform && scheduler?.retire) await scheduler.retire();
         scheduler = null;
         schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
@@ -1215,11 +1230,12 @@ ${body}`;
       const layers = activePersonaLayers();
       return layers ? {
         core: layers.core || resolvePersonaFile(),
+        full: layers.full || path.join(path.dirname(layers.core || resolvePersonaFile()), 'persona.full.md'),
         daily: layers.daily,
         tone: layers.tone,
         scenes: layers.scenes,
         scenesDir: layers.scenesDir,
-      } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
+      } : { core: resolvePersonaFile(), full: path.join(path.dirname(resolvePersonaFile()), 'persona.full.md'), daily: '', tone: '', scenes: {}, scenesDir: '' };
     };
     const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
     if (req.method === 'GET') {
@@ -1239,6 +1255,7 @@ ${body}`;
         mtime: mtimeIso(paths.core),
         layers: {
           core: { path: paths.core, text: core, chars: core.length },
+          full: { path: paths.full, text: readTextFile(paths.full) || core, chars: (readTextFile(paths.full) || core).length },
           tone: { path: paths.tone, text: readTextFile(paths.tone), chars: readTextFile(paths.tone).length },
           daily: { path: paths.daily, text: daily, chars: daily.length },
           scenes,
@@ -1259,6 +1276,7 @@ ${body}`;
       let target = paths.core;
       let label = 'persona';
       if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
+      else if (name.startsWith('persona-full-')) { target = paths.full; label = 'persona-full'; }
       else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
       else if (name.startsWith('persona-scene-')) {
         const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
@@ -1279,7 +1297,10 @@ ${body}`;
     const paths = layerPaths();
     let target = paths.core;
     let label = 'persona';
-    if (layer === 'tone') {
+    if (layer === 'full') {
+      target = paths.full;
+      label = 'persona-full';
+    } else if (layer === 'tone') {
       target = paths.tone;
       label = 'persona-tone';
     } else if (layer === 'daily') {
@@ -1295,7 +1316,7 @@ ${body}`;
       return;
     }
     const text = String(body.text ?? '');
-    if (layer === 'core' && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格核心太短（至少 50 字）', hint: '核心卡是每次注入的底座，不能留空' }); return; }
+    if ((layer === 'core' || layer === 'full') && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格卡太短（至少 50 字）', hint: '整卡/核心是每次注入的底座，不能留空' }); return; }
     if (text.length > 64 * 1024) { json(res, 400, { ok: false, code: 'PERSONA_TOO_LARGE', error: '人格内容超过 64KB', hint: '拆成核心/场景/日常层，或精简内容' }); return; }
     const scan = scanText(text);
     const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
@@ -1403,6 +1424,195 @@ ${body}`;
       return;
     }
     json(res, 400, { ok: false, error: '未知 action' });
+  }
+
+  // ── 向量记忆（独立存储；与记忆卡并列）──────────────────────────────────
+  async function handleVectorMemory(req, res) {
+    const config = readUnified().config.vectorMemory;
+    if (req.method === 'GET') {
+      json(res, 200, vectorMemorySnapshot(config));
+      return;
+    }
+    const body = JSON.parse(await readBody(req) || '{}');
+    const action = String(body.action ?? '');
+    if (action === 'maintain') {
+      const result = await runVectorMemoryMaintenanceNow({ config });
+      json(res, result.ok ? 200 : 500, { ...vectorMemorySnapshot(config), ...result });
+      return;
+    }
+    if (action === 'rebuild') {
+      const result = await rebuildVectorMemory(config);
+      json(res, result.ok ? 200 : 500, { ...vectorMemorySnapshot(config), ...result });
+      return;
+    }
+    if (action === 'rebuild-all') {
+      const packsStatus = embeddingPacksStatus();
+      const models = (packsStatus.models ?? []).filter((item) => item.valid && item.model && item.modelSpace);
+      if (!models.length) {
+        json(res, 400, { ok: false, code: 'vector.models-missing', error: '没有已安装的本地模型', hint: '先在 Embedding 功能里导入至少一个模型包' });
+        return;
+      }
+      const missingIndexes = models.filter((item) => item.indexReady !== true);
+      if (!missingIndexes.length) {
+        json(res, 200, {
+          ok: true,
+          skipped: true,
+          results: [],
+          skippedModels: models.map((item) => item.model),
+          status: vectorMemorySnapshot(config),
+          message: '所有已安装模型都已有索引，不需要重建',
+        });
+        return;
+      }
+      if (!packsStatus.service?.ok) {
+        const started = await startEmbeddingRuntime();
+        if (!started.ok) {
+          json(res, 400, { ok: false, ...started, hint: started.hint || '先启动 Embedding 运行时' });
+          return;
+        }
+      }
+      const registrations = await registerAllInstalledModels();
+      const result = await rebuildAllVectorIndexes(config, missingIndexes);
+      json(res, result.ok ? 200 : 500, { ...result, registrations, status: vectorMemorySnapshot(config) });
+      return;
+    }
+    if (action === 'rebuild-selected') {
+      const wanted = Array.isArray(body.models) ? body.models.map((item) => String(item)).filter(Boolean) : [];
+      if (!wanted.length) {
+        json(res, 400, { ok: false, code: 'vector.models-empty', error: '没有选择要重建的模型', hint: '至少勾选一个模型' });
+        return;
+      }
+      const packsStatus = embeddingPacksStatus();
+      const localModels = new Map((packsStatus.models ?? []).map((item) => [String(item.id), item]));
+      const targets = [];
+      for (const key of wanted) {
+        if (key.startsWith('local:')) {
+          const id = key.slice('local:'.length);
+          const pack = localModels.get(id);
+          if (!pack) { json(res, 400, { ok: false, code: 'vector.model-not-installed', error: `本地模型未安装：${id}`, hint: '先在 Embedding 功能导入模型' }); return; }
+          targets.push({ kind: 'local', id, model: pack.model, modelSpace: pack.modelSpace });
+        } else if (key.startsWith('cloud:')) {
+          const id = key.slice('cloud:'.length);
+          const profile = getCloudProviderProfile(id);
+          if (!profile || !profile.endpoint || !profile.apiKey) {
+            json(res, 400, { ok: false, code: 'vector.cloud-not-saved', error: `云端服务商未保存：${id}`, hint: '先在云端模型里保存 endpoint/model/space/key' });
+            return;
+          }
+          targets.push({ kind: 'cloud', id, model: profile.model, modelSpace: profile.modelSpace, profile });
+        }
+      }
+      if (targets.some((item) => item.kind === 'local') && !packsStatus.service?.ok) {
+        const started = await startEmbeddingRuntime();
+        if (!started.ok) {
+          json(res, 400, { ok: false, ...started, hint: started.hint || '先启动 Embedding 运行时' });
+          return;
+        }
+      }
+      if (targets.some((item) => item.kind === 'local')) await registerAllInstalledModels();
+      const results = [];
+      for (const target of targets) {
+        const targetConfig = target.kind === 'local'
+          ? { ...config, provider: 'local', model: target.model, modelSpace: target.modelSpace, serviceUrl: '', token: '' }
+          : { ...config, provider: 'cloud', model: target.model, modelSpace: target.modelSpace, cloudModel: target.model, cloudModelSpace: target.modelSpace, serviceUrl: target.profile.endpoint.replace(/\/embeddings\/?$/i, ''), token: target.profile.apiKey, discoveryFile: '' };
+        const result = await rebuildVectorMemory(targetConfig);
+        results.push({
+          key: `${target.kind}:${target.id}`,
+          kind: target.kind,
+          id: target.id,
+          model: target.model,
+          modelSpace: target.modelSpace,
+          ok: result.ok !== false,
+          embedded: result.embedded ?? 0,
+          rebuilt: result.rebuilt === true,
+          indexed: result.status?.indexed ?? 0,
+          pending: result.status?.pending ?? 0,
+          error: result.error ?? '',
+          hint: result.hint ?? '',
+        });
+      }
+      json(res, results.every((item) => item.ok) ? 200 : 500, { ok: results.every((item) => item.ok), results, status: embeddingPacksStatus() });
+      return;
+    }
+    if (action === 'library-list') {
+      const result = listVectorMemoryRecords({ config, limit: body.limit, offset: body.offset });
+      json(res, 200, result);
+      return;
+    }
+    if (action === 'library-search') {
+      const result = await searchVectorMemoryRecords({ config, query: body.query, limit: body.limit });
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    json(res, 400, { ok: false, code: 'request.invalid', error: '未知 action', hint: '可用：maintain / rebuild / rebuild-all / library-list / library-search' });
+  }
+
+  // ── Embedding 可选安装包（模型/运行时/云端）────────────────────────────
+  async function handleEmbeddingPacks(req, res, url) {
+    if (req.method === 'GET') {
+      const jobId = String(url.searchParams.get('job') ?? '');
+      if (jobId) {
+        const job = getEmbeddingPackJob(jobId);
+        if (!job) { json(res, 404, { ok: false, code: 'pack.job-missing', error: '安装任务不存在或已过期', hint: '刷新列表后重试' }); return; }
+        json(res, 200, { ok: true, job });
+        return;
+      }
+      json(res, 200, embeddingPacksStatus());
+      return;
+    }
+    const body = JSON.parse(await readBody(req) || '{}');
+    const action = String(body.action ?? '');
+    if (action === 'open-share') {
+      const result = openEmbeddingShare();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'install') {
+      const result = startEmbeddingPackInstall({
+        source: String(body.path ?? body.source ?? ''), url: String(body.url ?? ''), overwrite: body.overwrite === true,
+      });
+      json(res, result.ok ? 202 : 400, result);
+      return;
+    }
+    if (action === 'remove') {
+      const result = removeEmbeddingPack(String(body.id ?? ''));
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'select') {
+      const result = selectEmbeddingPack(String(body.id ?? ''));
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'start') {
+      const result = await startEmbeddingRuntime();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'stop') {
+      const result = await stopEmbeddingRuntime();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'test') {
+      const result = await testEmbeddingPack();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'save-cloud') {
+      const result = saveCloudPackConfig(body);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'activate-cloud') {
+      const result = activateCloudProvider(body.provider);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'refresh') {
+      json(res, 200, embeddingPacksStatus());
+      return;
+    }
+    json(res, 400, { ok: false, code: 'request.invalid', error: '未知 action', hint: '可用：install / remove / select / start / stop / test / save-cloud / refresh' });
   }
 
   // ── 全量记忆卡（只存档；不参与日常提示词）───────────────────────────────
@@ -2285,7 +2495,9 @@ ${body}`;
     const filterKey = String(url.searchParams.get('filter') || '').trim().toLowerCase();
     const fileFilter = filterKey === 'snowluma'
       ? 'SnowLuma 启动文件 (SnowLuma.exe;launcher.bat)|SnowLuma.exe;launcher.bat|所有文件 (*.*)|*.*'
-      : '可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*';
+      : filterKey === 'embedding-pack'
+        ? 'Embedding 包 (*.zip)|*.zip|所有文件 (*.*)|*.*'
+        : '可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*';
     if (process.platform !== 'win32') {
       json(res, 200, { ok: false, error: '只有 Windows 支持原生选择框，请手动填路径' });
       return;
@@ -3578,6 +3790,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (pathname === `${API_PREFIX}/fish-guard/qq`) { handleQqFishGuard(res); return; }
     if (pathname === `${API_PREFIX}/memory-card/full`) { await handleMemoryCardFull(req, res, url); return; }
+    if (pathname === `${API_PREFIX}/vector-memory`) { await handleVectorMemory(req, res); return; }
+    if (pathname === `${API_PREFIX}/embedding-packs`) { await handleEmbeddingPacks(req, res, url); return; }
     if (pathname === `${API_PREFIX}/memory-card`) { await handleMemoryCard(req, res); return; }
     if (pathname === `${API_PREFIX}/align`) { await handleAlign(req, res); return; }
     if (pathname === `${API_PREFIX}/mode`) { await handleMode(req, res); return; }
@@ -3726,6 +3940,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
+    try { vectorMemoryTimer?.stop?.(); } catch {}
     try { closeAllQrLogins(); } catch {}
     if (characterTimer) clearInterval(characterTimer);
     if (syncTimer) clearInterval(syncTimer);

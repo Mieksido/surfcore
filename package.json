@@ -1,6 +1,6 @@
 {
   "name": "surfcore",
-  "version": "0.8.8-dev.1",
+  "version": "0.8.8-dev.2",
   "private": true,
   "license": "MIT",
   "description": "SurfCore — QQ ↔ DeepSeek Harness bridge + QQ/B站 merged plugin: one repo, one settings window, QQ + Bilibili + QQ presets.",

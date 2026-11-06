@@ -20,9 +20,10 @@
 | --- | --- | --- | --- | --- |
 | **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |
 | **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/persona-tone-dedup` @ `672fef0` | 0.8.7 前的 5 个批次 | ✅ 已随 0.8.7/0.8.8 发布 |
-| **优化 · 唯一会话** | `D:\deepseekwork\surfcore-optimize` | `feat/optimize` @ `c75654a` | 用户优化建议按批处理；已产出基线表 | 🕒 进行中 |
+| **优化 · 唯一会话** | `D:\deepseekwork\surfcore-optimize` | `feat/optimize` @ `cbaa613` | OPT-001 已合并并随 `0.8.8-dev.1` 发布；继续下一批 | 🕒 进行中 |
+| **测试机 DSH（优化/受限 dev 发布）** | 待建 `D:\dshwork\surfcore-dev` | `feat/opt-*` | 功能优化；满足条件后可发 `0.8.8-dev.N`，稳定版永不给 | 🟡 交接已写，待环境审计 |
 | **Minecraft 拓展** | `D:\deepseekwork\surfcore-mc` | `feat/minecraft` @ `f3bd46f` | MC 平台适配器/工具集/卡片/记忆 scope | ⏸ 已从 dev 撤回，分支保留；等完成 |
-| **向量记忆** | `D:\deepseekwork\surfcore-memory` | `feat/vector-memory` @ `9e7e737` | 向量记忆交接书 + docs 索引 | ⏸ 已从 dev 撤回，分支保留；等完成 |
+| **向量记忆** | `D:\deepseekwork\surfcore-vector-library` | `feat/vector-cloud-key-notice` @ `ae1fa88` | 云端 Key 只显示一次提醒 + 多模型索引重建（本地/云端多选） | ✅ 已合并（`3e5f9b1`）；待多模型弹窗/云端 Tab 人工验收；4 个外部 zip 未入包 |
 | **更新本地改动修复**（协调代做） | `D:\deepseekwork\surfcore-updatefix` | `fix/update-local-modifications` @ `3a7aaa9` | 本地改动「备份并覆盖」出口 + deterministic + 诊断 | ✅ 已合并 `d75dea8`；**未发布**，等 bug 修复交接 |
 | **小红书平台**（待启动） | 计划 `D:\deepseekwork\surfcore-xhs` | 计划 `feat/platform-xiaohongshu` | 只读 adapter/身份/记忆/prompt/卡片 | 🕒 交接已写，待启动 |
 | **贴吧平台**（待启动） | 计划 `D:\deepseekwork\surfcore-tieba` | 计划 `feat/platform-tieba` | 先解决内置 `tieba` 占位；只读 adapter | 🕒 交接已写，待启动 |

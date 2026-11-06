@@ -123,6 +123,12 @@ const tests = [
   'test-bili-interact.mjs',
   // 记忆卡：重要度评分 / 主人锚点 / 每日模糊与遗忘 / 80·90·100% 容量 / 提示词裁剪 / 隐私 scope。
   'test-memory-card.mjs', 'test-memory-card-wiring.mjs', 'test-memory-sharing.mjs',
+  // 向量记忆：独立存储/索引/检索/敏感过滤/客户端错误；memory.mode 只影响读取。
+  'test-vector-memory.mjs', 'test-vector-memory-wiring.mjs', 'test-vector-memory-plugin.mjs',
+  'test-vector-memory-bridge.mjs',
+  // Embedding 可选安装包：manifest/校验/安装/卸载、插件 API、Node runtime、安装清单隔离。
+  'test-embedding-packs.mjs', 'test-embedding-packs-plugin.mjs', 'test-embedding-runtime.mjs',
+  'test-embedding-packs-wiring.mjs',
   // 角色人格：多角色目录隔离 / 切换 epoch / 快照回档 / 旧数据迁移（含凭证不进角色包）。
   'test-character-store.mjs',
   // B站 工具链路径：有角色时行为账本进角色包，cookie/表情包仍在账号目录。
