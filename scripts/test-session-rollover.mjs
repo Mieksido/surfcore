@@ -368,6 +368,12 @@ console.log('## 14. 桥接启动时序：监听前不跑 ACL，等待 30 秒')
   ok(acl.includes('icacls(args, 3000)'), 'ACL 启动路径超时收敛到 3 秒')
   const client = read('plugins/surfcore/lib/client.js')
   ok(client.includes('状态未知：QQ 桥接未运行'), '语音包状态未知时不再误报「未安装」')
+  const embed = read('plugins/surfcore/lib/embedding-packs.js')
+  ok(embed.includes('directEntry') && embed.includes("'embedding-service.mjs'"), 'Embedding runtime 优先直连 js 入口，不再起 cmd 黑框')
+  const voice = read('src/voice-packs.js')
+  ok(voice.includes('pythonw.exe'), '语音云端包用 pythonw 启动，不弹 python 控制台')
+  const indexSrc = read('plugins/surfcore/lib/index.js')
+  ok(indexSrc.includes("path.join(appDir, 'index.mjs')"), 'SnowLuma 隐藏启动直接起 node index.mjs')
 }
 
 console.log(`\n🚀 会话滚动 + 合并窗口测试通过（${passed} 项）`)

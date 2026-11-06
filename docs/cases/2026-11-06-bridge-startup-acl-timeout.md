@@ -32,6 +32,11 @@
   而不是「未安装」；
 - 隐藏命令行开关见 `2026-11-06-oneclick-vector-memory.md`：
   `platforms.hideConsoles`，默认关；勾选后 SnowLuma 不再走 `cmd /c start`。
+- 黑框进一步处理：
+  - SnowLuma 隐藏启动直接 `node app/index.mjs`，绕开 `launcher.bat` / cmd；
+  - 云端语音用 `pythonw.exe` 代替 `python.exe`，不再弹 python 控制台；
+  - Embedding runtime 优先直连 `embedding-service.mjs` / `service.mjs`，不再走 `.bat`；
+  - 这些 spawn 去掉 `detached:true`，避免 Windows 为子进程创建新的可见控制台。
 
 ## 影响面
 
@@ -42,7 +47,7 @@
 ## 验证
 
 ```
-test-session-rollover   167 项全过（含启动顺序/30 秒/ACL 3 秒/语音状态断言）
+test-session-rollover   170 项全过（含启动顺序/30 秒/ACL 3 秒/语音状态/黑框 spawn 断言）
 test:audit              152/152
 插件测试                 0 失败
 ```

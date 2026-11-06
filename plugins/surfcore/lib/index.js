@@ -2371,9 +2371,19 @@ ${body}`;
         if (/["\r\n]/.test(launcher)) return { ok: false, error: '启动脚本路径含引号或换行，拒绝执行' };
         if (hideConsoles) {
           // 不经过 `start`：start 会显式创建新控制台窗口，windowsHide 压不住。
-          spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `"${launcher}"`], {
-            cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: true, windowsVerbatimArguments: true,
-          }).unref();
+          // SnowLuma 的 launcher.bat 最终也是 `node ./index.mjs`；直接起 node，
+          // 完全绕开 cmd/Windows Terminal 标签。
+          const appDir = path.dirname(launcher);
+          const entry = path.join(appDir, 'index.mjs');
+          if (fs.existsSync(entry)) {
+            spawn(process.execPath, [entry], {
+              cwd: appDir, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: true,
+            }).unref();
+          } else {
+            spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `"${launcher}"`], {
+              cwd, detached: false, stdio: 'ignore', env: nodePathEnv(), windowsHide: true, windowsVerbatimArguments: true,
+            }).unref();
+          }
         } else {
           spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${launcher}"`], {
             cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: false, windowsVerbatimArguments: true,

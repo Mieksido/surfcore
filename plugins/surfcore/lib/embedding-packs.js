@@ -539,6 +539,10 @@ function runtimeEnv() {
   if (space) env.SURFCORE_EMBED_CLOUD_SPACE = space;
   if (apiKey) env.SURFCORE_EMBED_API_KEY = apiKey;
   if (config.allowRemote === true) env.SURFCORE_EMBED_ALLOW_REMOTE = 'true';
+  // 直连 js 入口时没有 run.bat 替我们设置这些；显式给上，保证 discovery/端口一致。
+  env.SURFCORE_EMBED_DISCOVERY ||= path.join(STATE_DIR, 'embedding-service.json');
+  env.SURFCORE_EMBED_PORT ||= '18765';
+  env.SURFCORE_EMBED_DEFAULT_MODEL ||= 'bge-m3';
   // 云端 embedding 用量回传桥接账本；token 只走环境变量，不落日志。
   try {
     const token = consoleToken();
@@ -593,10 +597,18 @@ export async function startEmbeddingRuntime() {
     } catch { clearPid(); }
   }
   const isBatch = entry.toLowerCase().endsWith('.bat') || entry.toLowerCase().endsWith('.cmd');
-  const child = spawn(entryPath, [], {
-    cwd: runtime.path, env: runtimeEnv(), detached: true, stdio: 'ignore', windowsHide: true,
-    shell: isBatch,
-  });
+  // 批处理会先起 cmd 控制台；Windows 上 detached 会把它变成可见的 Windows Terminal 标签。
+  // runtime 包通常同时带 js 入口，优先直连 node，既少一层 cmd，也彻底不依赖 PATH。
+  const directEntry = isBatch
+    ? ['embedding-service.mjs', 'service.mjs', 'server.mjs'].map((name) => path.join(runtime.path, name)).find((file) => fs.existsSync(file))
+    : '';
+  const child = directEntry
+    ? spawn(process.execPath, [directEntry], {
+      cwd: runtime.path, env: runtimeEnv(), detached: true, stdio: 'ignore', windowsHide: true,
+    })
+    : spawn(entryPath, [], {
+      cwd: runtime.path, env: runtimeEnv(), detached: false, stdio: 'ignore', windowsHide: true, shell: isBatch,
+    });
   child.unref();
   writePid(child.pid);
   const discovery = path.join(STATE_DIR, 'embedding-service.json');
