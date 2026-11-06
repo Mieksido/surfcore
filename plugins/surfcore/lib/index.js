@@ -2159,15 +2159,35 @@ ${body}`;
   // 端口从 SnowLuma 自己的 runtime.json 读，读不到就回退 5100。
   function snowLumaWebui() {
     const cfg = readQqConfig().config?.snowluma ?? {};
-    let port = 5100;
-    try {
-      const root = String(cfg.launcherPath ?? '').trim();
-      if (root) {
-        const runtime = JSON.parse(fs.readFileSync(path.join(root, 'app', 'config', 'runtime.json'), 'utf8'));
-        if (Number(runtime?.webuiPort) > 0) port = Number(runtime.webuiPort);
+    // 2026-11-06 真机事故：旧代码只读 root/app/config/runtime.json，但当前 SnowLuma 把
+    // runtime.json 放在 root/config/runtime.json。读不到就回退写死的 5100，而真实端口是 5099，
+    // 于是探活永远失败 → 弹窗永远说「控制台还没起来」，「加载 QQ 账号」整条流程不可用。
+    let host = '127.0.0.1';
+    let port = 0;
+    const root = String(cfg.launcherPath ?? '').trim();
+    if (root) {
+      for (const rel of [['config', 'runtime.json'], ['app', 'config', 'runtime.json']]) {
+        try {
+          const runtime = JSON.parse(fs.readFileSync(path.join(root, ...rel), 'utf8'));
+          if (Number(runtime?.webuiPort) > 0) port = Number(runtime.webuiPort);
+          const runtimeHost = String(runtime?.webuiHost ?? '').trim();
+          if (runtimeHost && runtimeHost !== '0.0.0.0' && runtimeHost !== '::') host = runtimeHost;
+          if (port > 0) break;
+        } catch {}
       }
-    } catch {}
-    return { port, url: `http://127.0.0.1:${port}` };
+    }
+    const explicitPort = Number(cfg.webuiPort);
+    if (Number.isFinite(explicitPort) && explicitPort > 0) port = explicitPort;
+    const explicitUrl = String(cfg.webuiUrl ?? '').trim();
+    if (explicitUrl) {
+      try {
+        const parsed = new URL(explicitUrl);
+        if (parsed.port) port = Number(parsed.port);
+        if (parsed.hostname && parsed.hostname !== '0.0.0.0' && parsed.hostname !== '::') host = parsed.hostname;
+      } catch {}
+    }
+    if (!port) port = 5100;
+    return { port, url: explicitUrl || `http://${host}:${port}` };
   }
 
   // SnowLuma WebUI 的访问密码：优先用户显式填的，其次仓库 state 里的口令文件。

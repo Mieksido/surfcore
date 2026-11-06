@@ -52,6 +52,8 @@
     "launchScript": "",
     "allowLaunch": false,
     "homeDir": "",
+    "webuiPort": 0,
+    "webuiUrl": "",
     "downloadUrl": "https://github.com/SnowLuma/SnowLuma/releases/latest"
   },
   "ownerQQ": null,

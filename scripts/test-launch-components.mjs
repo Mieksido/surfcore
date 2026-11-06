@@ -26,6 +26,8 @@ assert.ok(client.includes('加载 QQ 账号') && client.includes('loadSnowAccoun
 assert.ok(client.includes('order: -1') && client.includes('gridColumn: "1 / -1"'), '启动卡片必须排在概览卡片最上面');
 assert.ok(index.includes('hideConsoles') && client.includes('隐藏启动后的命令行黑框'), '一键启动必须有隐藏命令行窗口的选项');
 assert.ok(index.includes('nodePathEnv'), 'SnowLuma 启动脚本必须能找到 node（不依赖系统 PATH）');
+assert.ok(index.includes("['config', 'runtime.json']") && index.includes('cfg.webuiPort') && client.includes('snowluma.webuiPort'), 'SnowLuma WebUI 端口必须读 config/runtime.json，并支持显式覆盖');
+assert.ok(client.includes('读不到 SnowLuma 控制台') && client.includes('和 QQ 有没有启动无关'), '账号弹窗不能把控制台错误误报成 QQ 没启动');
 
 for (const text of ['一键启动 SurfCore', '一键停止（全部）', 'voiceBranch', '语音分支', '向量模型']) {
   assert.ok(client.includes(text), `前端必须有一键启动/停止/语音分支/向量模型：${text}`);

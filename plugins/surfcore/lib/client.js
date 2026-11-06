@@ -1147,6 +1147,8 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("snowluma.launcherPath", "SnowLuma 安装目录", "解压出来的根目录（里面有 app）；例如 D:/Tools/SnowLuma2", "text", { browse: "dir" }),
         F("snowluma.launchScript", "启动脚本（可选）", "留空自动找 安装目录\\app\\launcher.bat", "text", { wide: true }),
         F("snowluma.homeDir", "SnowLuma home（app 目录）", "内含 config 的那个目录，一般是 安装目录 下的 app；填错会导致「检测不到」", "text", { browse: "dir" }),
+        F("snowluma.webuiPort", "控制台端口（可选）", "留空自动读 config/runtime.json；读不到才回退 5100", "number", { min: 1, max: 65535 }),
+        F("snowluma.webuiUrl", "控制台地址（可选）", "例如 http://127.0.0.1:5099；填了优先于端口", "text", { wide: true }),
       ]},
       { group: "控制台", note: "桥接本地控制台", fields: [
         F("consolePort", "控制台端口", "默认 3100", "number", { min: 1024, max: 65535 }),
@@ -2246,7 +2248,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-modal", style: { maxWidth: "720px", maxHeight: "82vh", overflow: "auto" } },
               h("h3", null, "加载 QQ 账号"),
               h("p", { className: "qbw-hint" },
-                "SnowLuma 已启动，但还没加载 QQ。下面是从 SnowLuma 检测到的进程；选一个点「加载」，加载后桥接会自动连上，不用再去 SnowLuma 控制台。"),
+                // 2026-11-06：这句以前写死「SnowLuma 已启动」，控制台没起来时用户会以为是 QQ 没启动。
+                String(snowAccountErr?.code || "").startsWith("SNOWLUMA_WEBUI")
+                  ? `读不到 SnowLuma 控制台${snowAccountErr?.hint ? `（${snowAccountErr.hint}）` : ""}。先确认 SnowLuma 在运行、控制台端口正确，再点「刷新」。`
+                  : "SnowLuma 已启动，但还没加载 QQ。下面是从 SnowLuma 检测到的进程；选一个点「加载」，加载后桥接会自动连上，不用再去 SnowLuma 控制台。"),
               snowAccountErr ? h("div", { className: "qbw-err", style: { margin: "6px 0", padding: "8px 10px", borderRadius: "8px", background: "rgba(192,57,43,.12)" } },
                 `${snowAccountErr.code ? `（${snowAccountErr.code}）` : ""}${snowAccountErr.message || "读取失败"}`,
                 snowAccountErr.hint ? h("div", { className: "qbw-hint" }, `建议：${snowAccountErr.hint}`) : null) : null,
@@ -2264,7 +2269,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                     onClick: () => loadSnowAccount(p.pid),
                   }, p.loggedIn ? "已加载" : (snowAccountBusy === `load:${p.pid}` ? "加载中…" : "加载"))))) : null,
               !rows.length && !snowAccountBusy ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
-                "没检测到可加载的 QQ 进程。先启动 QQ 客户端（不是 SnowLuma 设置页），再点「刷新」；某些 SnowLuma 版本要求先在它的控制台里登录一次。") : null,
+                // 控制台读不到时进程列表必然是空的；这时叫用户「去启动 QQ」是错的建议。
+                String(snowAccountErr?.code || "").startsWith("SNOWLUMA_WEBUI")
+                  ? "进程列表读不到：上面那条错误解决之前，这里永远是空的（和 QQ 有没有启动无关）。"
+                  : "没检测到可加载的 QQ 进程。先启动 QQ 客户端（不是 SnowLuma 设置页），再点「刷新」；某些 SnowLuma 版本要求先在它的控制台里登录一次。") : null,
               accounts.length ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
                 `已连接账号：${accounts.map((a) => `${a.nickname || a.uin}（${a.uin}）`).join(" · ")}`) : null,
               needPass ? h("div", { style: { marginTop: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
