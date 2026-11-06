@@ -33,13 +33,14 @@
 
 - `ProgressBar` 的 `indeterminate` 改为只有完全拿不到 `percent` 时才用跑马灯；
 - 有真实百分比时显示 `%`；
-- 待更新列表显示 `安装包 X MB`（来自 `item.asset.size`）。
+- 拿不到总大小时显示「已下载 X MB / 总大小未知（GitHub 归档）」；
+- 待更新列表：有 `item.asset.size` 时显示 `安装包 X MB`，dev/version 无资产时明确标「包大小未知（GitHub 归档）」。
 
 ## 验证
 
 ```
 test-embedding-packs-plugin  通过（新增完成 100% 断言）
-test-session-rollover        155 项全过
+test-session-rollover        179 项全过
 test:audit                   152/152
 plugins/surfcore npm test    0 失败
 ```
@@ -47,5 +48,6 @@ plugins/surfcore npm test    0 失败
 ## 残余
 
 - 本地 zip 的进度是阶段估算，不是逐文件字节；
-- 更新包大小只有 release 资产有 `size` 时显示；
+- **dev/version 走 GitHub zipball/归档，响应是 chunked，没有 Content-Length**，所以拿不到真实总大小；
+  若要真实百分比/包大小，发布侧需要额外上传 zip asset（`assets[].size` 才有值）；
 - 未做真实大包安装的逐秒观察，只验证了任务字段和 UI 接线。

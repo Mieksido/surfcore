@@ -388,6 +388,8 @@ console.log('## 15. 更新 busy 锁：必须说人话并自动复位')
   ok((ui.match(/const f = failed\[0\] \?\? \{ code: r\.code, reason: r\.reason/g) || []).length >= 2,
     '两处更新入口都在 results 为空时回落到顶层 error/reason')
   ok(ui.includes('r.code === "apply.busy"'), '忙锁时保留更新弹窗，方便锁释放后重试')
+  ok(ui.includes('总大小未知（GitHub 归档）'), '更新进度在拿不到总大小时仍显示已下载大小和未知原因')
+  ok(ui.includes('包大小未知（GitHub 归档）'), 'dev/版本通道在无 asset.size 时明确标注包大小未知')
 }
 
 console.log(`\n🚀 会话滚动 + 合并窗口测试通过（${passed} 项）`)
