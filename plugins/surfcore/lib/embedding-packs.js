@@ -547,6 +547,21 @@ function runtimeEnv() {
       env.SURFCORE_LEDGER_TOKEN = token;
     }
   } catch {}
+  // 2026-11-06 真机事故：runtime 包的 run.bat 里是裸 `node service.mjs`。
+  // zip 用户机器上 node 通常**不在系统 PATH**（DSH 用自带 node 跑，不会帮子进程加 PATH），
+  // 于是 bat 里第一行就报「'node' 不是内部或外部命令」→ 服务秒退 → 30 秒后前端只看到
+  // 「运行时启动超时，没有写 discovery」，用户完全看不到真实原因。
+  // 这里做两件事：① 把当前运行的 node 目录补进子进程 PATH；② 额外给一个显式入口
+  // SURFCORE_NODE，让包脚本可以完全不依赖 PATH。
+  try {
+    env.SURFCORE_NODE = process.execPath;
+    const nodeDir = path.dirname(process.execPath);
+    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'Path';
+    const current = String(env[pathKey] ?? '');
+    if (nodeDir && !current.split(path.delimiter).includes(nodeDir)) {
+      env[pathKey] = current ? `${nodeDir}${path.delimiter}${current}` : nodeDir;
+    }
+  } catch {}
   return env;
 }
 
@@ -590,7 +605,19 @@ export async function startEmbeddingRuntime() {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   if (!fs.existsSync(discovery)) {
-    return { ok: false, code: 'pack.runtime-start-timeout', error: '运行时启动超时，没有写 discovery', hint: '查看 state/embedding-packs/runtime/service.log' };
+    // 失败必须可行动：把 service.log 最后几行带进错误里（bat 写的是控制台编码，
+    // 中文可能是乱码，但「'node' 不是内部或外部命令」这种关键词仍然一眼能认出来）。
+    let tail = '';
+    try {
+      const logPath = path.join(runtime.path, 'service.log');
+      tail = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).slice(-3).join(' | ');
+    } catch {}
+    return {
+      ok: false,
+      code: 'pack.runtime-start-timeout',
+      error: tail ? `运行时启动超时，没有写 discovery（service.log：${tail.slice(0, 300)}）` : '运行时启动超时，没有写 discovery',
+      hint: `查看 ${path.join(runtime.path, 'service.log')}；常见原因：脚本里的 node 不在 PATH（新版已自动注入）、端口被占、模型包损坏`,
+    };
   }
   const registration = await registrationFor();
   const verification = await testEmbeddingPack();

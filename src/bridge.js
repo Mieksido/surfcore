@@ -1844,7 +1844,6 @@ let stateDirHardened = null;
 async function main() {
   const cfg = loadConfig();
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  hardenStateDirAcl();
   acquireLock();
   loadState();
 
@@ -9611,6 +9610,11 @@ async function main() {
     });
     server.listen(port, '127.0.0.1', () => {
       log(`本地控制台已启动：http://127.0.0.1:${port}`);
+      // ACL 收紧要跑 icacls，可能被系统策略拖到几十秒；必须等控制台端口先监听，
+      // 否则 startBridge 的「等端口」会在硬化完成前超时，用户看到假失败。
+      Promise.resolve().then(() => {
+        try { hardenStateDirAcl(); } catch (error) { log(`state/ 权限收紧异常：${error?.message ?? error}`); }
+      });
     });
     // 端口被占用说明已有实例在跑：以 exit 2 退出，守护脚本会识别为"已有实例"而不是无限重启
     server.on('error', (error) => {

@@ -1943,8 +1943,25 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const biliStart = platformStart.bili !== false;
       // ── 一键启动 / 停止（QQ+B站+桌宠+语音）────────────────────────────
       const launch = overview?.launch ?? {};
-      const [launchSel, setLaunchSel] = useState({ qq: true, bili: true, pet: false, voice: false });
+      const voiceKnown = launch.voice?.ok !== false;
+      const [launchSel, setLaunchSel] = useState({ qq: true, bili: true, pet: false, voice: false, vector: false });
+      const [hideConsoles, setHideConsoles] = useState(unified?.platforms?.hideConsoles === true);
       const [voiceBranch, setVoiceBranch] = useState("voice-local");
+      const [vectorPack, setVectorPack] = useState("");
+      const [snowAccountOpen, setSnowAccountOpen] = useState(false);
+      const [snowAccountData, setSnowAccountData] = useState(null);
+      const [snowAccountErr, setSnowAccountErr] = useState(null);
+      const [snowAccountBusy, setSnowAccountBusy] = useState("");
+      const [snowWebuiPass, setSnowWebuiPass] = useState("");
+      useEffect(() => {
+        if (vectorPack) return;
+        const v = launch?.vector;
+        if (!v) return;
+        const next = v.provider === "cloud" && v.cloudActive
+          ? `cloud:${v.cloudActive}`
+          : (v.selected ? `local:${v.selected}` : ((v.models ?? []).find((m) => m.valid) ? `local:${(v.models ?? []).find((m) => m.valid).id}` : ""));
+        if (next) setVectorPack(next);
+      }, [launch?.vector?.provider, launch?.vector?.cloudActive, launch?.vector?.selected, launch?.vector?.models, vectorPack]);
       const [launchResult, setLaunchResult] = useState(null);
       const [launchErr, setLaunchErr] = useState(null);
       // ── 组件更新（2026-10-26）──────────────────────────────────────────
@@ -2143,9 +2160,42 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           await reload();
         } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
       };
+      const loadSnowAccounts = async (password = snowWebuiPass) => {
+        setSnowAccountBusy("read");
+        try {
+          const r = await api("/snowluma/accounts", { method: "POST", body: { password } });
+          setSnowAccountData(r);
+          if (r.ok === false) setSnowAccountErr({ code: r.code, message: r.error || "读取 SnowLuma 账号失败", hint: r.hint });
+          else setSnowAccountErr(null);
+        } catch (e) {
+          setSnowAccountErr({ code: e.code, message: e.message, hint: e.hint });
+        } finally { setSnowAccountBusy(""); }
+      };
+      const openSnowAccounts = () => {
+        setSnowAccountOpen(true);
+        void loadSnowAccounts();
+      };
+      const loadSnowAccount = async (pid) => {
+        setSnowAccountBusy(`load:${pid}`);
+        try {
+          const r = await api("/snowluma/load", { method: "POST", body: { pid, password: snowWebuiPass } });
+          if (r.ok === false) {
+            setSnowAccountErr({ code: r.code, message: r.error || "加载 QQ 失败", hint: r.hint });
+            toast(`✗ ${r.error || "加载 QQ 失败"}${r.hint ? `；${r.hint}` : ""}`);
+          } else {
+            setSnowAccountErr(null);
+            toast("✓ 已提交加载，正在等 SnowLuma 登录…");
+            await loadSnowAccounts();
+            setTimeout(() => { void loadSnowAccounts(); }, 2500);
+          }
+        } catch (e) {
+          setSnowAccountErr({ code: e.code, message: e.message, hint: e.hint });
+          toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
+        } finally { setSnowAccountBusy(""); }
+      };
       const runLaunch = async (mode) => {
         const ids = mode === "stop"
-          ? ["qq", "bili", "pet", "voice"]
+          ? ["qq", "bili", "pet", "voice", "vector"]
           : Object.entries(launchSel).filter(([, on]) => on).map(([id]) => id);
         if (!ids.length) { toast("✗ 至少勾选一项"); return; }
         setBusy(mode === "stop" ? "launch-stop" : "launch-start");
@@ -2155,6 +2205,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             action: mode === "stop" ? "stop-selected" : "start-selected",
             components: ids,
             voicePack: voiceBranch,
+            vectorPack: launchSel.vector ? vectorPack : "",
+            hideConsoles: hideConsoles === true,
           } });
           setLaunchResult({ ...res, _mode: mode });
           const bad = (res.items ?? []).filter((x) => !x.ok);
@@ -2162,6 +2214,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             ? `✗ ${bad.length} 项失败：${bad.map((x) => x.label).join("、")}`
             : `✓ ${mode === "stop" ? "已停止" : "已启动"}：${(res.items ?? []).map((x) => x.label).join("、")}`);
           await reload();
+          const qqItem = (res.items ?? []).find((item) => item.id === "qq");
+          if (mode === "start" && qqItem?.needsAccount === true) openSnowAccounts();
         } catch (e) {
           setLaunchErr({ message: e.message, code: e.code, hint: e.hint });
           toast(`✗ ${mode === "stop" ? "停止" : "启动"}失败：${e.message}${e.hint ? `；${e.hint}` : ""}`);
@@ -2180,6 +2234,43 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
       const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
       return h("div", null,
+        snowAccountOpen ? (() => {
+          const rows = Array.isArray(snowAccountData?.processes) ? snowAccountData.processes : [];
+          const accounts = Array.isArray(snowAccountData?.accounts) ? snowAccountData.accounts : [];
+          const needPass = ["SNOWLUMA_WEBUI_PASSWORD_MISSING", "SNOWLUMA_WEBUI_LOGIN_FAILED", "SNOWLUMA_WEBUI_AUTH"].includes(String(snowAccountErr?.code || ""));
+          return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget && !snowAccountBusy) setSnowAccountOpen(false); } },
+            h("div", { className: "qbw-modal", style: { maxWidth: "720px", maxHeight: "82vh", overflow: "auto" } },
+              h("h3", null, "加载 QQ 账号"),
+              h("p", { className: "qbw-hint" },
+                "SnowLuma 已启动，但还没加载 QQ。下面是从 SnowLuma 检测到的进程；选一个点「加载」，加载后桥接会自动连上，不用再去 SnowLuma 控制台。"),
+              snowAccountErr ? h("div", { className: "qbw-err", style: { margin: "6px 0", padding: "8px 10px", borderRadius: "8px", background: "rgba(192,57,43,.12)" } },
+                `${snowAccountErr.code ? `（${snowAccountErr.code}）` : ""}${snowAccountErr.message || "读取失败"}`,
+                snowAccountErr.hint ? h("div", { className: "qbw-hint" }, `建议：${snowAccountErr.hint}`) : null) : null,
+              snowAccountBusy === "read" ? h("div", { className: "qbw-hint" }, "正在读取 SnowLuma 账号…") : null,
+              rows.length ? h("div", { style: { display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" } },
+                rows.map((p) => h("div", { className: "qbw-row", key: `snow-proc-${p.pid}`, style: { alignItems: "center", border: "1px solid rgba(127,127,127,.24)", borderRadius: "10px", padding: "8px 10px" } },
+                  h("div", { style: { flex: "1 1 auto", minWidth: 0 } },
+                    h("b", null, p.nickname || (p.uin ? `QQ ${p.uin}` : "QQ 进程")),
+                    h("div", { className: "qbw-hint" },
+                      `${p.uin ? `QQ ${p.uin} · ` : ""}PID ${p.pid ?? "—"} · ${p.loggedIn ? "已加载" : (p.status || "可加载")}${p.injected ? " · 已注入" : ""}`),
+                    p.error ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)" } }, p.error) : null),
+                  h(Btn, {
+                    kind: "qbw-btn2",
+                    disabled: !!snowAccountBusy || p.loggedIn || !p.pid,
+                    onClick: () => loadSnowAccount(p.pid),
+                  }, p.loggedIn ? "已加载" : (snowAccountBusy === `load:${p.pid}` ? "加载中…" : "加载"))))) : null,
+              !rows.length && !snowAccountBusy ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
+                "没检测到可加载的 QQ 进程。先启动 QQ 客户端（不是 SnowLuma 设置页），再点「刷新」；某些 SnowLuma 版本要求先在它的控制台里登录一次。") : null,
+              accounts.length ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
+                `已连接账号：${accounts.map((a) => `${a.nickname || a.uin}（${a.uin}）`).join(" · ")}`) : null,
+              needPass ? h("div", { style: { marginTop: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
+                h("input", { type: "password", className: "qbw-input", value: snowWebuiPass, placeholder: "SnowLuma WebUI 访问密码", onChange: (e) => setSnowWebuiPass(e.target.value) }),
+                h(Btn, { kind: "qbw-btn2", disabled: !!snowAccountBusy || !snowWebuiPass.trim(), onClick: () => loadSnowAccounts(snowWebuiPass) }, "用这个密码读取")) : null,
+              h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
+                h(Btn, { kind: "qbw-btn2", disabled: !!snowAccountBusy, onClick: () => loadSnowAccounts() }, snowAccountBusy === "read" ? "刷新中…" : "刷新"),
+                h(Btn, { kind: "qbw-btn2", onClick: () => setSnowAccountOpen(false), disabled: !!snowAccountBusy }, "关闭")),
+              snowAccountData?.webui ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, `SnowLuma 控制台：${snowAccountData.webui}`) : null));
+        })() : null,
         h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
         // 今日唤醒额度用完 = 它不回消息的最常见原因；以前只在 state/bridge.log 里写一行。
         (() => {
@@ -2229,7 +2320,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-kv" }, h("span", null, "隐私策略"), h("span", null, `v${overview?.privacyPolicyVersion ?? "?"}`)),
             h("div", { className: "qbw-actions" },
               h(Btn, { kind: "qbw-btn2", onClick: () => act("refresh-bili"), disabled: !!busy }, "刷新 B站记忆"))),
-          h("div", { className: "qbw-card" },
+          h("div", { className: "qbw-card", style: { order: -1, gridColumn: "1 / -1" } },
             h("h4", null, "启动"),
             h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
               "一键启动会按 QQ / B站 页里的「是否启动」开关拉起对应平台；也可以只启动一边。",
@@ -2254,22 +2345,47 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h("span", null, `桌宠${launch.pet?.running ? " · 运行中" : (launch.pet?.installed ? " · 未运行" : " · 未安装")}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px" } },
                 h("input", { type: "checkbox", checked: launchSel.voice, onChange: (e) => setLaunchSel((v) => ({ ...v, voice: e.target.checked })) }),
-                h("span", null, `语音${launch.voice?.running ? " · 运行中" : " · 未运行"}`))),
+                h("span", null, `语音${launch.voice?.running ? " · 运行中" : " · 未运行"}`)),
+              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px" } },
+                h("input", { type: "checkbox", checked: launchSel.vector, onChange: (e) => setLaunchSel((v) => ({ ...v, vector: e.target.checked })) }),
+                h("span", null, `向量记忆${launch.vector?.running ? " · 运行中" : " · 未运行"}`))),
+            h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginTop: "4px" } },
+              h("input", {
+                type: "checkbox", checked: hideConsoles,
+                onChange: (e) => { setHideConsoles(e.target.checked); setUnified?.(["platforms", "hideConsoles"], e.target.checked); },
+              }),
+              h("span", null, "隐藏启动后的命令行黑框"),
+              h("span", { className: "qbw-hint" }, "勾选后一键启动不再弹 cmd / SnowLuma 控制台窗口")),
             launchSel.voice ? h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: 0 } },
               h("span", { className: "qbw-hint" }, "语音分支："),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
                 h("input", { type: "radio", name: "voiceBranch", checked: voiceBranch === "voice-local", onChange: () => setVoiceBranch("voice-local") }),
-                h("span", null, `本地模型${(launch.voice?.installed ?? []).includes("voice-local") ? "" : "（未安装）"}`)),
+                h("span", null, `本地模型${voiceKnown ? ((launch.voice?.installed ?? []).includes("voice-local") ? "" : "（未安装）") : "（状态未知：QQ 桥接未运行）"}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
                 h("input", { type: "radio", name: "voiceBranch", checked: voiceBranch === "voice-cloud", onChange: () => setVoiceBranch("voice-cloud") }),
-                h("span", null, `云端模型${(launch.voice?.installed ?? []).includes("voice-cloud") ? "" : "（未安装）"}`))) : null,
+                h("span", null, `云端模型${voiceKnown ? ((launch.voice?.installed ?? []).includes("voice-cloud") ? "" : "（未安装）") : "（状态未知：QQ 桥接未运行）"}`))) : null,
+            launchSel.vector ? (() => {
+              const models = (launch.vector?.models ?? []).filter((m) => m.valid);
+              const providers = (launch.vector?.providers ?? []).filter((p) => p.hasKey);
+              const total = models.length + providers.length;
+              return h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: 0, flexWrap: "wrap" } },
+                h("span", { className: "qbw-hint" }, "向量模型（勾选后会把记忆方式切到向量）："),
+                h("select", {
+                  className: "qbw-select", value: vectorPack, disabled: !!busy || !total,
+                  onChange: (e) => setVectorPack(e.target.value),
+                },
+                  models.map((m) => h("option", { key: `local:${m.id}`, value: `local:${m.id}` }, `本地 · ${m.name}`)),
+                  providers.map((p) => h("option", { key: `cloud:${p.id}`, value: `cloud:${p.id}` }, `云端 · ${CLOUD_PROVIDER_BY_ID[p.id]?.name ?? p.id}`))),
+                total ? null : h("span", { className: "qbw-hint" }, launch.vector?.ok === false && launch.vector?.lastError ? `状态读取失败：${launch.vector.lastError}` : "还没有已安装的本地模型或已保存 Key 的云端服务商"));
+            })() : null,
             h("div", { className: "qbw-actions", style: { marginTop: "6px" } },
               h(Btn, { onClick: () => runLaunch("start"), disabled: !!busy }, busy === "launch-start" ? "启动中…" : "一键启动 SurfCore"),
               h(Btn, { kind: "qbw-btn2", onClick: () => runLaunch("stop"), disabled: !!busy }, busy === "launch-stop" ? "停止中…" : "一键停止（全部）"),
+              h(Btn, { kind: "qbw-btn2", onClick: openSnowAccounts, disabled: !!busy }, "加载 QQ 账号"),
               h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("qq"), disabled: !!busy }, "去 QQ 页改启动开关"),
               h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("bili"), disabled: !!busy }, "去 B站 页改启动开关")),
-            [["qq", "QQ"], ["bili", "B站"], ["pet", "桌宠"], ["voice", "语音"]].map(([id, label]) =>
-              launch[id]?.lastError ? h("div", { className: "qbw-hint", key: `launch-err-${id}`, style: { color: "var(--qbw-err-text)", marginTop: "2px" } },
+            [["qq", "QQ"], ["bili", "B站"], ["pet", "桌宠"], ["voice", "语音"], ["vector", "向量记忆"]].map(([id, label]) =>
+              launch[id]?.lastError && (id !== "vector" || launchSel.vector) ? h("div", { className: "qbw-hint", key: `launch-err-${id}`, style: { color: "var(--qbw-err-text)", marginTop: "2px" } },
                 `${label}：${launch[id].lastError}`) : null),
             launchErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } },
               `${launchErr.code ? `（${launchErr.code}）` : ""}${launchErr.message}`,
@@ -2285,7 +2401,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 checked: unified?.bridge?.startupNotify !== false,
                 onChange: (e) => setUnified(["bridge", "startupNotify"], e.target.checked),
               })),
-            h("div", { className: "qbw-hint" }, "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma（仍需扫码）。一键停止只停 SurfCore 托管的 QQ 桥接、B站生物钟、桌宠和语音包，不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
+            h("div", { className: "qbw-hint" }, "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma，并弹出「加载 QQ 账号」窗口自动检测进程（QQ 本身未登录时仍需扫码）。勾选「向量记忆」会启动 Embedding runtime 并把记忆方式切到向量（自检不过不会切）；一键停止会把记忆方式切回叙事。不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
           h("div", { className: "qbw-card" },
             h("h4", null, "更新 ", (() => {
               const rows = updates.results ?? [];

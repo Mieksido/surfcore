@@ -340,4 +340,34 @@ console.log('## 12. 成本标签 / 重启标记 / 每会话额度 / 表情频率
   ok(advStart > 0 && ui.slice(advStart, advStart + 800).includes('setQuery'), '全部参数页有搜索框')
 }
 
+console.log('## 13. Embedding runtime 启动：PATH 注入与可行动报错')
+{
+  const packs = read('plugins/surfcore/lib/embedding-packs.js')
+  ok(packs.includes('env.SURFCORE_NODE = process.execPath'), '给包脚本提供显式 node 入口（不依赖 PATH）')
+  ok(packs.includes("const nodeDir = path.dirname(process.execPath)"), '取当前 node 目录')
+  ok(packs.includes("env[pathKey] = current ?"), '把 node 目录注入子进程 PATH')
+  ok(packs.includes("toUpperCase() === 'PATH'"), '兼容 PATH/Path 两种键名（Windows 上常见）')
+  ok(packs.includes('service.log：'), '启动超时的错误文案带 service.log 尾巴（失败可行动）')
+  ok(packs.includes('node 不在 PATH'), 'hint 直接点名最常见原因')
+
+  const bat = read('plugins/surfcore/runtime/run.bat')
+  ok(bat.includes('embedding-service.mjs'), '兜底 run.bat 指向真实存在的入口文件')
+}
+
+console.log('## 14. 桥接启动时序：监听前不跑 ACL，等待 30 秒')
+{
+  const bridgeSrc = read('src/bridge.js')
+  const pluginBridge = read('plugins/surfcore/lib/bridge.js')
+  const acl = read('src/state-acl.mjs')
+  const listenAt = bridgeSrc.indexOf('server.listen(port,')
+  const aclAt = bridgeSrc.indexOf('hardenStateDirAcl();', listenAt)
+  ok(listenAt > 0 && aclAt > listenAt, '控制台先监听，ACL 收紧放到 listen 之后')
+  const mainAt = bridgeSrc.indexOf('async function main()')
+  ok(mainAt > 0 && !bridgeSrc.slice(mainAt, mainAt + 500).includes('hardenStateDirAcl();'), 'main 启动路径不再同步跑 ACL')
+  ok(pluginBridge.includes('i < 60') && pluginBridge.includes('30 秒'), '桥接启动等待改为 30 秒，避免首次 ACL 误报')
+  ok(acl.includes('icacls(args, 3000)'), 'ACL 启动路径超时收敛到 3 秒')
+  const client = read('plugins/surfcore/lib/client.js')
+  ok(client.includes('状态未知：QQ 桥接未运行'), '语音包状态未知时不再误报「未安装」')
+}
+
 console.log(`\n🚀 会话滚动 + 合并窗口测试通过（${passed} 项）`)

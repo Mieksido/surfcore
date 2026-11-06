@@ -2119,6 +2119,20 @@ ${body}`;
     });
   }
 
+  /** 让 .bat/.cmd 里的裸 `node` 也能找到 DSH 自带的 node（Windows PATH 键名大小写不固定）。 */
+  function nodePathEnv() {
+    const env = { ...process.env };
+    try {
+      const nodeDir = path.dirname(process.execPath);
+      const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'Path';
+      const current = String(env[pathKey] ?? '');
+      if (nodeDir && !current.split(path.delimiter).includes(nodeDir)) {
+        env[pathKey] = current ? `${nodeDir}${path.delimiter}${current}` : nodeDir;
+      }
+    } catch {}
+    return env;
+  }
+
   function resolveSnowLumaLauncher() {
     const cfg = readQqConfig().config?.snowluma ?? {};
     const explicit = String(cfg.launchScript ?? '').trim();
@@ -2154,6 +2168,111 @@ ${body}`;
       }
     } catch {}
     return { port, url: `http://127.0.0.1:${port}` };
+  }
+
+  // SnowLuma WebUI 的访问密码：优先用户显式填的，其次仓库 state 里的口令文件。
+  // 只在本进程内使用，不返回给浏览器、不写日志。
+  function snowLumaWebuiPassword() {
+    try {
+      return fs.readFileSync(path.join(QQBOT_ROOT, 'state', 'snowluma-webui.pass'), 'utf8').trim();
+    } catch { return ''; }
+  }
+
+  function snowLumaWebuiError(code, error, hint = '', status = 200) {
+    return Object.assign(new Error(String(error || code)), { code, hint, status });
+  }
+
+  async function snowLumaWebuiRequest(pathname, { method = 'GET', body = null, password = '' } = {}) {
+    const webui = snowLumaWebui();
+    let up = false;
+    for (let i = 0; i < 8; i += 1) {
+      if (await portOpen(webui.port, 500)) { up = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    if (!up) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', 'SnowLuma 控制台还没起来', `先启动 SnowLuma；如果刚点了一键启动，等几秒再点「刷新」（${webui.url}）`);
+    }
+    const pass = String(password || '').trim() || snowLumaWebuiPassword();
+    if (!pass) {
+      throw snowLumaWebuiError(
+        'SNOWLUMA_WEBUI_PASSWORD_MISSING',
+        '没有 SnowLuma 控制台密码',
+        `在弹窗里输入 SnowLuma WebUI 访问密码，或把密码写到 ${path.join(QQBOT_ROOT, 'state', 'snowluma-webui.pass')}`,
+      );
+    }
+    let loginRes;
+    try {
+      loginRes = await fetch(`${webui.url}/api/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pass }), signal: AbortSignal.timeout(8000),
+      });
+    } catch (error) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', `连不上 SnowLuma 控制台：${error?.message ?? error}`, `确认 ${webui.url} 能打开；必要时重启 SnowLuma`);
+    }
+    const login = await loginRes.json().catch(() => ({}));
+    if (login?.needsTotp === true) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_TOTP', 'SnowLuma 控制台开启了二次验证', '先在 SnowLuma 控制台完成 TOTP，再回来刷新');
+    }
+    if (!loginRes.ok || typeof login?.token !== 'string' || !login.token) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_LOGIN_FAILED', 'SnowLuma 控制台密码不正确', '检查密码后重试；密码只在本机进程内使用');
+    }
+    let res;
+    try {
+      res = await fetch(`${webui.url}${pathname}`, {
+        method,
+        headers: { 'X-SnowLuma-Token': login.token, ...(body != null ? { 'Content-Type': 'application/json' } : {}) },
+        body: body != null ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (error) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', `SnowLuma 控制台请求失败：${error?.message ?? error}`, '稍后重试；如果控制台被关闭，重新一键启动');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_AUTH', 'SnowLuma 控制台会话失效', '重新输入密码后重试');
+    }
+    if (!res.ok || data?.ok === false) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_HTTP', data?.error || data?.message || `SnowLuma 返回 HTTP ${res.status}`, data?.hint || '刷新后重试');
+    }
+    if (data?.success === false) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_ACTION_FAILED', data?.message || 'SnowLuma 操作失败', data?.hint || '检查 QQ 进程状态后重试');
+    }
+    return data;
+  }
+
+  function snowLumaProcessView(process) {
+    const p = process ?? {};
+    const uin = String(p.uin || p.account?.uin || '').replace(/\D/g, '').slice(0, 15);
+    return {
+      pid: Number.isSafeInteger(Number(p.pid)) ? Number(p.pid) : null,
+      uin,
+      nickname: String(p.account?.nickname || p.nickname || p.name || '').slice(0, 60),
+      status: String(p.status || '').slice(0, 40),
+      loggedIn: p.loggedIn === true,
+      injected: p.injected === true,
+      error: String(p.error || p.account?.error || '').slice(0, 200),
+    };
+  }
+
+  async function snowLumaAccountList(password = '') {
+    const processesRaw = await snowLumaWebuiRequest('/api/processes', { password });
+    const accountsRaw = await snowLumaWebuiRequest('/api/qq-list', { password }).catch(() => ({ list: [] }));
+    const processes = (Array.isArray(processesRaw?.list) ? processesRaw.list : []).map(snowLumaProcessView);
+    const accounts = (Array.isArray(accountsRaw?.list) ? accountsRaw.list : []).map((account) => ({
+      uin: String(account?.uin || '').replace(/\D/g, '').slice(0, 15),
+      nickname: String(account?.nickname || account?.name || '').slice(0, 60),
+      online: account?.online === true,
+    }));
+    return { webui: snowLumaWebui().url, processes, accounts };
+  }
+
+  async function snowLumaLoadAccount(pid, password = '') {
+    const n = Number(pid);
+    if (!Number.isSafeInteger(n) || n <= 0) {
+      throw snowLumaWebuiError('SNOWLUMA_PROCESS_INVALID', 'QQ 进程号无效', '点「刷新」重新检测，再选一个进程');
+    }
+    const result = await snowLumaWebuiRequest(`/api/processes/${n}/load`, { method: 'POST', body: {}, password });
+    return { process: snowLumaProcessView(result?.process ?? result ?? {}) };
   }
 
   // 只用系统默认浏览器打开本地回环地址；URL 由端口拼出，不接受外部输入。
@@ -2211,7 +2330,7 @@ ${body}`;
     return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
   }
 
-  async function launchSnowLuma() {
+  async function launchSnowLuma({ openWebui = true, hideConsoles = false } = {}) {
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
     }
@@ -2228,10 +2347,11 @@ ${body}`;
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
     if (await portOpen(webui.port)) {
-      const opened = openLocalUrl(webui.url);
+      const opened = openWebui ? openLocalUrl(webui.url) : false;
       return {
         ok: true,
         needsLogin: true,
+        needsAccount: true,
         opened,
         webui: webui.url,
         message: opened ? `SnowLuma 在登录页，已打开控制台 ${webui.url}` : `SnowLuma 在登录页：请打开 ${webui.url} 扫码`,
@@ -2249,21 +2369,29 @@ ${body}`;
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
         // 现在整条路径作为「verbatim 参数」交给 cmd，并且拒绝含引号/换行的路径。
         if (/["\r\n]/.test(launcher)) return { ok: false, error: '启动脚本路径含引号或换行，拒绝执行' };
-        spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${launcher}"`], {
-          cwd, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true,
-        }).unref();
+        if (hideConsoles) {
+          // 不经过 `start`：start 会显式创建新控制台窗口，windowsHide 压不住。
+          spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `"${launcher}"`], {
+            cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: true, windowsVerbatimArguments: true,
+          }).unref();
+        } else {
+          spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${launcher}"`], {
+            cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: false, windowsVerbatimArguments: true,
+          }).unref();
+        }
       } else {
-        spawn(launcher, [], { cwd, detached: true, stdio: 'ignore', windowsHide: false }).unref();
+        spawn(launcher, [], { cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: hideConsoles === true }).unref();
       }
       // 等 WebUI 端口起来（最多 10 秒）：起来了就打开浏览器；没起来也给出地址让用户自己点。
       const until = Date.now() + 10_000;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (await portOpen(webui.port)) {
-          const opened = openLocalUrl(webui.url);
+          const opened = openWebui ? openLocalUrl(webui.url) : false;
           return {
             ok: true,
             started: true,
+            needsAccount: true,
             opened,
             webui: webui.url,
             launcher,
@@ -2271,7 +2399,7 @@ ${body}`;
           };
         }
       }
-      return { ok: true, started: true, pending: true, webui: webui.url, launcher, message: `已启动 SnowLuma，控制台稍后可访问：${webui.url}` };
+      return { ok: true, started: true, pending: true, needsAccount: true, webui: webui.url, launcher, message: `已启动 SnowLuma，控制台稍后可访问：${webui.url}` };
     } catch (error) {
       return { ok: false, error: `打开 SnowLuma 失败：${error?.message ?? error}` };
     }
@@ -2760,8 +2888,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   // ── 一键启动 / 停止（概览、QQ、B站、桌宠、语音共用同一份状态）────────────
-  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice'];
-  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音' };
+  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice', 'vector'];
+  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音', vector: '向量记忆' };
 
   function normalizeLaunchComponents(input) {
     const list = Array.isArray(input) ? input : [];
@@ -2787,6 +2915,26 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     let voice = { ok: false, running: false, packs: [], id: '', error: bridge.running ? '' : 'QQ 桥接未运行' };
     if (bridge.running) voice = await voicePacksSnapshot();
     const pet = petService.status();
+    let vector = { ok: false, running: false, models: [], providers: [], selected: '', provider: '', model: '', modelSpace: '' };
+    try {
+      const vp = embeddingPacksStatus();
+      vector = {
+        ok: vp.service?.ok === true,
+        running: vp.service?.ok === true,
+        selected: String(vp.config?.packId || ''),
+        provider: String(vp.config?.provider || ''),
+        cloudActive: String(vp.cloudConfig?.active || ''),
+        model: String(vp.config?.model || ''),
+        modelSpace: String(vp.config?.modelSpace || ''),
+        models: (vp.models ?? []).map((m) => ({ id: m.id, name: m.name || m.id, valid: m.valid === true, modelSpace: m.modelSpace || '' })),
+        providers: Object.entries(vp.cloudConfig?.providers ?? {}).map(([id, p]) => ({
+          id, hasKey: p?.hasKey === true, model: p?.model || '', modelSpace: p?.modelSpace || '',
+        })),
+        lastError: vp.service?.ok === true ? null : (vp.service?.error || 'Embedding runtime 未启动'),
+      };
+    } catch (error) {
+      vector.lastError = String(error?.message ?? error).slice(0, 200);
+    }
     return {
       qq: {
         running: Boolean(bridge.running),
@@ -2815,6 +2963,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         packs: (voice.packs ?? []).map((p) => ({ id: p.id, installed: Boolean(p.installed), running: Boolean(p.running), name: p.name || p.id })),
         lastError: voice.error || null,
       },
+      vector,
     };
   }
 
@@ -2824,6 +2973,32 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   async function startComponent(id, opts = {}) {
     try {
+      if (id === 'vector') {
+        const pick = String(opts.vectorPack || '').trim();
+        if (pick.startsWith('local:')) {
+          const selected = selectEmbeddingPack(pick.slice('local:'.length));
+          if (!selected.ok) return launchItem(id, false, { ...selected, error: selected.error || '选择本地模型失败' });
+        } else if (pick.startsWith('cloud:')) {
+          const activated = activateCloudProvider(pick.slice('cloud:'.length));
+          if (!activated.ok) return launchItem(id, false, { ...activated, error: activated.error || '启用云端服务商失败' });
+          // 云端 endpoint/key 是启动时注入 runtime 的环境变量，已运行的服务必须重启才会换 provider。
+          if (embeddingPacksStatus().service?.ok) {
+            const stopped = await stopEmbeddingRuntime();
+            if (!stopped.ok) return launchItem(id, false, { ...stopped, error: stopped.error || '停止旧 Embedding runtime 失败' });
+          }
+        }
+        const started = await startEmbeddingRuntime();
+        if (!started.ok) return launchItem(id, false, { ...started, error: started.error || 'Embedding runtime 启动失败' });
+        if (started.verified === false) {
+          return launchItem(id, false, {
+            code: 'VECTOR_SELF_TEST_FAILED',
+            error: `runtime 已启动但自检失败：${started.verification?.error || '未知错误'}`,
+            hint: '检查模型包/云端 Key 后重试；没有通过自检不会切换到向量记忆',
+          });
+        }
+        saveUnified({ memory: { mode: 'vector' } });
+        return launchItem(id, true, { message: `向量记忆已启用${pick ? `（${pick}）` : ''}` });
+      }
       if (id === 'qq') {
         if (!platformStartEnabled('qq')) {
           return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「启动 QQ」并保存' });
@@ -2831,7 +3006,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const status = await bridgeStatus();
         const stale = bridgeStaleReason(status);
         const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
-        const snowluma = await launchSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        const snowluma = await launchSnowLuma({ openWebui: false, hideConsoles: opts.hideConsoles === true }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
         const bridgeOk = bridge?.ok !== false;
         const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
         return launchItem(id, bridgeOk && snowOk, {
@@ -2839,6 +3014,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
           error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
           hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
+          needsAccount: snowluma?.needsAccount === true,
+          webui: snowluma?.webui || null,
           detail: { bridge, snowluma },
         });
       }
@@ -2894,6 +3071,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   async function stopComponent(id, opts = {}) {
     try {
+      if (id === 'vector') {
+        const r = await stopEmbeddingRuntime();
+        saveUnified({ memory: { mode: 'narrative' } });
+        return launchItem(id, r?.ok !== false, {
+          message: '向量记忆已停止，读取方式切回叙事记忆',
+          code: r?.ok === false ? 'VECTOR_STOP_FAILED' : '',
+          error: r?.ok === false ? (r.error || 'Embedding runtime 停止失败') : '',
+          hint: r?.ok === false ? '看 embedding runtime 日志/手动结束进程' : '',
+        });
+      }
       if (id === 'qq') {
         const r = await stopBridge();
         return launchItem(id, r?.ok !== false, {
@@ -2953,7 +3140,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     const items = [];
     // 停止时先停语音（它由 QQ 桥接托管），再停桥接；否则桥接先死，语音进程会变成孤儿。
-    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet'].filter((id) => ids.includes(id)) : ids;
+    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet', 'vector'].filter((id) => ids.includes(id)) : ids;
     for (const id of ordered) {
       items.push(action === 'stop' ? await stopComponent(id, body) : await startComponent(id, body));
     }
@@ -3874,6 +4061,31 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (pathname === `${API_PREFIX}/diagnostics`) { await handleDiagnostics(req, res); return; }
+    if (pathname === `${API_PREFIX}/snowluma/accounts` || pathname === `${API_PREFIX}/snowluma/load`) {
+      if (String(req.method || 'GET').toUpperCase() !== 'POST') {
+        json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' });
+        return;
+      }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+      try {
+        if (pathname.endsWith('/accounts')) {
+          const result = await snowLumaAccountList(String(body.password || ''));
+          json(res, 200, { ok: true, ...result });
+        } else {
+          const result = await snowLumaLoadAccount(body.pid, String(body.password || ''));
+          json(res, 200, { ok: true, ...result });
+        }
+      } catch (error) {
+        json(res, 200, {
+          ok: false,
+          code: String(error?.code || 'SNOWLUMA_ACCOUNT_FAILED'),
+          error: String(error?.message ?? error).slice(0, 300),
+          hint: String(error?.hint ?? '刷新后重试；必要时打开 SnowLuma 控制台检查').slice(0, 300),
+        });
+      }
+      return;
+    }
     if (pathname === `${API_PREFIX}/bridge`) { await handleBridge(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/purpose`)) { await handlePurpose(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/voice`)) { await handleVoice(req, res, url); return; }

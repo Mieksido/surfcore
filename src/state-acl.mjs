@@ -87,7 +87,8 @@ export function hardenDir(dir) {
     [dir, '/Q', '/grant', `${user}:(OI)(CI)F`, '/grant', 'SYSTEM:(OI)(CI)F', '/grant', 'Administrators:(OI)(CI)F']
   ];
   for (const args of steps) {
-    const res = icacls(args);
+    // 启动路径不能为了 ACL 把控制台事件循环卡 30 秒/步；超时就明确失败，交给安全页手动重试。
+    const res = icacls(args, 3000);
     const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
     if (res.error) return { ok: false, detail: res.error.message };
     // /C 会让 icacls 继续处理剩余文件、即使全失败退出码仍是 0，所以必须看输出。

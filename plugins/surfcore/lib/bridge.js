@@ -189,12 +189,12 @@ export async function start({ dshWebUrl = '' } = {}) {
   });
   child.unref();
   appendSupervisorLog(`已请求启动 bridge.js（无窗口，pid ${child.pid ?? '?'}，DSH=${env.DSH_WEB_URL ?? 'config'}）`);
-  // 等最多 12 秒
-  for (let i = 0; i < 24; i += 1) {
+  // 等最多 30 秒（首次启动可能要先做 ACL/状态初始化；12 秒会误报失败）
+  for (let i = 0; i < 60; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     if (await portOpen()) return { ok: true, started: true, message: '桥接已启动' };
   }
-  return { ok: false, error: '启动后 12 秒仍未监听控制台端口，请查看桥接日志', log: BRIDGE_SUPERVISOR_LOG };
+  return { ok: false, error: '启动后 30 秒仍未监听控制台端口，请查看桥接日志', log: BRIDGE_SUPERVISOR_LOG };
 }
 
 export async function stop() {
