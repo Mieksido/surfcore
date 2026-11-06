@@ -267,8 +267,8 @@ try {
     const clientSrc = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
     ok(updatesSrc.includes('stagedTargets'), 'staged 用下载前捕获的目标键，不能从 no-fetch 结果算 vnull');
     ok(updatesSrc.includes("phase: 'extract'") && updatesSrc.includes("'pending'"), '下载/解压/排队阶段可上报');
-    ok(clientSrc.includes('phaseText') && clientSrc.includes('onStaged') && clientSrc.includes('dl.phase'),
-      '进度条保留下载统计并区分阶段，staged 后弹重启提示');
+    ok(clientSrc.includes('phaseText') && clientSrc.includes('onStaged') && clientSrc.includes('dl.percent') && clientSrc.includes('indeterminate: !dl || dl.percent == null'),
+      '进度条保留下载统计、有百分比时不再跑马灯，staged 后弹重启提示');
   }
 } finally {
   try { fs.rmSync(base, { recursive: true, force: true }); } catch {}

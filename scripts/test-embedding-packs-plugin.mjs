@@ -55,6 +55,7 @@ try {
   const done = await waitJob(job.jobId);
   assert.equal(done.state, 'done', JSON.stringify(done));
   assert.equal(done.packId, 'test-model');
+  assert.equal(done.progress, 100, '安装完成必须给 100% 进度');
 
   let status = packs.embeddingPacksStatus();
   assert.equal(status.installed, true);

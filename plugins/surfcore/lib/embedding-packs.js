@@ -206,6 +206,7 @@ function jobView(job) {
     phase: job.phase,
     downloadedBytes: job.downloadedBytes,
     totalBytes: job.totalBytes,
+    progress: job.progress,
     error: job.error,
     hint: job.hint,
     packId: job.packId,
@@ -270,17 +271,23 @@ async function downloadFile(url, file, job) {
 async function installFromJob(job, { source = '', url = '', overwrite = false }) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'embedding-pack-install-'));
   let sourceDir = '';
+  job.progress = 5;
   try {
     if (source) {
       const abs = path.resolve(source);
       const stat = fs.statSync(abs);
       if (stat.isDirectory()) {
+        job.phase = 'extracting';
+        job.progress = 20;
         sourceDir = findPackRoot(abs);
         if (!sourceDir) throw new Error('目录里没有 pack.json');
       } else {
         job.phase = 'extracting';
+        job.totalBytes = stat.size;
+        job.progress = 20;
         const extracted = path.join(temp, 'extracted');
         await extractZip(abs, extracted);
+        job.progress = 55;
         sourceDir = findPackRoot(extracted);
         if (!sourceDir) throw new Error('zip 里没有 pack.json');
       }
@@ -288,22 +295,27 @@ async function installFromJob(job, { source = '', url = '', overwrite = false })
       if (!/^https?:\/\//i.test(url)) throw new Error('只支持 http(s) 下载地址');
       const zipFile = path.join(temp, 'pack.zip');
       job.phase = 'downloading';
+      job.progress = 10;
       await downloadFile(url, zipFile, job);
       job.phase = 'extracting';
+      job.progress = 65;
       const extracted = path.join(temp, 'extracted');
       await extractZip(zipFile, extracted);
+      job.progress = 75;
       sourceDir = findPackRoot(extracted);
       if (!sourceDir) throw new Error('zip 里没有 pack.json');
     } else {
       throw new Error('需要 path 或 url');
     }
     job.phase = 'verifying';
+    job.progress = 85;
     const installed = await installPackFromDirectory(sourceDir, {
       root: ROOT, overwrite, quarantineDir: QUARANTINE, verify: true,
     });
     if (!installed.ok) throw Object.assign(new Error(installed.error), { code: installed.code, hint: installed.hint });
     job.packId = installed.id;
     job.phase = 'done';
+    job.progress = 100;
     job.state = 'done';
     job.finishedAt = nowIso();
   } catch (error) {

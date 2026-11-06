@@ -185,6 +185,8 @@ window.__ModuleLoader__.load({
 .qbw-scroll pre{margin:0;white-space:pre-wrap;font-size:11.5px;line-height:17px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .qbw-meter{height:9px;border-radius:999px;background:rgba(127,127,127,.18);overflow:hidden;margin:8px 0 6px}
 .qbw-meter>i{display:block;height:100%;border-radius:inherit;background:var(--qbw-ok);transition:width .3s ease}
+.qbw-meter.indet>i{width:35%!important;background:var(--qbw-brand);animation:qbw-meter-slide 1.1s ease-in-out infinite}
+@keyframes qbw-meter-slide{0%{margin-left:-35%}100%{margin-left:100%}}
 .qbw-meter.warn>i{background:var(--qbw-warn)}
 .qbw-meter.bad>i{background:var(--qbw-err)}
 .qbw-meter-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12px}
@@ -1735,7 +1737,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                       ? `v${item.installedVersion || "?"} → ${fmtV(item.latestVersion)}（${item.behind} 个提交）`
                       : `${item.behind} 个提交（到 ${String(item.remote || "").slice(0, 7)}）`))),
             h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-              `${item.dir} · ${item.branch ?? ""}${item.dirty ? ` · ⚠️ 本地有 ${item.dirty} 处改动` : ""}${item.ahead ? ` · ⚠️ 本地领先 ${item.ahead}` : ""} · ${item.channel === "release" ? "版本清单" : item.channel === "version" ? "版本追踪" : item.channel === "dev" ? "测试通道（Pre-release）" : "git 仓库"}`),
+              `${item.dir} · ${item.branch ?? ""}${item.dirty ? ` · ⚠️ 本地有 ${item.dirty} 处改动` : ""}${item.ahead ? ` · ⚠️ 本地领先 ${item.ahead}` : ""}${Number(item.asset?.size) > 0 ? ` · 安装包 ${sizeText(item.asset.size)}` : ""} · ${item.channel === "release" ? "版本清单" : item.channel === "version" ? "版本追踪" : item.channel === "dev" ? "测试通道（Pre-release）" : "git 仓库"}`),
             item.blocked ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)" } }, `不能自动更新：${item.blocked}`) : null,
             item.blocked ? h("div", { className: "qbw-hint" }, "处理办法：本仓库有未提交改动时，先 commit/stash 再更新；或者直接用新版本的 zip 覆盖安装。") : null,
             (item.changelog ?? []).length ? h("ul", { style: { margin: "6px 0 0 18px", padding: 0, fontSize: "11.5px", lineHeight: "18px", opacity: 0.82 } },
@@ -1783,8 +1785,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           working ? h(ProgressBar, {
             pct: dl?.percent ?? 0,
             phase: phaseText(dl),
-            // 下载阶段有真实百分比；解压/校验/备份阶段没有字节进度，只保留阶段文字和下载统计。
-            indeterminate: !dl || (dl.active !== true && dl.phase !== 'pending' && dl.phase !== 'install') || dl.percent == null,
+            // 有真实百分比就一直显示百分比；只有完全拿不到 total 时才用跑马灯。
+            indeterminate: !dl || dl.percent == null,
           }) : null),
           h("div", { className: "qbw-actions", style: { flexShrink: 0, paddingTop: "10px" } },
             h(Btn, { kind: "qbw-btn2", onClick: () => (never ? dismissThis() : onClose?.()), disabled: working },
@@ -6045,6 +6047,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }
       };
       const importPackFile = async (file, label) => {
+        if (job?.state === "running") { toast("已有安装任务在进行，等它完成再导入"); return; }
         const picked = await browseNative("file", `选择 ${file}`, "embedding-pack");
         if (!picked?.ok) {
           if (!picked?.cancelled) toast(`✗ ${picked?.error ?? "没有选择文件"}`);
@@ -6070,7 +6073,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           installed && onStart ? h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: onStart }, "启动") : null,
           installed && onStop ? h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: onStop }, "停止") : null,
           installed && onUse ? h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: onUse }, "使用") : null,
-          h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: () => importPackFile(key === "runtime" ? "surfcore-embedding-runtime.zip" : `${key}.zip`, title) }, "导入")));
+          h(Btn, { kind: "qbw-btn2", disabled: !!busy || job?.state === "running", onClick: () => importPackFile(key === "runtime" ? "surfcore-embedding-runtime.zip" : `${key}.zip`, title) }, "导入")));
 
       return h(Section, { title: "Embedding 功能（可选安装）", note: "模型/运行时不进 SurfCore，按需安装", defaultOpen: true },
         err ? h("div", { className: "qbw-warnbox" }, `安装包状态读取失败：${err}`) : null,
@@ -6102,6 +6105,24 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               onStart: runtime && !data.service?.ok ? () => act("start", {}, "运行时启动中") : null,
               onStop: runtime && data.service?.ok ? () => act("stop", {}, "运行时已停止") : null,
             })),
+          job ? (() => {
+            const pct = job.phase === "downloading" && job.totalBytes > 0
+              ? Math.min(100, Math.round((Number(job.downloadedBytes) || 0) / Number(job.totalBytes) * 100))
+              : (Number.isFinite(Number(job.progress)) ? Math.max(0, Math.min(100, Number(job.progress))) : null);
+            const phase = job.phase === "downloading" ? "下载中"
+              : job.phase === "extracting" ? "解压中"
+                : job.phase === "verifying" ? "校验/安装中"
+                  : job.phase === "done" ? "安装完成" : (job.phase || "处理中");
+            return h("div", { className: "qbw-card", style: { marginTop: "8px" } },
+              h("div", { className: "qbw-meter-head" },
+                h("b", null, `安装任务${job.state === "running" ? " · 进行中" : job.state === "done" ? " · 完成" : " · 失败"}`),
+                h("span", null, pct == null ? "…" : `${pct}%`)),
+              h("div", { className: "qbw-meter" + (pct == null ? " indet" : "") },
+                h("i", { style: { width: pct == null ? "35%" : `${pct}%` } })),
+              h("div", { className: "qbw-hint" },
+                `${phase}${job.phase === "downloading" && job.totalBytes > 0 ? ` · ${fmtBytes(job.downloadedBytes)} / ${fmtBytes(job.totalBytes)}` : (job.totalBytes > 0 ? ` · 包大小 ${fmtBytes(job.totalBytes)}` : "")}${job.error ? ` · ${job.error}` : ""}`),
+              job.state === "running" ? h("div", { className: "qbw-hint" }, "安装期间请勿重复点「导入」；完成后会自动刷新。") : null);
+          })() : null,
           h("div", { className: "qbw-tabs", style: { marginTop: "8px" } },
             h("button", { className: "qbw-tab" + (packTab === "local" ? " on" : ""), onClick: () => setPackTab("local") }, "本地模型"),
             h("button", { className: "qbw-tab" + (packTab === "cloud" ? " on" : ""), onClick: () => setPackTab("cloud") }, "云端模型")),
@@ -6179,10 +6200,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 h(Btn, { kind: "qbw-btn2", disabled: !!busy, onClick: saveCloudProfile }, "保存这个服务商"),
                 h(Btn, { kind: "qbw-btn2", disabled: !!busy || !cloudProfiles[cloudProvider]?.hasKey, onClick: () => enableCloudProvider(cloudProvider) }, "启用这个服务商"),
                 h("span", { className: "qbw-hint" }, cloudActive ? `当前启用：${CLOUD_PROVIDER_BY_ID[cloudActive]?.name ?? cloudActive}` : "尚未启用云端服务商")))),
-          job ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
-            h("b", null, `安装任务 ${job.state === "running" ? "进行中" : job.state === "done" ? "完成" : "失败"}`),
-            h("div", { className: "qbw-hint" }, `${job.phase || ""}${job.totalBytes ? ` · ${fmtBytes(job.downloadedBytes)} / ${fmtBytes(job.totalBytes)}` : ""}${job.error ? ` · ${job.error}` : ""}`),
-            job.totalBytes > 0 ? h("div", { className: "qbw-meter" }, h("i", { style: { width: `${Math.min(100, Math.round((job.downloadedBytes / job.totalBytes) * 100))}%` } })) : null) : null,
           h("details", { className: "qbw-card", style: { marginTop: "10px" } },
             h("summary", null, "高级：网盘链接 / 手动安装"),
             h(Row, { label: "网盘链接", hint: "支持带提取码的分享链接；顶部按钮用它打开默认浏览器" },

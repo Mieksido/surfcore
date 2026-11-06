@@ -210,6 +210,9 @@ console.log('## 8. 回合形态 / 峰时 / 等待方式（接线 + 默认值）'
   ok(ui.includes('applyPreset(') && ui.includes('套用「省钱」'), '花费页有三档省钱预设')
   ok(ui.includes('SAVE_TOKEN_FIELDS') && ui.includes('将改') && ui.includes('应用改动'), '预设展开后可看到改动项并直接编辑')
   ok(ui.includes('persona.mode') && ui.includes('人格卡拆分注入'), '省钱预设包含人格卡拆分，且弹窗有说明')
+  ok(ui.includes('安装任务') && ui.includes('qbw-meter') && ui.includes('progress'), 'Embedding 安装进度面板在通用区且带百分比')
+  ok(ui.includes('asset?.size') && ui.includes('安装包'), '检查更新时显示安装包大小')
+  ok(/indeterminate: !dl \|\| dl\.percent == null/.test(ui), '更新有百分比时不再使用跑马灯')
   ok(/h\(CostCard, \{ toast, set \}\)/.test(ui), '花费页拿得到配置写入句柄（预设才能真正落地）')
 }
 
