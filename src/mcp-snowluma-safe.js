@@ -604,6 +604,75 @@ server.tool(
   }
 );
 server.tool(
+  'qq_read',
+  '一次读全当前会话（2026-11-04 复合工具）：等于 qq_get_context_snapshot 的常用形态，一次调用就能拿到未读 + 最近 + 社交状态 + 活跃成员。**优先用它**，不要连着调 unread + recent + social + activeMembers —— 每多调一次就多付一遍整段上下文。部分未读被截断（partial=true）时，用 afterSeq=返回里的 readThroughSeq 继续补读。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    afterSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('只取本地 seq 大于该水位的未读；补读时传上一条返回的 readThroughSeq'),
+  },
+  async ({ key, token, afterSeq }) => {
+    try {
+      const q = new URLSearchParams({ key });
+      if (afterSeq !== undefined) q.set('afterSeq', String(afterSeq));
+      const data = await agentApi('/api/socialV2/snapshot?' + q.toString(), { headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: '读取失败：' + String(error?.message ?? error) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_reply_and_finish',
+  '一次做完「回话 + 收尾」（2026-11-04 复合工具）：发完消息顺手把这段对话收掉，省掉单独调 qq_close_conversation 的那一步（少一步就少付一遍上下文）。适合：你回完这句就该结束的情况（对方说完收尾语、话题闭环、道别）。还在聊、要等对方补充时不要用它，改用 qq_send_message。对方明确在提问/求助时先用 qq_send_message 回完，桥接也会拒绝这种收尾。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    messages: z.union([z.array(z.string()).min(1), z.string()]).describe('要发送的内容：字符串=一条，数组=多条（一次最多 8 条）'),
+    summary: z.string().max(200).optional().describe('这次收在哪（一句话，给下次的自己看）'),
+    nextOpening: z.string().max(120).optional().describe('下次可以怎么自然接（一句话，可选）'),
+    throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('已读水位，用已查看结果里的 readThroughSeq')
+  },
+  async ({ key, token, messages, summary, nextOpening, throughSeq }) => {
+    try {
+      let finalMessages = messages;
+      if (typeof finalMessages === 'string') {
+        const trimmed = finalMessages.trim();
+        if (trimmed.startsWith('[')) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) finalMessages = parsed.map(String);
+          } catch {}
+        }
+      }
+      const isBurst = Array.isArray(finalMessages);
+      const sent = await agentApi(isBurst ? '/api/socialV2/send-burst' : '/api/socialV2/send-message', {
+        method: 'POST',
+        body: JSON.stringify(isBurst ? { key, messages: finalMessages } : { key, message: String(finalMessages) }),
+        headers: { 'x-agent-token': token },
+        timeoutMs: 300000
+      });
+      let closed = null;
+      let closeError = '';
+      try {
+        closed = await agentApi('/api/socialV2/close', {
+          method: 'POST',
+          body: JSON.stringify({ key, throughSeq, summary, nextOpening }),
+          headers: { 'x-agent-token': token }
+        });
+      } catch (error) {
+        // 发都发出去了，收尾失败不能把整次调用判成失败（否则模型会以为没发出去而重发）。
+        closeError = String(error?.message ?? error);
+      }
+      return { content: [{ type: 'text', text: serializeModelData({ sent, closed, closeError: closeError || undefined }) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `发送失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
   'qq_get_unread_messages',
   '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。',
   {

@@ -75,6 +75,15 @@ try {
     { qq: false, bili: true },
   );
 
+  // 9) 隐藏命令行窗口：默认关，只收明确 true，落盘可读。
+  writeUnified({ version: 1 });
+  assert.equal(store.readUnified().config.platforms.hideConsoles, true, '隐藏命令行默认开');
+  const hidden = store.saveUnified({ platforms: { hideConsoles: true } });
+  assert.equal(hidden.config.platforms.hideConsoles, true);
+  assert.equal(JSON.parse(fs.readFileSync(unifiedFile, 'utf8')).platforms.hideConsoles, true);
+  assert.equal(store.saveUnified({ platforms: { hideConsoles: 'yes' } }).config.platforms.hideConsoles, false,
+    '非布尔 hideConsoles 不能意外打开');
+
   console.log('platform-start tests OK');
 } finally {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}

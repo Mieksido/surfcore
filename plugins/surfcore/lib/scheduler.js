@@ -39,6 +39,11 @@ import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
+import { isPeakAt, resolvePriceTable } from '../../../src/model-prices.js'
+import {
+  effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, rankVectorMemories,
+  readVectorIndex, renderVectorRecallBlock, resolveVectorMemoryPaths,
+} from '../../../src/vector-memory.js'
 import { interactEnabled } from '../tools/lib/interact.mjs'
 import { biliSessionCreateParams } from './bili-workspace.js'
 
@@ -78,7 +83,8 @@ function personaCardBlock() {
   const unified = readUnified().config
   if (unified.persona?.injectInBili === false) return ''
   const file = resolvePersonaFile()
-  const card = readTextFile(file)
+  const split = unified.persona?.mode === 'split'
+  const card = split ? readTextFile(file) : (readPersonaLayerText('full') || readTextFile(file))
   if (!card) {
     const cfg = (() => { try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.dsh', 'surfcore', 'bili.config.json'), 'utf8')) } catch { return {} } })()
     const p = cfg.persona ?? {}
@@ -96,10 +102,11 @@ function personaCardBlock() {
       name: personaNameFromCard(card),
       owner: String(unified?.admin?.displayName || '').trim() || '主人',
     }),
-    // 语气层：B站 也要按同一个说话方式，不能只 QQ 有。
-    tone: readPersonaLayerText('tone'),
-    scene: readPersonaLayerText('scene', 'bili'),
-    daily: readPersonaLayerText('daily'),
+    // 拆分模式才带语气/场景/日常；整卡模式只注入整卡，避免重复。
+    tone: split ? readPersonaLayerText('tone') : '',
+    scene: split ? readPersonaLayerText('scene', 'bili') : '',
+    daily: split ? readPersonaLayerText('daily') : '',
+    personaMode: split ? 'tone' : 'full',
     mode: 'v2',
     maxChars: max,
     sceneId: 'bili',
@@ -173,6 +180,8 @@ function qqMemoryBlockForBili() {
 /** 记忆卡（B站侧）：只拿公开冲浪记忆 + 共享锚点，不含 QQ 私事（隐私边界）。 */
 function memoryCardBlockForBili() {
   const unified = readUnified().config
+  // 读取路径二选一：vector 模式由 promptBili 注入检索块，不再注入叙事记忆卡。
+  if (unified.memory?.mode === 'vector') return ''
   if (unified.memoryCard?.enabled === false) return ''
   return memoryCardPromptBlock('bili')
 }
@@ -506,6 +515,59 @@ export function startScheduler(ctx, opts) {
     }
     return false
   }
+  // 峰时顺延：B站插件的 4 个后台 tick 也走同一套价格表，不能绕过桥接的闸门。
+  let peakLoggedAt = 0
+  function peakOffloadActive(at = Date.now()) {
+    try {
+      const unified = readUnified().config
+      if (unified?.socialV2?.cost?.peakOffload === false) return false
+      return isPeakAt(at, resolvePriceTable(unified?.pricing))
+    } catch { return false }
+  }
+  function peakBlockedNow(where = '后台任务') {
+    if (!peakOffloadActive()) return false
+    if (Date.now() - peakLoggedAt > 30 * 60 * 1000) {
+      peakLoggedAt = Date.now()
+      log(`[bili-whale] 峰时顺延：${where} 暂停，谷时再跑（socialV2.cost.peakOffload=true）`)
+    }
+    return true
+  }
+  async function vectorRecallBlockForBili(args) {
+    const unified = readUnified().config
+    if (unified.memory?.mode !== 'vector') return ''
+    const config = normalizeVectorMemoryConfig(unified.vectorMemory ?? {})
+    if (config.enabled === false) return ''
+    const content = Array.isArray(args?.content) ? args.content : []
+    const text = content
+      .filter((item) => item && item.type === 'text')
+      .map((item) => String(item.text ?? ''))
+      .join('\n')
+      .trim()
+      .slice(-600)
+    if (text.length < 2) return ''
+    const effective = effectiveVectorMemoryConfig(config)
+    const paths = resolveVectorMemoryPaths(activeMemoryPaths().dir)
+    const index = readVectorIndex(paths, effective.modelSpace)
+    if (!index) return ''
+    try {
+      const result = await embedTexts({
+        config: { ...effective, timeoutMs: Math.min(Number(effective.timeoutMs) || 20000, 5000) },
+        texts: [text.slice(-300)],
+      })
+      const hits = rankVectorMemories({
+        query: text,
+        queryVector: result.vectors[0],
+        index,
+        config: effective,
+        platform: 'bili',
+      })
+      return renderVectorRecallBlock(hits, { maxChars: Math.min(Number(effective.injectMaxChars) || 600, 600) })
+    } catch (error) {
+      log(`[bili] 向量记忆检索失败：${error?.code ?? error?.message ?? error}`)
+      return ''
+    }
+  }
+
   async function promptBili(args, signal, where = '叫醒') {
     if (tokenBudget?.block) {
       try {
@@ -521,6 +583,13 @@ export function startScheduler(ctx, opts) {
         log(`[bili-whale] token 额度检查失败（${where}）：${String(error?.message ?? error).slice(0, 120)}`)
       }
     }
+    // vector 模式：把「想起的旧事」插到最前面；失败不阻塞 B站。
+    try {
+      const block = await vectorRecallBlockForBili(args)
+      if (block && Array.isArray(args?.content)) {
+        args = { ...args, content: [{ type: 'text', text: block }, ...args.content] }
+      }
+    } catch {}
     return ctx.sessionController.prompt(args, signal)
   }
 
@@ -673,6 +742,7 @@ export function startScheduler(ctx, opts) {
   async function tick() {
     if (waking) return
     if (!ctx.sessionController) return           // 服务还没就绪 → 下一 tick 再来
+    if (peakBlockedNow('生物钟叫醒')) return
     if (await budgetBlockedNow('生物钟叫醒')) return
     // 2026-10-23：每个 tick 都校正一次权限（会话可能在别处被切回 workspace-write）。
     ensurePermission('tick')
@@ -835,6 +905,7 @@ export function startScheduler(ctx, opts) {
     async function dmTick() {
       if (!interactEnabled()) return
       if (dmBusy) return
+      if (peakBlockedNow('私信叫醒')) return
       if (await budgetBlockedNow('私信叫醒')) return
       let cfg
       try { cfg = JSON.parse(fs.readFileSync(CFG_FILE_REF, "utf8")) } catch { cfg = {} }
@@ -894,6 +965,7 @@ export function startScheduler(ctx, opts) {
   async function listenTick() {
     if (!interactEnabled()) return
     if (listening) return
+    if (peakBlockedNow('评论区倾听')) return
     if (await budgetBlockedNow('评论区倾听')) return
     let cfg
     try { cfg = JSON.parse(fs.readFileSync(CFG_FILE_REF, 'utf8')) } catch { cfg = {} }
@@ -974,6 +1046,16 @@ export function startScheduler(ctx, opts) {
         liveProc = null
         liveRetryAt = 0
         log('[bili-whale] 直播间监听已停（沉默逛开启 ✓）')
+      }
+      return
+    }
+    if (peakBlockedNow('直播间叫醒')) {
+      if (liveProc !== null) {
+        liveStopping = true
+        try { liveProc.kill() } catch {}
+        liveProc = null
+        liveRetryAt = 0
+        log('[bili-whale] 峰时暂停直播间监听')
       }
       return
     }
@@ -1090,6 +1172,7 @@ export function startScheduler(ctx, opts) {
   async function dynTick() {
     if (!interactEnabled()) return
     if (!ctx.sessionController) return
+    if (peakBlockedNow('动态提醒')) return
     if (await budgetBlockedNow('动态提醒')) return
     const cfgNow = config()
     const KINDS_NOW = kindsNow(cfgNow)

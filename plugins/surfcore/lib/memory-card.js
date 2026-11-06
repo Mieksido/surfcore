@@ -12,11 +12,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BACKUP_DIR, QQ_STATE_DIR, maskPath } from './paths.js';
+import { BACKUP_DIR, QQ_CONFIG, QQ_STATE_DIR, maskPath } from './paths.js';
 import {
   activeMemoryPaths, activePlatformStateDir,
 } from '../../../src/character-persona.js';
-import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
+import { backupFile, listBackups, readJson, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
 import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
   compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadMemoryCard,
@@ -40,6 +40,29 @@ function biliStateDir() {
 
 function biliMemoryFile() {
   return path.join(biliStateDir(), 'bili-memory.json');
+}
+
+function normalizeIdList(value) {
+  const list = Array.isArray(value) ? value : String(value ?? '').split(/[\s,，;；]+/);
+  return [...new Set(list.map((item) => String(item ?? '').trim()).filter((item) => /^\d{4,15}$/.test(item)))];
+}
+
+/**
+ * 私聊读群记忆的运行时边界：白名单/黑名单/主人 QQ 只在这里读，不落进 unified config。
+ * 这样用户在设置页只保存“开关 + 可选群号 + 条数”，群清单始终跟 QQ 白名单同步。
+ */
+export function memoryCardRuntimeSharing() {
+  let qq = {};
+  try { qq = readJson(QQ_CONFIG, {}) ?? {}; } catch {}
+  let unified = {};
+  try { unified = readUnified().config ?? {}; } catch {}
+  const ownerQQ = String(qq.ownerQQ ?? unified.admin?.qq ?? '').replace(/^private:/i, '').trim();
+  return {
+    ownerPrivateKey: /^\d{5,12}$/.test(ownerQQ) ? `private:${ownerQQ}` : '',
+    privateAllowedGroups: normalizeIdList(qq.allow?.groups),
+    privateDeniedGroups: normalizeIdList(qq.deny?.groups),
+    allowAllWhenEmpty: qq.allowAllWhenEmpty === true,
+  };
 }
 
 let chain = Promise.resolve();
@@ -131,7 +154,7 @@ export function memoryCardStatusNow(config = memoryCardConfig()) {
 }
 
 /** 给控制台：状态 + 全文 + 最近记录 + 备份。 */
-export function memoryCardSnapshot(config = memoryCardConfig()) {
+export function memoryCardSnapshot(config = memoryCardConfig(), runtimeSharing = memoryCardRuntimeSharing()) {
   const card = readCardSafe();
   const now = Date.now();
   const status = memoryCardStatus(card, config);
@@ -277,7 +300,7 @@ export function fullMemoryCardSnapshot({ q = '', limit = 40, config = memoryCard
 }
 
 /** 真正跑一次维护；并发调用会排队，不会互相覆盖。 */
-export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCardConfig(), now = Date.now() } = {}) {
+export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCardConfig(), now = Date.now(), runtimeSharing = memoryCardRuntimeSharing() } = {}) {
   return serialize(async () => {
     if (config.enabled === false) {
       // 关掉记忆卡时要清空注入块：桥接只认文件，留着旧文件等于「设置关了但提示词还在」。
@@ -316,6 +339,7 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
       forceDecay,
       fullPaths: pathsNow(),
       fullConfig: config,
+      runtimeSharing,
     });
     promptCache = new Map();
     return {
@@ -333,14 +357,14 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
 }
 
 /** 手动压缩到目标比例（默认 80%）。 */
-export function compactMemoryCardNow({ targetRatio = 0.8, config = memoryCardConfig(), now = Date.now() } = {}) {
+export function compactMemoryCardNow({ targetRatio = 0.8, config = memoryCardConfig(), now = Date.now(), runtimeSharing = memoryCardRuntimeSharing() } = {}) {
   return serialize(async () => {
     const card = readCardSafe();
     try { backupFile(pathsNow().json, 'memory-card-before-compact'); } catch {}
     const archived = archiveDecayedToFull(pathsNow(), card, config, now);
     const steps = compactMemoryCard(card, config, { targetRatio, now });
     card.lastMaintenanceAt = new Date(now).toISOString();
-    const saved = saveMemoryCardOutputs(pathsNow(), card, config, now);
+    const saved = saveMemoryCardOutputs(pathsNow(), card, config, now, runtimeSharing);
     saveFullMemoryCard(pathsNow(), config, now);
     promptCache = new Map();
     return { ok: true, steps, archived, ...saved, status: memoryCardStatusNow(config) };
@@ -348,7 +372,7 @@ export function compactMemoryCardNow({ targetRatio = 0.8, config = memoryCardCon
 }
 
 /** 置顶 / 取关置顶 / 忘记 / 确认告警 / 手动加一条。 */
-export function applyMemoryCardAction(action, payload = {}, { config = memoryCardConfig(), now = Date.now() } = {}) {
+export function applyMemoryCardAction(action, payload = {}, { config = memoryCardConfig(), now = Date.now(), runtimeSharing = memoryCardRuntimeSharing() } = {}) {
   return serialize(async () => {
     const card = readCardSafe();
     // 忘记前先归档：刚加进来还没被维护器扫到的记录，也不能因为「忘记」而丢失全量副本。
@@ -414,7 +438,7 @@ export function applyMemoryCardAction(action, payload = {}, { config = memoryCar
     if (changed) {
       archived += archiveDecayedToFull(pathsNow(), card, config, now);
       card.updatedAt = new Date(now).toISOString();
-      saveMemoryCardOutputs(pathsNow(), card, config, now);
+      saveMemoryCardOutputs(pathsNow(), card, config, now, runtimeSharing);
       saveFullMemoryCard(pathsNow(), config, now);
       promptCache = new Map();
     }
@@ -423,7 +447,7 @@ export function applyMemoryCardAction(action, payload = {}, { config = memoryCar
 }
 
 /** 恢复某份备份，然后重渲染所有输出。 */
-export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now = Date.now() } = {}) {
+export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now = Date.now(), runtimeSharing = memoryCardRuntimeSharing() } = {}) {
   return serialize(async () => {
     const base = path.basename(String(name ?? ''));
     if (!base.startsWith('memory-card-') || base !== String(name)) return { ok: false, error: '备份名非法' };
@@ -435,7 +459,7 @@ export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now
     fs.copyFileSync(resolved, pathsNow().json);
     const card = readCardSafe();
     archiveDecayedToFull(pathsNow(), card, config, now);
-    saveMemoryCardOutputs(pathsNow(), card, config, now);
+    saveMemoryCardOutputs(pathsNow(), card, config, now, runtimeSharing);
     saveFullMemoryCard(pathsNow(), config, now);
     promptCache = new Map();
     return { ok: true, status: memoryCardStatusNow(config) };

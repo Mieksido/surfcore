@@ -946,7 +946,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
       if (!engineUp) {
         const engineScript = path.join(dir, m.engineScript);
         if (await exists(engineScript)) {
-          const engineChild = spawn('cmd', ['/c', engineScript], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true });
+          const engineChild = spawn('cmd', ['/c', engineScript], { cwd: dir, detached: false, stdio: 'ignore', windowsHide: true });
           engineChild.unref();
           engineStarted = true;
         }
@@ -962,11 +962,17 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     // 只能看到 cmd 的一小段输出，超时后永远不知道真正原因。
     let child;
     if (direct) {
-      const python = path.join(dir, String(direct.python || '.venv/Scripts/python.exe'));
+      let python = path.join(dir, String(direct.python || '.venv/Scripts/python.exe'));
+      // Windows 的 python.exe 会创建控制台窗口（即使父进程 windowsHide）；
+      // venv 一般同时带 pythonw.exe，用它启动语音服务，彻底不弹黑框。
+      if (process.platform === 'win32') {
+        const pythonw = path.join(path.dirname(python), 'pythonw.exe');
+        if (fs.existsSync(pythonw)) python = pythonw;
+      }
       const args = Array.isArray(direct.args) ? direct.args.map(String) : ['-m', 'voxd', '--config', 'config.toml'];
       child = spawn(python, args, {
         cwd: dir,
-        detached: true,
+        detached: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
@@ -974,7 +980,7 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     } else {
       child = spawn('cmd', ['/c', script], {
         cwd: dir,
-        detached: true,
+        detached: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },

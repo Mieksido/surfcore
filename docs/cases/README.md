@@ -6,6 +6,15 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-06 | [多模型重建索引（本地/云端多选）](2026-11-06-multi-model-index-picker.md) | 弹窗多选；已有索引标注；本地走 runtime、云端直连；不改 active provider | 待发布 |
+| 2026-11-06 | [向量记忆库：最近记录 + 语义搜索](2026-11-06-vector-memory-library.md) | 只读记忆库；最近 30 条 + 一句话搜旧事；默认隐藏敏感 | 待发布 |
+| 2026-11-05 | [向量记忆 UI/自检/完整重建](2026-11-05-vector-memory-ui-self-test.md) | 本地/云端 Tab；radio + 一键启动；真实 embedding 自检；stale 检测；重建到 pending=0 | 待发布 |
+| 2026-11-04 | [B站 读取路径接向量记忆](2026-11-04-bili-vector-read.md) | vector 模式不再注入 B站 叙事卡；promptBili 前置检索块；失败不阻塞 | 待发布 |
+| 2026-11-04 | [向量记忆：每个模型空间独立索引](2026-11-04-vector-memory-multi-index.md) | 记录共享；索引按 modelSpace 分文件；切回已建模型不重建 | 待发布 |
+| 2026-11-04 | [Embedding 按需安装包](2026-11-04-embedding-packs.md) | runtime/model/cloud 三类包；不进 SurfCore；SHA 校验、进度、启动/卸载、云端 key 掩码 | 待发布 |
+| 2026-11-02 | [向量记忆（独立系统）接入](2026-11-02-vector-memory.md) | 两套存储并列、`memory.mode` 只影响读取；独立 JSONL/索引/检索/注入；三模型 + 云端 provider | 待发布 |
+| 2026-11-03 | [主人私聊可读白名单群记忆](2026-11-03-private-reads-group-memory.md) | 只给主人私聊；独立预算；私聊仍不进群；无 key 旧私聊不再串号 | 待发布 |
+| 2026-11-03 | [优化基线（第一张表）](2026-11-03-optimization-baseline.md) | audit 75.9s / 插件 70.2s / 738 blob / 提示词 tone≈10.7k / state 300.3MB | 0.8.8 |
 | 2026-11-03 | [人格语气层重复/未进目的提示词](2026-11-03-persona-tone-dedup.md) | tone 不再回退 core；相同内容去重；purpose 接语气层 | 待发布 |
 | 2026-11-03 | [群里的 #sl 刷屏指令不唤醒 SurfCore](2026-11-03-ignore-hash-commands.md) | 非主人纯 # 短指令过滤；主人/@/引用放行 | 待发布 |
 | 2026-11-03 | [B站 @ 鱼不在“我那一层”回复](2026-11-03-bili-at-floor-reply.md) | @ 一级评论补 root=source；digest 给 @ 打坐标；修 resolveLatestReply | 待发布 |

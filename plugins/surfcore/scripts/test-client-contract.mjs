@@ -138,7 +138,7 @@ assert.ok(source.includes('function PetTab'), '设置页缺少桌宠页');
 assert.ok(source.includes('专注模式（不主动打扰）'), '桌宠页/菜单缺少专注模式');
 assert.ok(source.includes('"/pet/focus"'), '设置页没有调用 /pet/focus');
 assert.ok(source.includes('启用桌宠对话'), '桌宠页缺少「启用桌宠对话」');
-assert.ok(source.includes('把桌宠对话写进记忆卡'), '桌宠页缺少「写进记忆卡」开关');
+assert.ok(source.includes('把桌宠对话写进记忆'), '桌宠页缺少「写进记忆」开关');
 assert.ok(source.includes('文本回复上限') && source.includes('语音回复上限'), '桌宠页缺少回复字数控');
 assert.ok(source.includes('思考强度'), '桌宠页缺少思考强度设置');
 const pluginIndexSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'index.js'), 'utf8');
@@ -364,7 +364,7 @@ assert.ok(source.includes('onChange: (list) => setQqToBili("includeGroups", list
 // ── 通知函数接线（2026-10-30 用户反馈：语音页保存后红字 "toast is not a function"）──
 // 根因：Settings 里 toast 是"浮层文案字符串"，真正的函数叫 notify；
 // VoiceTab 那一处只传了 { toast }，字符串被当函数调用 → 保存成功却显示失败。
-assert.ok(source.includes('h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy })'), 'VoiceTab 必须收到 notify 函数和配置/保存接线');
+assert.ok(source.includes('h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) })'), 'VoiceTab 必须收到 notify 函数和配置/保存接线');
 assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toast（字符串）');
 {
   // 通用：所有 Tab 的 props 里出现 toast 的，都必须是 toast: notify
@@ -373,14 +373,16 @@ assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toa
   assert.equal(bad.length, 0, `有 Tab 把字符串 toast 当函数传：${bad.map((m) => m[1]).join(', ')}`);
 }
 assert.ok(source.includes('const [toastText, setToastText]'), '浮层文案状态应叫 toastText（避免与 notify 混淆）');
-assert.ok(source.includes('if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy });'), '语音页接线固定为 notify + 配置/保存');
+assert.ok(source.includes('h(VoiceTab, {') && source.includes('onResource: () => setResourceOpen(true)'), '语音页接线固定为 notify + 配置/保存 + 网盘资源入口');
 
-// ── 语音页网盘离线包入口（2026-10-30 用户要求：网络不稳时可走网盘）──
-assert.ok(source.includes('https://pan.quark.cn/s/ec6cf2b123de?pwd=sxUZ'), '语音页必须包含网盘链接');
+// ── 语音页网盘离线包入口（2026-11-06：统一到顶部资源按钮）──
 assert.ok(source.includes('网络不稳定装不上？用网盘下载离线包（本地包 / 云端包都适用）'), '必须说明本地包/云端包都适用');
-assert.ok(source.includes('打开网盘下载（提取码 sxUZ）'), '必须有「打开网盘下载」按钮');
-assert.ok(source.includes('复制链接'), '必须有复制链接兜底');
-assert.ok(source.includes('api("/voice/packs/netdisk"'), '按钮必须走后端打开（Electron 会拦新窗口）');
+assert.ok(source.includes('获取网盘资源（语音、向量记忆模型）'), '语音页必须有统一的网盘资源按钮');
+assert.ok(source.includes('https://pan.quark.cn/s/2f49b5496874?pwd=jXqr'), '必须包含夸克网盘链接');
+assert.ok(source.includes('https://pan.xunlei.com/s/VP5iWnY5xJ1D8KpL-gFpAsj9A1?pwd=tqi7'), '必须包含迅雷网盘链接');
+assert.ok(source.includes('（待补链）'), '百度/UC 必须标待补链');
+assert.ok(!source.includes('打开网盘下载（提取码 sxUZ）'), '旧的「打开网盘下载」按钮应移除');
+assert.ok(!source.includes('api("/voice/packs/netdisk"'), '旧的 netdisk 打开逻辑应移除');
 
 // ── 桌宠安装：表单必须随请求提交（2026-10-30 用户反馈：填了也不生效）──
 assert.ok(/api\("\/pet\/install",[\s\S]{0,200}source: form\.source\.trim\(\)/.test(source), '桌宠安装请求必须带 source');
@@ -468,4 +470,14 @@ assert.ok(source.includes("dshModelSelect"), "模型必须是目录驱动的下�
 assert.ok(source.includes("dshEffortSelect"), "思考强度必须是下拉框");
 assert.ok(!source.includes("low / medium / high / max"), "不能再提示后端不支持的 medium");
 assert.ok(source.includes("会同时修改 DSH 全局默认模型"), "模型切换必须提示全局副作用");
+// ── 网盘资源入口（2026-11-06）──
+assert.ok(source.includes("获取网盘资源（语音、向量记忆模型）"), "记忆页顶部要有网盘资源入口");
+for (const label of ["夸克网盘", "UC网盘", "迅雷网盘", "百度网盘"]) {
+  assert.ok(source.includes(label), `网盘弹窗要有 ${label}`);
+}
+assert.ok(source.includes('window.open(url, "_blank", "noopener")'), "网盘按钮必须用默认浏览器打开");
+assert.ok(source.includes("向量记忆使用说明（人话版）"), "向量记忆 tab 顶部要有使用说明弹窗");
+assert.ok(source.includes("为多个模型重建索引"), "使用说明必须讲清多模型重建入口");
+assert.ok(source.includes("（已有索引）"), "多模型选择必须标注已有索引");
+assert.ok(source.includes("（待补链）"), "百度/UC 必须标待补链");
 console.log('client contract tests OK');

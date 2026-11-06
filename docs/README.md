@@ -30,6 +30,8 @@
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
 | [guides/MEMORY_CARD.md](guides/MEMORY_CARD.md) | **记忆卡设计与使用**：衰减卡 vs 全量卡、重要度评分、「最初」30 天概率与初次相遇指定、清晰度/遗忘、80/90/100% 容量告警、压缩、全量存档/召回、隐私 scope、配置/API/验证 | ✅ 2026-10-22 新增 |
+| [guides/VECTOR_MEMORY.md](guides/VECTOR_MEMORY.md) | **向量记忆（独立系统）**：与叙事记忆并列、两套存储各自继续、`memory.mode` 只影响读取；独立 JSONL/索引、三模型、检索打分与过滤、注入预算、配置/API/失败降级/回滚 | ✅ 2026-11-02 新增 |
+| [guides/EMBEDDING_PACKS.md](guides/EMBEDDING_PACKS.md) | **Embedding 按需安装包**：模型/运行时/云端三类包、pack.json 契约、state/embedding-packs 目录、安装/校验/卸载、云端 key 与隐私、与安装清单隔离；解决“不能把 1.2GB 权重塞进 SurfCore” | ✅ 2026-11-04 实现（runtime 自带 Ollama CPU，干净 VM 待跑） |
 | [guides/CHARACTER_PERSONA.md](guides/CHARACTER_PERSONA.md) | **角色人格系统**：每角色目录包（人格卡 + 记忆卡 + B站行为账本）、切换序列与隔离矩阵、12 槽自动存档/回档、旧数据迁移、API、已知边界 | ✅ 2026-10-23 新增 |
 | [guides/CROSS_PLATFORM_IDENTITY.md](guides/CROSS_PLATFORM_IDENTITY.md) | **跨平台自我识别与来源判断**：为什么转发记录会被说成 B站 内容、自我卡（昵称/ID/主页/人格名）、标签与规则双写、隐私打码、以后接贴吧照做的四条策略、验收用例 | ✅ 2026-10-23 新增 |
 | [guides/PURPOSE_OUTREACH.md](guides/PURPOSE_OUTREACH.md) | **目的机制（主动找主人）**：从近期 QQ+B站 记忆提炼「目的」→ 定期搭话（分享🧀/索取）；**载体 QQ / 桌宠**（2026-10-25）与互斥/回落、排程与硬闸门、素材/候选/提示词、内部备忘与 pending、状态文件、API、配置、预览/试一次、验证与回滚 | ✅ 2026-10-25 更新 |
@@ -100,6 +102,12 @@
 | [audits/TOKEN_OPTIMIZATION.md](audits/TOKEN_OPTIMIZATION.md) | `reserved2` 的 token 开销优化与消息水位协议、升级与回退说明（README 直接引用它） | ✅ |
 | [audits/TOKEN_COST_ANALYSIS.md](audits/TOKEN_COST_ANALYSIS.md) | token 成本实测档案与优化清单（含本文档形成时的个人用量数据） | ⚠️ 数据是当时的实测快照；结论方向仍被 TOKEN_OPTIMIZATION 引用，具体数字别当现值 |
 
+## handoffs/ —— 交付给外部实现方的工作交接（**不是 SurfCore 用户文档**）
+
+| 文档 | 一句话说明 | 状态 |
+| --- | --- | --- |
+| [handoffs/2026-11-02-vector-memory-embedding-service.md](handoffs/2026-11-02-vector-memory-embedding-service.md) | **向量记忆 · Embedding 服务交接书**：现有「叙事记忆」（记忆卡/衰减卡/全量卡）保持不变，新增「向量记忆」与它二选一；三种本地模型（bge-m3 / Qwen3-Embedding-0.6B / bge-small-zh-v1.5）、云+本地双 provider、HTTP 契约、许可与验收；交 GPT 实现，SurfCore 只做接入 | ✅ 2026-11-02 新增，契约冻结候选 |
+
 ## legacy/ —— 历史归档（**不要照着做**，留作背景与追溯）
 
 | 文档 | 一句话说明 | 为什么归档 |
@@ -120,6 +128,7 @@
 | 看 AI 烧了多少钱 / 计价口径 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md)、[audits/TOKEN_COST_ANALYSIS.md](audits/TOKEN_COST_ANALYSIS.md) |
 | 改控制台界面并做离线回归 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md)、[audits/CONSOLE_UI_REDESIGN_REPORT.md](audits/CONSOLE_UI_REDESIGN_REPORT.md) |
 | 搞懂角色记得什么 / 怎么遗忘 / 容量告警 | [guides/MEMORY_CARD.md](guides/MEMORY_CARD.md) |
+| 叙事记忆和向量记忆怎么二选一 / Embedding 服务怎么接 | [handoffs/2026-11-02-vector-memory-embedding-service.md](handoffs/2026-11-02-vector-memory-embedding-service.md) |
 | 让 AI 知道一段对话什么时候该结束（而不是每句都回） | [guides/CONVERSATION_CLOSURE.md](guides/CONVERSATION_CLOSURE.md) |
 | 多角色切换 / 存档回档 / 旧数据迁移 | [guides/CHARACTER_PERSONA.md](guides/CHARACTER_PERSONA.md) |
 | 改代码前先知道有哪些坑 | [guides/DSH_020_ADAPTATION.md](guides/DSH_020_ADAPTATION.md)（最新，DSH 适配）、[audits/AUDIT_FIXES_2026-09-20.md](audits/AUDIT_FIXES_2026-09-20.md)、[audits/AUDIT_REPORT_2026-09-20.md](audits/AUDIT_REPORT_2026-09-20.md) |

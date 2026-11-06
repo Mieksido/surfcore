@@ -22,6 +22,7 @@ import { dynamicDefaults, normalizeDynamics } from '../tools/lib/kinds.mjs';
 import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../../src/fish-guard.js';
 import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js';
 import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
+import { DEFAULT_VECTOR_MEMORY_CONFIG, normalizeVectorMemoryConfig } from '../../../src/vector-memory.js';
 import { normalizeCardMode } from '../../../src/share-mode.js';
 import { normalizeClockText, normalizeWindow } from '../tools/lib/time-window.mjs';
 
@@ -78,6 +79,8 @@ export const DEFAULT_UNIFIED = {
     file: '',
     injectInBili: true,
     compactChars: 2200,
+    // full = 整卡注入（完整但费 token）；split = 分层注入（省 token，可能不完整）。
+    mode: 'full',
   },
   // 管理员身份（QQ ⇄ B站 同一个人）：唯一真相在合体层，保存时投影到
   // QQ config.json 的 ownerQQ 与 B站 bili.config.json 的 owner.mid/name。
@@ -90,6 +93,9 @@ export const DEFAULT_UNIFIED = {
     gentle: false,
   },
   memory: {
+    // 读哪一套：narrative = 叙事记忆（衰减卡 + 全量卡）；vector = 向量记忆。
+    // 两个存储各自继续写入，这里只影响读取/注入路径（2026-11-02 用户要求）。
+    mode: 'narrative',
     qqToBili: {
       enabled: false,
       lookbackDays: 7,
@@ -130,6 +136,8 @@ export const DEFAULT_UNIFIED = {
     ...DEFAULT_MEMORY_CARD_CONFIG,
     injectMaxChars: { ...DEFAULT_MEMORY_CARD_CONFIG.injectMaxChars },
   },
+  // 向量记忆（独立存储）：与 memoryCard 并列，各自有开关；memory.mode 决定读哪套。
+  vectorMemory: { ...DEFAULT_VECTOR_MEMORY_CONFIG, packLinks: { ...DEFAULT_VECTOR_MEMORY_CONFIG.packLinks } },
   extensions: { enabled: true, disabled: [] },
   platforms: {
     enabled: ['qq', 'bili'],
@@ -139,6 +147,8 @@ export const DEFAULT_UNIFIED = {
     // 「一键启动」；正在跑的那一边由宿主在保存配置时停掉（见 lib/index.js）。
     // QQ 的旧开关 bridge.autoStart 只用于升级迁移，保存时会镜像回这个值。
     start: { qq: true, bili: true },
+    // 一键启动默认隐藏命令行窗口（SnowLuma/批处理的黑框）；用户可取消勾选恢复旧行为。
+    hideConsoles: true,
   },
   ui: { activeTab: 'overview', showAdvanced: false },
   // 组件更新（2026-10-26）：检查 SurfCore 本体 / 语音包 / 桌宠 / 未来登记的扩展。
@@ -652,6 +662,9 @@ export function saveUnified(incoming) {
   // 记忆卡上限必须按引擎的边界收敛：否则输入 999999 会原样落盘，界面显示 999999、
   // 实际注入/容量按 100000 算，用户会以为「改了没生效」。
   next.memoryCard = normalizeMemoryCardConfig(next.memoryCard);
+  next.vectorMemory = normalizeVectorMemoryConfig(next.vectorMemory);
+  next.memory = isPlainObject(next.memory) ? next.memory : {};
+  next.memory.mode = next.memory.mode === 'vector' ? 'vector' : 'narrative';
   // 平台启动开关：只收布尔，缺省 true。旧字段 bridge.autoStart 同步镜像一次，
   // 让「降级回旧版」或手工读配置的人看到同一份选择（新代码只认 platforms.start）。
   next.platforms = isPlainObject(next.platforms) ? next.platforms : {};
@@ -660,6 +673,7 @@ export function saveUnified(incoming) {
     qq: start.qq !== false,
     bili: start.bili !== false,
   };
+  next.platforms.hideConsoles = next.platforms.hideConsoles === true;
   next.bridge = isPlainObject(next.bridge) ? next.bridge : {};
   next.bridge.autoStart = next.platforms.start.qq;
   const backup = backupFile(UNIFIED_FILE, 'unified-config');

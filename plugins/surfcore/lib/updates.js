@@ -1034,6 +1034,12 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
 
   let checking = false;
   let applying = false;
+  // 2026-11-06 事故：上一次 apply 卡在下载（网络死掉）时 applying 永远不会复位，
+  // 用户再点更新会拿到 results:[] 的 busy 响应，前端只读 results[0] → 显示"原因不明"。
+  let applyingSince = 0;
+  const APPLY_STUCK_MS = 10 * 60 * 1000;
+  // 卡死超时后允许新 apply；旧 apply 的 finally 不能把新 apply 的锁复位（ABA）。
+  let applyGeneration = 0;
   let timer = null;
 
   function persist() {
@@ -1728,10 +1734,28 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
   }
 
   async function apply(ids, opts = {}) {
-    if (applying) return { ok: false, error: '正在更新中，请稍候', results: [] };
+    if (applying) {
+      const heldMs = applyingSince ? Date.now() - applyingSince : 0;
+      if (heldMs > APPLY_STUCK_MS) {
+        pluginLog(`[updates] 上一次更新已卡住 ${Math.round(heldMs / 1000)} 秒，强制复位后重试`);
+        applying = false;
+        applyingSince = 0;
+      } else {
+        // 必须带上 results[0]：前端只读 results，顶层 error 会被忽略 → 用户看到"原因不明"。
+        const busy = {
+          id: null, ok: false, status: 'busy', code: 'apply.busy',
+          reason: '上一次更新还没结束（可能卡在下载）',
+          error: '正在更新中，请稍候',
+          hint: '等它结束；卡住超过 10 分钟会自动复位，想立刻重试就重启 DSH',
+        };
+        return { ok: false, code: 'apply.busy', error: busy.error, reason: busy.reason, retryable: true, results: [busy] };
+      }
+    }
     const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));
     if (!wanted.size) return { ok: false, error: '没有选择要更新的组件', results: [] };
+    const applyToken = ++applyGeneration;
     applying = true;
+    applyingSince = Date.now();
     downloadProgress = null;
     try {
       // 更新前重新检查一次：用户可能刚改过文件、远端也可能又变了
@@ -1908,7 +1932,12 @@ export function createUpdatesService({ stateDir, components, blockedReason = () 
         status: status(),
       };
     } finally {
-      applying = false;
+      // 只有「当前这一代」apply 能释放锁；被 10 分钟看门狗强制复位的旧 apply
+      // 晚到时不能把后来新 apply 的锁清掉（否则会并发安装）。
+      if (applyToken === applyGeneration) {
+        applying = false;
+        applyingSince = 0;
+      }
     }
   }
 

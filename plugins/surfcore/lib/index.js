@@ -84,6 +84,15 @@ import {
   memoryCardStatusNow, notifyOwnerIfNeeded, restoreMemoryCardBackup, runMemoryCardMaintenance,
   startMemoryCardTimer,
 } from './memory-card.js';
+import {
+  listVectorMemoryRecords, rebuildAllVectorIndexes, rebuildVectorMemory, runVectorMemoryMaintenance as runVectorMemoryMaintenanceNow,
+  searchVectorMemoryRecords, startVectorMemoryTimer, vectorMemoryIdle, vectorMemorySnapshot, vectorMemoryStatusNow,
+} from './vector-memory.js';
+import {
+  embeddingPacksStatus, getCloudProviderProfile, getEmbeddingPackJob, openEmbeddingShare, registerAllInstalledModels, removeEmbeddingPack,
+  saveCloudPackConfig, activateCloudProvider, selectEmbeddingPack, startEmbeddingPackInstall, startEmbeddingRuntime, stopEmbeddingRuntime,
+  testEmbeddingPack,
+} from './embedding-packs.js';
 import { readWatchHistory } from '../tools/lib/watch-history.mjs';
 import { enrichWatchHistory } from '../tools/lib/watch-actions.mjs';
 import { scanPreferences } from '../tools/lib/pref-scan.mjs';
@@ -215,6 +224,7 @@ export function apply(ctx) {
   let biliSessionEpoch = 0;
   let syncTimer = null;
   let memoryCardTimer = null;
+  let vectorMemoryTimer = null;
   let characterTimer = null;
 
   // ── 每日 token 额度 / 用量采集（2026-10-23 用户要求）────────────────────
@@ -542,6 +552,7 @@ export function apply(ctx) {
     const target = characterDetail(id).character;
     const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
     await memoryCardIdle();
+    await vectorMemoryIdle();
     const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
     let schedulerWasRunning = !skipPlatform && Boolean(scheduler && schedulerStatus.running);
     try {
@@ -600,6 +611,8 @@ export function apply(ctx) {
   // 记忆卡：插件宿主是唯一维护者。启动 8 秒后整理一次（摄取桥接 inbox + B站记忆），
   // 之后每 10 分钟一次；每日衰减由 memory-card 自己按 dailyHour 判断。
   memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge });
+  // 向量记忆：独立存储/独立开关，默认与记忆卡并行写入；memory.mode 只影响读取。
+  vectorMemoryTimer = startVectorMemoryTimer({ log: pluginLog });
 
   // 角色自动存档：启动 10 秒后跑一次，之后每 6 小时检查（每天最多一份 + 11 个年龄档轮换）。
   const runCharacterAutoSave = () => {
@@ -756,6 +769,7 @@ export function apply(ctx) {
       bili,
       memory,
       memoryCard: memoryCardStatusNow(),
+      vectorMemory: vectorMemoryStatusNow(),
       admin: adminSummary(all.unified?.admin),
       alignment: alignStats(),
       platforms: platforms.list(),
@@ -1075,6 +1089,7 @@ export function apply(ctx) {
         const skipPlatform = process.env.SURFCORE_DISABLE_PLATFORM_RESTART === '1';
         const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
         await memoryCardIdle();
+    await vectorMemoryIdle();
         if (!skipPlatform && scheduler?.retire) await scheduler.retire();
         scheduler = null;
         schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
@@ -1215,11 +1230,12 @@ ${body}`;
       const layers = activePersonaLayers();
       return layers ? {
         core: layers.core || resolvePersonaFile(),
+        full: layers.full || path.join(path.dirname(layers.core || resolvePersonaFile()), 'persona.full.md'),
         daily: layers.daily,
         tone: layers.tone,
         scenes: layers.scenes,
         scenesDir: layers.scenesDir,
-      } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
+      } : { core: resolvePersonaFile(), full: path.join(path.dirname(resolvePersonaFile()), 'persona.full.md'), daily: '', tone: '', scenes: {}, scenesDir: '' };
     };
     const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
     if (req.method === 'GET') {
@@ -1239,6 +1255,7 @@ ${body}`;
         mtime: mtimeIso(paths.core),
         layers: {
           core: { path: paths.core, text: core, chars: core.length },
+          full: { path: paths.full, text: readTextFile(paths.full) || core, chars: (readTextFile(paths.full) || core).length },
           tone: { path: paths.tone, text: readTextFile(paths.tone), chars: readTextFile(paths.tone).length },
           daily: { path: paths.daily, text: daily, chars: daily.length },
           scenes,
@@ -1259,6 +1276,7 @@ ${body}`;
       let target = paths.core;
       let label = 'persona';
       if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
+      else if (name.startsWith('persona-full-')) { target = paths.full; label = 'persona-full'; }
       else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
       else if (name.startsWith('persona-scene-')) {
         const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
@@ -1279,7 +1297,10 @@ ${body}`;
     const paths = layerPaths();
     let target = paths.core;
     let label = 'persona';
-    if (layer === 'tone') {
+    if (layer === 'full') {
+      target = paths.full;
+      label = 'persona-full';
+    } else if (layer === 'tone') {
       target = paths.tone;
       label = 'persona-tone';
     } else if (layer === 'daily') {
@@ -1295,7 +1316,7 @@ ${body}`;
       return;
     }
     const text = String(body.text ?? '');
-    if (layer === 'core' && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格核心太短（至少 50 字）', hint: '核心卡是每次注入的底座，不能留空' }); return; }
+    if ((layer === 'core' || layer === 'full') && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格卡太短（至少 50 字）', hint: '整卡/核心是每次注入的底座，不能留空' }); return; }
     if (text.length > 64 * 1024) { json(res, 400, { ok: false, code: 'PERSONA_TOO_LARGE', error: '人格内容超过 64KB', hint: '拆成核心/场景/日常层，或精简内容' }); return; }
     const scan = scanText(text);
     const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
@@ -1403,6 +1424,195 @@ ${body}`;
       return;
     }
     json(res, 400, { ok: false, error: '未知 action' });
+  }
+
+  // ── 向量记忆（独立存储；与记忆卡并列）──────────────────────────────────
+  async function handleVectorMemory(req, res) {
+    const config = readUnified().config.vectorMemory;
+    if (req.method === 'GET') {
+      json(res, 200, vectorMemorySnapshot(config));
+      return;
+    }
+    const body = JSON.parse(await readBody(req) || '{}');
+    const action = String(body.action ?? '');
+    if (action === 'maintain') {
+      const result = await runVectorMemoryMaintenanceNow({ config });
+      json(res, result.ok ? 200 : 500, { ...vectorMemorySnapshot(config), ...result });
+      return;
+    }
+    if (action === 'rebuild') {
+      const result = await rebuildVectorMemory(config);
+      json(res, result.ok ? 200 : 500, { ...vectorMemorySnapshot(config), ...result });
+      return;
+    }
+    if (action === 'rebuild-all') {
+      const packsStatus = embeddingPacksStatus();
+      const models = (packsStatus.models ?? []).filter((item) => item.valid && item.model && item.modelSpace);
+      if (!models.length) {
+        json(res, 400, { ok: false, code: 'vector.models-missing', error: '没有已安装的本地模型', hint: '先在 Embedding 功能里导入至少一个模型包' });
+        return;
+      }
+      const missingIndexes = models.filter((item) => item.indexReady !== true);
+      if (!missingIndexes.length) {
+        json(res, 200, {
+          ok: true,
+          skipped: true,
+          results: [],
+          skippedModels: models.map((item) => item.model),
+          status: vectorMemorySnapshot(config),
+          message: '所有已安装模型都已有索引，不需要重建',
+        });
+        return;
+      }
+      if (!packsStatus.service?.ok) {
+        const started = await startEmbeddingRuntime();
+        if (!started.ok) {
+          json(res, 400, { ok: false, ...started, hint: started.hint || '先启动 Embedding 运行时' });
+          return;
+        }
+      }
+      const registrations = await registerAllInstalledModels();
+      const result = await rebuildAllVectorIndexes(config, missingIndexes);
+      json(res, result.ok ? 200 : 500, { ...result, registrations, status: vectorMemorySnapshot(config) });
+      return;
+    }
+    if (action === 'rebuild-selected') {
+      const wanted = Array.isArray(body.models) ? body.models.map((item) => String(item)).filter(Boolean) : [];
+      if (!wanted.length) {
+        json(res, 400, { ok: false, code: 'vector.models-empty', error: '没有选择要重建的模型', hint: '至少勾选一个模型' });
+        return;
+      }
+      const packsStatus = embeddingPacksStatus();
+      const localModels = new Map((packsStatus.models ?? []).map((item) => [String(item.id), item]));
+      const targets = [];
+      for (const key of wanted) {
+        if (key.startsWith('local:')) {
+          const id = key.slice('local:'.length);
+          const pack = localModels.get(id);
+          if (!pack) { json(res, 400, { ok: false, code: 'vector.model-not-installed', error: `本地模型未安装：${id}`, hint: '先在 Embedding 功能导入模型' }); return; }
+          targets.push({ kind: 'local', id, model: pack.model, modelSpace: pack.modelSpace });
+        } else if (key.startsWith('cloud:')) {
+          const id = key.slice('cloud:'.length);
+          const profile = getCloudProviderProfile(id);
+          if (!profile || !profile.endpoint || !profile.apiKey) {
+            json(res, 400, { ok: false, code: 'vector.cloud-not-saved', error: `云端服务商未保存：${id}`, hint: '先在云端模型里保存 endpoint/model/space/key' });
+            return;
+          }
+          targets.push({ kind: 'cloud', id, model: profile.model, modelSpace: profile.modelSpace, profile });
+        }
+      }
+      if (targets.some((item) => item.kind === 'local') && !packsStatus.service?.ok) {
+        const started = await startEmbeddingRuntime();
+        if (!started.ok) {
+          json(res, 400, { ok: false, ...started, hint: started.hint || '先启动 Embedding 运行时' });
+          return;
+        }
+      }
+      if (targets.some((item) => item.kind === 'local')) await registerAllInstalledModels();
+      const results = [];
+      for (const target of targets) {
+        const targetConfig = target.kind === 'local'
+          ? { ...config, provider: 'local', model: target.model, modelSpace: target.modelSpace, serviceUrl: '', token: '' }
+          : { ...config, provider: 'cloud', model: target.model, modelSpace: target.modelSpace, cloudModel: target.model, cloudModelSpace: target.modelSpace, serviceUrl: target.profile.endpoint.replace(/\/embeddings\/?$/i, ''), token: target.profile.apiKey, discoveryFile: '' };
+        const result = await rebuildVectorMemory(targetConfig);
+        results.push({
+          key: `${target.kind}:${target.id}`,
+          kind: target.kind,
+          id: target.id,
+          model: target.model,
+          modelSpace: target.modelSpace,
+          ok: result.ok !== false,
+          embedded: result.embedded ?? 0,
+          rebuilt: result.rebuilt === true,
+          indexed: result.status?.indexed ?? 0,
+          pending: result.status?.pending ?? 0,
+          error: result.error ?? '',
+          hint: result.hint ?? '',
+        });
+      }
+      json(res, results.every((item) => item.ok) ? 200 : 500, { ok: results.every((item) => item.ok), results, status: embeddingPacksStatus() });
+      return;
+    }
+    if (action === 'library-list') {
+      const result = listVectorMemoryRecords({ config, limit: body.limit, offset: body.offset });
+      json(res, 200, result);
+      return;
+    }
+    if (action === 'library-search') {
+      const result = await searchVectorMemoryRecords({ config, query: body.query, limit: body.limit });
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    json(res, 400, { ok: false, code: 'request.invalid', error: '未知 action', hint: '可用：maintain / rebuild / rebuild-all / library-list / library-search' });
+  }
+
+  // ── Embedding 可选安装包（模型/运行时/云端）────────────────────────────
+  async function handleEmbeddingPacks(req, res, url) {
+    if (req.method === 'GET') {
+      const jobId = String(url.searchParams.get('job') ?? '');
+      if (jobId) {
+        const job = getEmbeddingPackJob(jobId);
+        if (!job) { json(res, 404, { ok: false, code: 'pack.job-missing', error: '安装任务不存在或已过期', hint: '刷新列表后重试' }); return; }
+        json(res, 200, { ok: true, job });
+        return;
+      }
+      json(res, 200, embeddingPacksStatus());
+      return;
+    }
+    const body = JSON.parse(await readBody(req) || '{}');
+    const action = String(body.action ?? '');
+    if (action === 'open-share') {
+      const result = openEmbeddingShare();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'install') {
+      const result = startEmbeddingPackInstall({
+        source: String(body.path ?? body.source ?? ''), url: String(body.url ?? ''), overwrite: body.overwrite === true,
+      });
+      json(res, result.ok ? 202 : 400, result);
+      return;
+    }
+    if (action === 'remove') {
+      const result = removeEmbeddingPack(String(body.id ?? ''));
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'select') {
+      const result = selectEmbeddingPack(String(body.id ?? ''));
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'start') {
+      const result = await startEmbeddingRuntime();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'stop') {
+      const result = await stopEmbeddingRuntime();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'test') {
+      const result = await testEmbeddingPack();
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'save-cloud') {
+      const result = saveCloudPackConfig(body);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'activate-cloud') {
+      const result = activateCloudProvider(body.provider);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (action === 'refresh') {
+      json(res, 200, embeddingPacksStatus());
+      return;
+    }
+    json(res, 400, { ok: false, code: 'request.invalid', error: '未知 action', hint: '可用：install / remove / select / start / stop / test / save-cloud / refresh' });
   }
 
   // ── 全量记忆卡（只存档；不参与日常提示词）───────────────────────────────
@@ -1898,15 +2108,29 @@ ${body}`;
   // 默认关闭；必须用户在设置页显式开启 snowluma.allowLaunch，且只在点击
   // 「一键启动 / 打开 SnowLuma」时执行。源码/测试里的 L6 边界仍保持：
   // MCP 工具面没有 start_snowluma，桥接本身也只探测不启动。
-  function portOpen(port, timeout = 600) {
+  function portOpen(port, timeout = 600, host = '127.0.0.1') {
     return new Promise((resolve) => {
-      const socket = net.connect({ port, host: '127.0.0.1' });
+      const socket = net.connect({ port, host });
       const done = (ok) => { socket.destroy(); resolve(ok); };
       socket.setTimeout(timeout);
       socket.once('connect', () => done(true));
       socket.once('timeout', () => done(false));
       socket.once('error', () => done(false));
     });
+  }
+
+  /** 让 .bat/.cmd 里的裸 `node` 也能找到 DSH 自带的 node（Windows PATH 键名大小写不固定）。 */
+  function nodePathEnv() {
+    const env = { ...process.env };
+    try {
+      const nodeDir = path.dirname(process.execPath);
+      const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'Path';
+      const current = String(env[pathKey] ?? '');
+      if (nodeDir && !current.split(path.delimiter).includes(nodeDir)) {
+        env[pathKey] = current ? `${nodeDir}${path.delimiter}${current}` : nodeDir;
+      }
+    } catch {}
+    return env;
   }
 
   function resolveSnowLumaLauncher() {
@@ -1935,15 +2159,140 @@ ${body}`;
   // 端口从 SnowLuma 自己的 runtime.json 读，读不到就回退 5100。
   function snowLumaWebui() {
     const cfg = readQqConfig().config?.snowluma ?? {};
-    let port = 5100;
-    try {
-      const root = String(cfg.launcherPath ?? '').trim();
-      if (root) {
-        const runtime = JSON.parse(fs.readFileSync(path.join(root, 'app', 'config', 'runtime.json'), 'utf8'));
-        if (Number(runtime?.webuiPort) > 0) port = Number(runtime.webuiPort);
+    // 2026-11-06 真机事故：旧代码只读 root/app/config/runtime.json，但当前 SnowLuma 把
+    // runtime.json 放在 root/config/runtime.json。读不到就回退写死的 5100，而真实端口是 5099，
+    // 于是探活永远失败 → 弹窗永远说「控制台还没起来」，「加载 QQ 账号」整条流程不可用。
+    let host = '127.0.0.1';
+    let port = 0;
+    const root = String(cfg.launcherPath ?? '').trim();
+    if (root) {
+      for (const rel of [['config', 'runtime.json'], ['app', 'config', 'runtime.json']]) {
+        try {
+          const runtime = JSON.parse(fs.readFileSync(path.join(root, ...rel), 'utf8'));
+          if (Number(runtime?.webuiPort) > 0) port = Number(runtime.webuiPort);
+          const runtimeHost = String(runtime?.webuiHost ?? '').trim();
+          if (runtimeHost && runtimeHost !== '0.0.0.0' && runtimeHost !== '::') host = runtimeHost;
+          if (port > 0) break;
+        } catch {}
       }
-    } catch {}
-    return { port, url: `http://127.0.0.1:${port}` };
+    }
+    const explicitPort = Number(cfg.webuiPort);
+    if (Number.isFinite(explicitPort) && explicitPort > 0) port = explicitPort;
+    const explicitUrl = String(cfg.webuiUrl ?? '').trim();
+    if (explicitUrl) {
+      try {
+        const parsed = new URL(explicitUrl);
+        if (parsed.port) port = Number(parsed.port);
+        if (parsed.hostname && parsed.hostname !== '0.0.0.0' && parsed.hostname !== '::') host = parsed.hostname;
+      } catch {}
+    }
+    if (!port) port = 5100;
+    return { host, port, url: explicitUrl || `http://${host}:${port}` };
+  }
+
+  // SnowLuma WebUI 的访问密码：优先用户显式填的，其次仓库 state 里的口令文件。
+  // 只在本进程内使用，不返回给浏览器、不写日志。
+  function snowLumaWebuiPassword() {
+    try {
+      return fs.readFileSync(path.join(QQBOT_ROOT, 'state', 'snowluma-webui.pass'), 'utf8').trim();
+    } catch { return ''; }
+  }
+
+  function snowLumaWebuiError(code, error, hint = '', status = 200) {
+    return Object.assign(new Error(String(error || code)), { code, hint, status });
+  }
+
+  async function snowLumaWebuiRequest(pathname, { method = 'GET', body = null, password = '' } = {}) {
+    const webui = snowLumaWebui();
+    let up = false;
+    for (let i = 0; i < 8; i += 1) {
+      if (await portOpen(webui.port, 500, webui.host)) { up = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    if (!up) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', 'SnowLuma 控制台还没起来', `先启动 SnowLuma；如果刚点了一键启动，等几秒再点「刷新」（${webui.url}）`);
+    }
+    const pass = String(password || '').trim() || snowLumaWebuiPassword();
+    if (!pass) {
+      throw snowLumaWebuiError(
+        'SNOWLUMA_WEBUI_PASSWORD_MISSING',
+        '没有 SnowLuma 控制台密码',
+        `在弹窗里输入 SnowLuma WebUI 访问密码，或把密码写到 ${path.join(QQBOT_ROOT, 'state', 'snowluma-webui.pass')}`,
+      );
+    }
+    let loginRes;
+    try {
+      loginRes = await fetch(`${webui.url}/api/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pass }), signal: AbortSignal.timeout(8000),
+      });
+    } catch (error) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', `连不上 SnowLuma 控制台：${error?.message ?? error}`, `确认 ${webui.url} 能打开；必要时重启 SnowLuma`);
+    }
+    const login = await loginRes.json().catch(() => ({}));
+    if (login?.needsTotp === true) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_TOTP', 'SnowLuma 控制台开启了二次验证', '先在 SnowLuma 控制台完成 TOTP，再回来刷新');
+    }
+    if (!loginRes.ok || typeof login?.token !== 'string' || !login.token) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_LOGIN_FAILED', 'SnowLuma 控制台密码不正确', '检查密码后重试；密码只在本机进程内使用');
+    }
+    let res;
+    try {
+      res = await fetch(`${webui.url}${pathname}`, {
+        method,
+        headers: { 'X-SnowLuma-Token': login.token, ...(body != null ? { 'Content-Type': 'application/json' } : {}) },
+        body: body != null ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (error) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', `SnowLuma 控制台请求失败：${error?.message ?? error}`, '稍后重试；如果控制台被关闭，重新一键启动');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_AUTH', 'SnowLuma 控制台会话失效', '重新输入密码后重试');
+    }
+    if (!res.ok || data?.ok === false) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_HTTP', data?.error || data?.message || `SnowLuma 返回 HTTP ${res.status}`, data?.hint || '刷新后重试');
+    }
+    if (data?.success === false) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_ACTION_FAILED', data?.message || 'SnowLuma 操作失败', data?.hint || '检查 QQ 进程状态后重试');
+    }
+    return data;
+  }
+
+  function snowLumaProcessView(process) {
+    const p = process ?? {};
+    const uin = String(p.uin || p.account?.uin || '').replace(/\D/g, '').slice(0, 15);
+    return {
+      pid: Number.isSafeInteger(Number(p.pid)) ? Number(p.pid) : null,
+      uin,
+      nickname: String(p.account?.nickname || p.nickname || p.name || '').slice(0, 60),
+      status: String(p.status || '').slice(0, 40),
+      loggedIn: p.loggedIn === true,
+      injected: p.injected === true,
+      error: String(p.error || p.account?.error || '').slice(0, 200),
+    };
+  }
+
+  async function snowLumaAccountList(password = '') {
+    const processesRaw = await snowLumaWebuiRequest('/api/processes', { password });
+    const accountsRaw = await snowLumaWebuiRequest('/api/qq-list', { password }).catch(() => ({ list: [] }));
+    const processes = (Array.isArray(processesRaw?.list) ? processesRaw.list : []).map(snowLumaProcessView);
+    const accounts = (Array.isArray(accountsRaw?.list) ? accountsRaw.list : []).map((account) => ({
+      uin: String(account?.uin || '').replace(/\D/g, '').slice(0, 15),
+      nickname: String(account?.nickname || account?.name || '').slice(0, 60),
+      online: account?.online === true,
+    }));
+    return { webui: snowLumaWebui().url, processes, accounts };
+  }
+
+  async function snowLumaLoadAccount(pid, password = '') {
+    const n = Number(pid);
+    if (!Number.isSafeInteger(n) || n <= 0) {
+      throw snowLumaWebuiError('SNOWLUMA_PROCESS_INVALID', 'QQ 进程号无效', '点「刷新」重新检测，再选一个进程');
+    }
+    const result = await snowLumaWebuiRequest(`/api/processes/${n}/load`, { method: 'POST', body: {}, password });
+    return { process: snowLumaProcessView(result?.process ?? result ?? {}) };
   }
 
   // 只用系统默认浏览器打开本地回环地址；URL 由端口拼出，不接受外部输入。
@@ -1957,6 +2306,37 @@ ${body}`;
       return true;
     } catch {
       return false;
+    }
+  }
+
+  // 网盘资源用系统默认浏览器打开。只允许固定网盘域名，不接受任意 URL；
+  // 前端 window.open 在 Electron/新窗口策略下可能被拦，这个接口是可用的兜底。
+  const EXTERNAL_OPEN_HOSTS = new Set(['pan.quark.cn', 'pan.xunlei.com', 'pan.baidu.com', 'drive.uc.cn']);
+  function openExternalResourceUrl(raw) {
+    if (process.platform !== 'win32') {
+      return { ok: false, code: 'OPEN_UNSUPPORTED', error: '当前平台不支持自动打开浏览器', hint: '请复制链接后手动打开' };
+    }
+    const text = String(raw ?? '').trim();
+    if (!text || text.length > 2000 || /["\r\n]/.test(text)) {
+      return { ok: false, code: 'OPEN_URL_INVALID', error: '链接格式不合法', hint: '请复制链接后手动打开' };
+    }
+    let parsed;
+    try { parsed = new URL(text); } catch {
+      return { ok: false, code: 'OPEN_URL_INVALID', error: '链接不是合法 URL', hint: '请复制链接后手动打开' };
+    }
+    if (!/^https?:$/.test(parsed.protocol) || !EXTERNAL_OPEN_HOSTS.has(parsed.hostname.toLowerCase())) {
+      return { ok: false, code: 'OPEN_URL_NOT_ALLOWED', error: '只允许打开已配置的网盘域名', hint: '请复制链接后手动打开' };
+    }
+    if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
+      return { ok: false, code: 'OPEN_SKIPPED', error: '测试环境跳过打开浏览器', hint: '请复制链接后手动打开' };
+    }
+    try {
+      spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${text}"`], {
+        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
+      }).unref();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, code: 'OPEN_FAILED', error: `打开浏览器失败：${error?.message ?? error}`, hint: '请复制链接后手动打开' };
     }
   }
 
@@ -1988,7 +2368,7 @@ ${body}`;
     }
     const webui = snowLumaWebui();
     const onebot = (await portOpen(3000)) || (await portOpen(3001));
-    const webuiUp = await portOpen(webui.port);
+    const webuiUp = await portOpen(webui.port, 600, webui.host);
     if (onebot) {
       return {
         state: 'onebot-rejected',
@@ -2001,7 +2381,56 @@ ${body}`;
     return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
   }
 
-  async function launchSnowLuma() {
+  /**
+   * 2026-11-06 事故：SnowLuma 是插件 spawn 出来的子进程，DSH 退出（每次更新都会退出）时会被
+   * 一起结束；而 `cmd /c start` 还会留一个黑框——用户关掉黑框就等于关掉 QQ 网关。
+   *
+   * 做法（真机验证过，1 秒拉起）：
+   *   写一个 VBS（`sh.Run ..., 0, False` = 隐藏窗口）
+   *   → 用 explorer.exe 打开它（explorer 不属于 DSH 的 Job，天然的脱离点）
+   *   → wscript 退出后 node 变成孤儿进程，taskkill /T DSH 也带不走它。
+   * 失败时返回 ok:false，调用方回退旧逻辑（保持原有行为不变）。
+   */
+  function spawnSnowLumaDetached({ launcher, cwd, env }) {
+    if (process.platform !== 'win32') return { ok: false, error: '非 Windows 平台' };
+    if (/["\r\n]/.test(String(launcher)) || /["\r\n]/.test(String(cwd))) {
+      return { ok: false, error: '启动路径含引号或换行，拒绝写入 VBS' };
+    }
+    try {
+      const appDir = path.dirname(launcher);
+      const entry = path.join(appDir, 'index.mjs');
+      const lower = launcher.toLowerCase();
+      const isBatch = lower.endsWith('.bat') || lower.endsWith('.cmd');
+      let target;
+      if (isBatch && fs.existsSync(entry)) {
+        // 直接起 node：绕开 launcher.bat 里的 cmd 窗口和末尾的 pause
+        target = `"${process.execPath}" "${entry}"`;
+      } else if (isBatch) {
+        target = `"${process.env.ComSpec || 'cmd.exe'}" /d /c ""${launcher}""`;
+      } else {
+        target = `"${launcher}"`;
+      }
+      const vbsEsc = (value) => String(value).replace(/"/g, '""');
+      const stateDir = path.join(QQBOT_ROOT, 'state');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const vbsPath = path.join(stateDir, 'snowluma-launch.vbs');
+      fs.writeFileSync(vbsPath, [
+        "' 由 SurfCore 生成：隐藏窗口（样式 0）启动 SnowLuma，避免留黑框",
+        "' explorer.exe 打开本文件 → wscript 退出后 node 成为孤儿进程，脱离 DSH 进程树",
+        'Set sh = CreateObject("WScript.Shell")',
+        `sh.CurrentDirectory = "${vbsEsc(cwd)}"`,
+        `sh.Run "${vbsEsc(target)}", 0, False`,
+        '',
+      ].join('\r\n'), 'utf8');
+      const explorer = path.join(process.env.SystemRoot || 'C:\\Windows', 'explorer.exe');
+      spawn(explorer, [vbsPath], { detached: true, stdio: 'ignore', env, windowsHide: true }).unref();
+      return { ok: true, method: 'explorer+vbs' };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  }
+
+  async function launchSnowLuma({ openWebui = true, hideConsoles = false } = {}) {
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
     }
@@ -2017,11 +2446,12 @@ ${body}`;
     }
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
-    if (await portOpen(webui.port)) {
-      const opened = openLocalUrl(webui.url);
+    if (await portOpen(webui.port, 600, webui.host)) {
+      const opened = openWebui ? openLocalUrl(webui.url) : false;
       return {
         ok: true,
         needsLogin: true,
+        needsAccount: true,
         opened,
         webui: webui.url,
         message: opened ? `SnowLuma 在登录页，已打开控制台 ${webui.url}` : `SnowLuma 在登录页：请打开 ${webui.url} 扫码`,
@@ -2035,36 +2465,117 @@ ${body}`;
     try {
       const cwd = path.dirname(launcher);
       const lower = launcher.toLowerCase();
-      if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
+      // 2026-11-06：默认「隐藏 + 脱离 DSH 进程树」。想恢复旧行为（可见控制台、随 DSH 退出），
+      // 设置 snowluma.launchMode = "legacy" 即可（不写默认 detached）。
+      // 默认跟随「隐藏命令行黑框」开关；显式 launchMode 仍然优先。
+      const launchMode = String(cfg.launchMode ?? (hideConsoles ? 'detached' : 'legacy')).toLowerCase();
+      let launchedBy = 'legacy';
+      if (launchMode !== 'legacy') {
+        const detachedResult = spawnSnowLumaDetached({ launcher, cwd, env: nodePathEnv() });
+        if (detachedResult.ok) launchedBy = detachedResult.method;
+      }
+      if (launchedBy === 'legacy' && (lower.endsWith('.bat') || lower.endsWith('.cmd'))) {
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
         // 现在整条路径作为「verbatim 参数」交给 cmd，并且拒绝含引号/换行的路径。
         if (/["\r\n]/.test(launcher)) return { ok: false, error: '启动脚本路径含引号或换行，拒绝执行' };
-        spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${launcher}"`], {
-          cwd, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true,
-        }).unref();
-      } else {
-        spawn(launcher, [], { cwd, detached: true, stdio: 'ignore', windowsHide: false }).unref();
+        if (hideConsoles) {
+          // 不经过 `start`：start 会显式创建新控制台窗口，windowsHide 压不住。
+          // SnowLuma 的 launcher.bat 最终也是 `node ./index.mjs`；直接起 node，
+          // 完全绕开 cmd/Windows Terminal 标签。
+          const appDir = path.dirname(launcher);
+          const entry = path.join(appDir, 'index.mjs');
+          if (fs.existsSync(entry)) {
+            spawn(process.execPath, [entry], {
+              cwd: appDir, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: true,
+            }).unref();
+          } else {
+            spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `"${launcher}"`], {
+              cwd, detached: false, stdio: 'ignore', env: nodePathEnv(), windowsHide: true, windowsVerbatimArguments: true,
+            }).unref();
+          }
+        } else {
+          spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${launcher}"`], {
+            cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: false, windowsVerbatimArguments: true,
+          }).unref();
+        }
+      } else if (launchedBy === 'legacy') {
+        spawn(launcher, [], { cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: hideConsoles === true }).unref();
       }
       // 等 WebUI 端口起来（最多 10 秒）：起来了就打开浏览器；没起来也给出地址让用户自己点。
       const until = Date.now() + 10_000;
       while (Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 400));
-        if (await portOpen(webui.port)) {
-          const opened = openLocalUrl(webui.url);
+        if (await portOpen(webui.port, 600, webui.host)) {
+          const opened = openWebui ? openLocalUrl(webui.url) : false;
           return {
             ok: true,
             started: true,
+            needsAccount: true,
             opened,
             webui: webui.url,
             launcher,
+            launchMode: launchedBy,
             message: opened ? `已启动 SnowLuma 并打开控制台 ${webui.url}` : `已启动 SnowLuma：${webui.url}`,
           };
         }
       }
-      return { ok: true, started: true, pending: true, webui: webui.url, launcher, message: `已启动 SnowLuma，控制台稍后可访问：${webui.url}` };
+      return { ok: true, started: true, pending: true, needsAccount: true, webui: webui.url, launcher, message: `已启动 SnowLuma，控制台稍后可访问：${webui.url}` };
     } catch (error) {
       return { ok: false, error: `打开 SnowLuma 失败：${error?.message ?? error}` };
     }
+  }
+
+  /**
+   * 关闭 SnowLuma（包括 explorer+wscript 拉起的孤儿进程）。
+   * 不按进程名盲杀：先用 5099/3000/3001 找 PID，再看命令行是否像 SnowLuma/index.mjs；
+   * 找不到端口时再按命令行兜底。失败返回结构化原因。
+   */
+  async function stopSnowLuma() {
+    if (process.platform !== 'win32') {
+      return { ok: false, code: 'SNOWLUMA_STOP_UNSUPPORTED', error: '当前平台不支持自动关闭 SnowLuma', hint: '请手动结束 SnowLuma 进程' };
+    }
+    const script = [
+      '$ports=@(5099,3000,3001)',
+      '$pids=@()',
+      'foreach($p in $ports){ try { $pids += (Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess) } catch {} }',
+      '$pids=$pids | Sort-Object -Unique',
+      '$rows=@()',
+      'foreach($id in $pids){ $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue; if($proc -and $proc.CommandLine -match \'index\\.mjs|SnowLuma\'){ $rows += [pscustomobject]@{pid=$id} } }',
+      'if($rows.Count -eq 0){ Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match \'SnowLuma.*index\\.mjs\' } | ForEach-Object { $rows += [pscustomobject]@{pid=$_.ProcessId} } }',
+      '$rows | ConvertTo-Json -Compress',
+    ].join('; ');
+    const run = (file, args) => new Promise((resolve) => {
+      execFile(file, args, { windowsHide: true, timeout: 15000 }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
+    });
+    const found = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    if (found.error) {
+      return { ok: false, code: 'SNOWLUMA_STOP_FAILED', error: `查找 SnowLuma 进程失败：${found.error.message}`, hint: '可在任务管理器结束 node.exe（命令行含 SnowLuma/index.mjs）' };
+    }
+    let rows = [];
+    try {
+      const parsed = JSON.parse(found.stdout.trim() || '[]');
+      rows = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {}
+    const pids = [...new Set(rows.map((row) => Number(row?.pid)).filter((pid) => Number.isInteger(pid) && pid > 0))];
+    if (!pids.length) {
+      return { ok: true, stopped: [], message: '没找到运行中的 SnowLuma（5099/3000/3001 没有匹配进程）' };
+    }
+    const stopped = [];
+    const errors = [];
+    for (const pid of pids) {
+      const result = await run('taskkill.exe', ['/PID', String(pid), '/T', '/F']);
+      if (result.error || result.stderr.trim()) errors.push({ pid, error: result.error?.message || result.stderr.trim() });
+      else stopped.push(pid);
+    }
+    return {
+      ok: errors.length === 0,
+      stopped,
+      errors,
+      message: errors.length
+        ? `已结束 ${stopped.length} 个，失败 ${errors.length} 个`
+        : `已关闭 SnowLuma（PID ${stopped.join(', ')}）`,
+      hint: errors.length ? '可能有子进程仍在运行，任务管理器结束 node.exe 或重启 DSH' : '',
+    };
   }
 
   // ── 启动完成弹窗 ────────────────────────────────────────────────────────
@@ -2285,7 +2796,9 @@ ${body}`;
     const filterKey = String(url.searchParams.get('filter') || '').trim().toLowerCase();
     const fileFilter = filterKey === 'snowluma'
       ? 'SnowLuma 启动文件 (SnowLuma.exe;launcher.bat)|SnowLuma.exe;launcher.bat|所有文件 (*.*)|*.*'
-      : '可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*';
+      : filterKey === 'embedding-pack'
+        ? 'Embedding 包 (*.zip)|*.zip|所有文件 (*.*)|*.*'
+        : '可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*';
     if (process.platform !== 'win32') {
       json(res, 200, { ok: false, error: '只有 Windows 支持原生选择框，请手动填路径' });
       return;
@@ -2548,8 +3061,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   // ── 一键启动 / 停止（概览、QQ、B站、桌宠、语音共用同一份状态）────────────
-  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice'];
-  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音' };
+  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice', 'vector'];
+  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音', vector: '向量记忆' };
 
   function normalizeLaunchComponents(input) {
     const list = Array.isArray(input) ? input : [];
@@ -2575,6 +3088,26 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     let voice = { ok: false, running: false, packs: [], id: '', error: bridge.running ? '' : 'QQ 桥接未运行' };
     if (bridge.running) voice = await voicePacksSnapshot();
     const pet = petService.status();
+    let vector = { ok: false, running: false, models: [], providers: [], selected: '', provider: '', model: '', modelSpace: '' };
+    try {
+      const vp = embeddingPacksStatus();
+      vector = {
+        ok: vp.service?.ok === true,
+        running: vp.service?.ok === true,
+        selected: String(vp.config?.packId || ''),
+        provider: String(vp.config?.provider || ''),
+        cloudActive: String(vp.cloudConfig?.active || ''),
+        model: String(vp.config?.model || ''),
+        modelSpace: String(vp.config?.modelSpace || ''),
+        models: (vp.models ?? []).map((m) => ({ id: m.id, name: m.name || m.id, valid: m.valid === true, modelSpace: m.modelSpace || '' })),
+        providers: Object.entries(vp.cloudConfig?.providers ?? {}).map(([id, p]) => ({
+          id, hasKey: p?.hasKey === true, model: p?.model || '', modelSpace: p?.modelSpace || '',
+        })),
+        lastError: vp.service?.ok === true ? null : (vp.service?.error || 'Embedding runtime 未启动'),
+      };
+    } catch (error) {
+      vector.lastError = String(error?.message ?? error).slice(0, 200);
+    }
     return {
       qq: {
         running: Boolean(bridge.running),
@@ -2603,6 +3136,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         packs: (voice.packs ?? []).map((p) => ({ id: p.id, installed: Boolean(p.installed), running: Boolean(p.running), name: p.name || p.id })),
         lastError: voice.error || null,
       },
+      vector,
     };
   }
 
@@ -2612,6 +3146,32 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   async function startComponent(id, opts = {}) {
     try {
+      if (id === 'vector') {
+        const pick = String(opts.vectorPack || '').trim();
+        if (pick.startsWith('local:')) {
+          const selected = selectEmbeddingPack(pick.slice('local:'.length));
+          if (!selected.ok) return launchItem(id, false, { ...selected, error: selected.error || '选择本地模型失败' });
+        } else if (pick.startsWith('cloud:')) {
+          const activated = activateCloudProvider(pick.slice('cloud:'.length));
+          if (!activated.ok) return launchItem(id, false, { ...activated, error: activated.error || '启用云端服务商失败' });
+          // 云端 endpoint/key 是启动时注入 runtime 的环境变量，已运行的服务必须重启才会换 provider。
+          if (embeddingPacksStatus().service?.ok) {
+            const stopped = await stopEmbeddingRuntime();
+            if (!stopped.ok) return launchItem(id, false, { ...stopped, error: stopped.error || '停止旧 Embedding runtime 失败' });
+          }
+        }
+        const started = await startEmbeddingRuntime();
+        if (!started.ok) return launchItem(id, false, { ...started, error: started.error || 'Embedding runtime 启动失败' });
+        if (started.verified === false) {
+          return launchItem(id, false, {
+            code: 'VECTOR_SELF_TEST_FAILED',
+            error: `runtime 已启动但自检失败：${started.verification?.error || '未知错误'}`,
+            hint: '检查模型包/云端 Key 后重试；没有通过自检不会切换到向量记忆',
+          });
+        }
+        saveUnified({ memory: { mode: 'vector' } });
+        return launchItem(id, true, { message: `向量记忆已启用${pick ? `（${pick}）` : ''}` });
+      }
       if (id === 'qq') {
         if (!platformStartEnabled('qq')) {
           return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「启动 QQ」并保存' });
@@ -2619,7 +3179,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const status = await bridgeStatus();
         const stale = bridgeStaleReason(status);
         const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
-        const snowluma = await launchSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        const snowluma = await launchSnowLuma({ openWebui: false, hideConsoles: opts.hideConsoles === true }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
         const bridgeOk = bridge?.ok !== false;
         const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
         return launchItem(id, bridgeOk && snowOk, {
@@ -2627,6 +3187,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
           error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
           hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
+          needsAccount: snowluma?.needsAccount === true,
+          webui: snowluma?.webui || null,
           detail: { bridge, snowluma },
         });
       }
@@ -2682,6 +3244,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   async function stopComponent(id, opts = {}) {
     try {
+      if (id === 'vector') {
+        const r = await stopEmbeddingRuntime();
+        saveUnified({ memory: { mode: 'narrative' } });
+        return launchItem(id, r?.ok !== false, {
+          message: '向量记忆已停止，读取方式切回叙事记忆',
+          code: r?.ok === false ? 'VECTOR_STOP_FAILED' : '',
+          error: r?.ok === false ? (r.error || 'Embedding runtime 停止失败') : '',
+          hint: r?.ok === false ? '看 embedding runtime 日志/手动结束进程' : '',
+        });
+      }
       if (id === 'qq') {
         const r = await stopBridge();
         return launchItem(id, r?.ok !== false, {
@@ -2741,7 +3313,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     const items = [];
     // 停止时先停语音（它由 QQ 桥接托管），再停桥接；否则桥接先死，语音进程会变成孤儿。
-    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet'].filter((id) => ids.includes(id)) : ids;
+    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet', 'vector'].filter((id) => ids.includes(id)) : ids;
     for (const id of ordered) {
       items.push(action === 'stop' ? await stopComponent(id, body) : await startComponent(id, body));
     }
@@ -2836,6 +3408,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, 200, await launchSnowLuma());
       return;
     }
+    if (action === 'stop-snowluma') {
+      json(res, 200, await stopSnowLuma());
+      return;
+    }
     if (action === 'detect-snowluma') {
       // 可选 path：用户点「浏览…」选了解压目录/app 目录/launcher.bat 时，**只验证这个路径**——
       // 用户明确选了一个，就不能悄悄回退去猜别的目录（否则会"检测成功"但保存的是另一份安装）。
@@ -2881,6 +3457,32 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (action === 'purpose-run') {
       const result = await callBridge('/api/purpose/run', { method: 'POST', body: { force: true }, timeoutMs: 25000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    // 本地判断（免费漏斗）：设置页开真拦之前先看"会拦掉多少"。
+    if (action === 'local-filter') {
+      const result = await callBridge('/api/socialV2/local-filter', { timeoutMs: 8000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    // 花费与会话（2026-11-04）：会话页要一张表回答"今天谁在烧钱、要不要换会话"。
+    if (action === 'token-summary') {
+      const since = Number.isFinite(Number(body.since)) ? Number(body.since) : '';
+      const qs = since === '' ? '' : `?since=${Math.max(0, Math.round(since))}`;
+      const result = await callBridge(`/api/tokens/summary${qs}`, { timeoutMs: 15000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    if (action === 'session-list') {
+      const result = await callBridge('/api/sessions', { timeoutMs: 8000 });
+      json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
+      return;
+    }
+    if (action === 'session-reset') {
+      const key = String(body.key ?? '').trim();
+      if (!key) { json(res, 400, { ok: false, error: '缺少 key', hint: '先刷新会话列表再点换会话' }); return; }
+      const result = await callBridge('/api/session/reset', { method: 'POST', body: { key }, timeoutMs: 20000 });
       json(res, result.status || 200, result.data ?? { ok: result.ok, error: result.error });
       return;
     }
@@ -3578,6 +4180,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (pathname === `${API_PREFIX}/fish-guard/qq`) { handleQqFishGuard(res); return; }
     if (pathname === `${API_PREFIX}/memory-card/full`) { await handleMemoryCardFull(req, res, url); return; }
+    if (pathname === `${API_PREFIX}/vector-memory`) { await handleVectorMemory(req, res); return; }
+    if (pathname === `${API_PREFIX}/embedding-packs`) { await handleEmbeddingPacks(req, res, url); return; }
     if (pathname === `${API_PREFIX}/memory-card`) { await handleMemoryCard(req, res); return; }
     if (pathname === `${API_PREFIX}/align`) { await handleAlign(req, res); return; }
     if (pathname === `${API_PREFIX}/mode`) { await handleMode(req, res); return; }
@@ -3634,6 +4238,31 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       return;
     }
     if (pathname === `${API_PREFIX}/diagnostics`) { await handleDiagnostics(req, res); return; }
+    if (pathname === `${API_PREFIX}/snowluma/accounts` || pathname === `${API_PREFIX}/snowluma/load`) {
+      if (String(req.method || 'GET').toUpperCase() !== 'POST') {
+        json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' });
+        return;
+      }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+      try {
+        if (pathname.endsWith('/accounts')) {
+          const result = await snowLumaAccountList(String(body.password || ''));
+          json(res, 200, { ok: true, ...result });
+        } else {
+          const result = await snowLumaLoadAccount(body.pid, String(body.password || ''));
+          json(res, 200, { ok: true, ...result });
+        }
+      } catch (error) {
+        json(res, 200, {
+          ok: false,
+          code: String(error?.code || 'SNOWLUMA_ACCOUNT_FAILED'),
+          error: String(error?.message ?? error).slice(0, 300),
+          hint: String(error?.hint ?? '刷新后重试；必要时打开 SnowLuma 控制台检查').slice(0, 300),
+        });
+      }
+      return;
+    }
     if (pathname === `${API_PREFIX}/bridge`) { await handleBridge(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/purpose`)) { await handlePurpose(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/voice`)) { await handleVoice(req, res, url); return; }
@@ -3649,6 +4278,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/logs`) { handleLogs(res, url); return; }
     if (pathname === `${API_PREFIX}/owner-audit`) { await handleOwnerAudit(req, res, url); return; }
     if (pathname === `${API_PREFIX}/browse`) { await handleBrowse(req, res, url); return; }
+    if (pathname === `${API_PREFIX}/resources/open`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' }); return; }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+      const result = openExternalResourceUrl(body.url);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
     if (pathname === `${API_PREFIX}/privacy/explain`) {
       const body = req.method === 'POST' ? JSON.parse(await readBody(req) || '{}') : { text: url.searchParams.get('text') ?? '' };
       json(res, 200, { ok: true, ...explainText(String(body.text ?? '')) });
@@ -3726,6 +4363,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
+    try { vectorMemoryTimer?.stop?.(); } catch {}
     try { closeAllQrLogins(); } catch {}
     if (characterTimer) clearInterval(characterTimer);
     if (syncTimer) clearInterval(syncTimer);
