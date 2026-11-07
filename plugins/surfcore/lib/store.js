@@ -572,6 +572,9 @@ export function normalizeBiliConfig(input) {
     : [];
   cfg.interact = isPlainObject(cfg.interact) ? cfg.interact : {};
   cfg.interact.enabled = cfg.interact.enabled !== false;
+  // 2026-11-08 用户定：false = 「只回找你的人」（禁主动评论/搭话/鱼群聚拢；回 @、回复、私信分享照常）。
+  // 必须在这里收敛：saveBiliConfig 走本函数重建对象，不写这行设置页保存时会被静默丢掉。
+  cfg.interact.proactive = cfg.interact.proactive !== false;
   cfg.interact.maxCommentAgeDays = finiteNumber(cfg.interact.maxCommentAgeDays, 14, 0, 365, { integer: true });
   cfg.diary = isPlainObject(cfg.diary) ? cfg.diary : {};
   cfg.diary.enabled = true;

@@ -26,6 +26,23 @@ export function assertInteractEnabled(action = '互动') {
 }
 
 /**
+ * 「只回找你的人」（2026-11-08 用户定）：interact.proactive=false 时，
+ * 顶层主动评论 / 热评搭话 / 鱼群聚拢一律禁止；回 @ 她、回复她的人照常。
+ * 与 interact.enabled 的区别：沉默逛连私信和动态一起停，这个只停"她主动开口"。
+ */
+export function proactiveAllowed(cfg = config()) {
+  return cfg?.interact?.proactive !== false
+}
+
+/** 同 assertInteractEnabled：返回 false 并给出可操作建议，调用方 process.exit(3)。 */
+export function assertProactiveAllowed(action = '主动评论') {
+  if (proactiveAllowed()) return true
+  console.error(`✗ [BILI_PROACTIVE_DISABLED] 「只回找你的人」已开启：${action}被禁止。`)
+  console.error('  建议：去 设置 → B站 → 互动与静默，打开「主动评论 / 搭话」；或继续只回找你的人。')
+  return false
+}
+
+/**
  * ctime（毫秒）是否太旧。0/未知时间不拦（无法判断时不要误杀），
  * 但如果目标明确太旧，返回结构化原因。
  */

@@ -44,7 +44,7 @@ import {
   effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, rankVectorMemories,
   readVectorIndex, renderVectorRecallBlock, resolveVectorMemoryPaths,
 } from '../../../src/vector-memory.js'
-import { interactEnabled } from '../tools/lib/interact.mjs'
+import { interactEnabled, proactiveAllowed } from '../tools/lib/interact.mjs'
 import { biliSessionCreateParams } from './bili-workspace.js'
 
 // 当前角色的 B站 行为目录（角色系统未启用时回退旧目录）。
@@ -308,6 +308,9 @@ function wakePrompt(st, tools = '') {
   const B = config()
   const K = kindsNow(B)
   const SILENT = !interactEnabled(B)
+  // 2026-11-08：只回找你的人（interact.proactive=false）—— 只停"她主动开口"，
+  //   回 @ 她/回复她的人、动态、私信分享都不受影响。
+  const PROACTIVE = proactiveAllowed(B)
   const bestSlot = `${String(K.best.slot).padStart(2, '0')}:00`
   const capText = (n) => (Number(n) > 0 ? n : '不限')
   const identity = identityContextLines()
@@ -336,7 +339,9 @@ function wakePrompt(st, tools = '') {
     '按 AGENTS.md 的「看的那晚」流程走一遍（不要等我说话，直接做）：',
     ...(SILENT
       ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
-      : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
+      : PROACTIVE
+        ? ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']
+        : ['⛔ **「只回找你的人」已开启（2026-11-08 主人定）：本轮不发主动评论、不去搭话、不做鱼群聚拢。** 只做：回 @ 你的 / 回复你的人（第 7 步 comment-digest）、看视频、评分、收藏、写日记、分享（第 5 步）。']),
     '1) `node bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
     `2) 读两本日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）`,
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
@@ -357,25 +362,32 @@ function wakePrompt(st, tools = '') {
     '     ⚠️ 每天最多 6 个 · 每次最多 4 个 · 两次之间有随机间隔；遇到风控会自己停并记下原因，别硬刷 ✗',
     '     （设置页「鱼群保护 · 运行状态」能看到今天赞了几条、上次失败在哪个 code）',
     // 2026-10-23（主人定）：**每次醒来至少发一条主动评论**，鱼群泛滥时强制聚拢。
-    //   以前 4.7 是"有话说就说"；现在改成硬规则，避免她看到鱼多就整轮不说话。
-    '4.7) ⭐ **每次醒来至少发一条主动评论（2026-10-23 主人定的硬规则）**：',
-    '     看完想吐槽/想夸/想接梗/想补充 → 直接发一条普通评论（不 @ 我，是你自己在说话）：',
-    '     `recon <BV>` 拿 aid → `comment --oid <aid> --bvid <BV> --message "…" --auto --dry` → 改成 `--go` → `thread` 复核 ✓',
-    `     ⚠️ **鱼群泛滥时默认强制聚拢**（当前设置：${B.fishGuard?.forceGather === false ? '关；要强制就加 --force-gather' : '开'}）：就算没有“回复少/新鲜/没回过”的鱼楼，也强行挑一条鱼楼回；`,
-    '        **不许拿“没有可聚拢鱼楼”当理由不发**。设置页「鱼群保护 → 每次醒来强制聚拢」默认开；仍占主动评论额度 ✓',
-    '     ⚠️ **不带 --share 才是普通评论**；带 --share 才是"分享给我"（那条才要评分 + rank 1 + @ 我 ✓）',
-    '     ⚠️ 分寸：**代码硬上限** 一天 ' + capText(L.daily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一 UP ' + L.perUpMin + ' 分钟 1 条 · 同一视频 ' + L.perVideoMin + ' 分钟 1 条',
-    '        （额度/冷却满了就停，别硬刷；这不是“强制”能绕过的 ✓）',
-    // 2026-10-20（用户定）：**热评也能搭话** —— 挂在别人评论下面的楼中楼，不是顶层 ✓
-    '4.8) ⭐ **搭话**：`debrief` 的热评里，有人说到你心坎里 / 有明显错漏 / 想接个梗 → 回他一句：',
-    '     `comment --oid <aid> --bvid <BV> --root <rpid> --parent <rpid> --message "…" --auto --ta --dry` → `--go`',
-    '     ⚠️ **必须带 `--ta`** —— 那是"我去搭别人"的账（' + capText(L.taDaily) + ' 条/天）；不带 `--ta` 的楼中楼算"回找我的人"（另一本账）✗',
-    '     ⚠️ 这是**楼中楼**（挂在对方那条评论下面），rpid 就是 debrief 里那个 rpid（root 和 parent 填同一个）',
-    '     ⚠️ 硬上限：一天 ' + capText(L.taDaily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一条评论 ' + Math.round(L.perThreadMin / 60) + ' 小时只回一次（撞上就被拒 ✗）',
-    // 2026-10-21（用户定）：**每天要把搭话额度用完**，每发一条都会私信报备给你 ✓
-    `     ⭐ **今天的搭话额度要花完**：已搭 ${taToday()}/${capText(L.taDaily)} 条，还差 ${Math.max(0, L.taDaily - taToday())} 条 —— 这一轮至少搭 2~3 条，别只搭一条就收工 ✓`,
-    '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
-    '     ⚠️ 别逐条盖楼、别跟人抬杠 —— 一句话说完就走 ✓',
+    //   以前 4.7 是"有话说就说"；后来改成硬规则，避免她看到鱼多就整轮不说话。
+    // 2026-11-08（主人改）：interact.proactive=false 时 4.7/4.8 整段替换成"只回找你的人"。
+    ...(PROACTIVE ? [
+      '4.7) ⭐ **每次醒来至少发一条主动评论（2026-10-23 主人定的硬规则）**：',
+      '     看完想吐槽/想夸/想接梗/想补充 → 直接发一条普通评论（不 @ 我，是你自己在说话）：',
+      '     `recon <BV>` 拿 aid → `comment --oid <aid> --bvid <BV> --message "…" --auto --dry` → 改成 `--go` → `thread` 复核 ✓',
+      `     ⚠️ **鱼群泛滥时默认强制聚拢**（当前设置：${B.fishGuard?.forceGather === false ? '关；要强制就加 --force-gather' : '开'}）：就算没有“回复少/新鲜/没回过”的鱼楼，也强行挑一条鱼楼回；`,
+      '        **不许拿“没有可聚拢鱼楼”当理由不发**。设置页「鱼群保护 → 每次醒来强制聚拢」默认开；仍占主动评论额度 ✓',
+      '     ⚠️ **不带 --share 才是普通评论**；带 --share 才是"分享给我"（那条才要评分 + rank 1 + @ 我 ✓）',
+      '     ⚠️ 分寸：**代码硬上限** 一天 ' + capText(L.daily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一 UP ' + L.perUpMin + ' 分钟 1 条 · 同一视频 ' + L.perVideoMin + ' 分钟 1 条',
+      '        （额度/冷却满了就停，别硬刷；这不是“强制”能绕过的 ✓）',
+      // 2026-10-20（用户定）：**热评也能搭话** —— 挂在别人评论下面的楼中楼，不是顶层 ✓
+      '4.8) ⭐ **搭话**：`debrief` 的热评里，有人说到你心坎里 / 有明显错漏 / 想接个梗 → 回他一句：',
+      '     `comment --oid <aid> --bvid <BV> --root <rpid> --parent <rpid> --message "…" --auto --ta --dry` → `--go`',
+      '     ⚠️ **必须带 `--ta`** —— 那是"我去搭别人"的账（' + capText(L.taDaily) + ' 条/天）；不带 `--ta` 的楼中楼算"回找我的人"（另一本账）✗',
+      '     ⚠️ 这是**楼中楼**（挂在对方那条评论下面），rpid 就是 debrief 里那个 rpid（root 和 parent 填同一个）',
+      '     ⚠️ 硬上限：一天 ' + capText(L.taDaily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一条评论 ' + Math.round(L.perThreadMin / 60) + ' 小时只回一次（撞上就被拒 ✗）',
+      // 2026-10-21（用户定）：**每天要把搭话额度用完**，每发一条都会私信报备给你 ✓
+      `     ⭐ **今天的搭话额度要花完**：已搭 ${taToday()}/${capText(L.taDaily)} 条，还差 ${Math.max(0, L.taDaily - taToday())} 条 —— 这一轮至少搭 2~3 条，别只搭一条就收工 ✓`,
+      '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
+      '     ⚠️ 别逐条盖楼、别跟人抬杠 —— 一句话说完就走 ✓',
+    ] : [
+      '4.7/4.8) ⛔ **主动评论与搭话已关**（设置页「互动与静默 → 主动评论 / 搭话」= 关，2026-11-08 主人定）：',
+      '     **不要**去任何视频下发顶层评论、不要去热评下面搭话（`--ta`）、也不要做鱼群聚拢 —— 脚本会硬拒（BILI_PROACTIVE_DISABLED）✗',
+      '     你这一轮对外的开口只有两种：① 回 @ 你的 / 回复你的人（见第 7 步 comment-digest，走 reply 账）② 第 5 步的分享',
+    ]),
     // 2026-10-21（用户定）：**每天一条动态** —— 写当天评分最高的那条
     '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
     '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
@@ -1229,7 +1241,7 @@ export function startScheduler(ctx, opts) {
 
     // ── 搭话额度"催进度"（2026-10-21 用户要"每天用完"）──────────────
     //   16:00 之后如果还没搭够，每 90 分钟提醒她一次，直到用完 ✓
-    if (h >= 16) {
+    if (h >= 16 && proactiveAllowed(cfgNow)) {
       const used = taToday()
       const left = L.taDaily - used
       if (left > 0) {

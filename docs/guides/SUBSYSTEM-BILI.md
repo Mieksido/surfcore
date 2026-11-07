@@ -667,6 +667,26 @@
 | 待审未批 | 拒绝回复 | 8（`:337-352`） |
 | token 额度到顶 | 调度器**不投任何 prompt**（连监听也不读消息） | ——（`lib/scheduler.js:448-484`） |
 
+### 6.7 只回找你的人（`interact.proactive`，2026-11-08）
+
+`interact.enabled` 是「什么都不发」；`interact.proactive` 是更细的一档：**只停她主动开口**。
+
+| 开关 | `proactive=true`（默认） | `proactive=false` |
+| --- | --- | --- |
+| 顶层主动评论（4.7） | 允许 | ❌ `BILI_PROACTIVE_DISABLED` |
+| 热评搭话（`--ta`，4.8） | 允许 | ❌ 同上 |
+| 鱼群强制聚拢（归 `comment` 账） | 允许 | ❌ 同上 |
+| 回 @ 她 / 回她评论的人（`reply` 账） | 允许 | ✅ 允许 |
+| 回她自己动态下的评论（`mine:*`） | 允许 | ✅ 允许 |
+| 四类动态 / 私信分享 | 允许 | ✅ 允许 |
+| 给鱼点赞 | 允许 | ✅ 允许（想停改 `fishGuard.likeEnabled`） |
+
+- 硬拦位置：`tools/commands/comment.mjs:394-400`（在 `GATE` 里，所以**主人当场授权**和 `--share` 不受影响）；
+- 闸门函数：`tools/lib/interact.mjs` 的 `proactiveAllowed()` / `assertProactiveAllowed()`；
+- 提示词：`lib/scheduler.js` 的 `wakePrompt` 三态（沉默逛 / 只回找你的人 / 正常），4.7/4.8 整段按开关替换；`dynTick` 的「搭话催进度」也一起停（否则 16:00 后照样催她）；
+- 设置页：B站 → 互动与静默 → 「主动评论 / 搭话」；
+- 生效：改配置下一轮 tick；改代码要重载插件。
+
 ---
 
 ## 7. 鱼群保护（B站 侧）
