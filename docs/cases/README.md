@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-08 | [B站 只回找你的人（主动评论/搭话可单独关）](2026-11-08-bili-reply-only.md) | 新增 `interact.proactive`；工具层硬拦 comment/ta；提示词三态 + 催进度同停 | 待发布 |
 | 2026-11-06 | [多模型重建索引（本地/云端多选）](2026-11-06-multi-model-index-picker.md) | 弹窗多选；已有索引标注；本地走 runtime、云端直连；不改 active provider | 待发布 |
 | 2026-11-06 | [向量记忆库：最近记录 + 语义搜索](2026-11-06-vector-memory-library.md) | 只读记忆库；最近 30 条 + 一句话搜旧事；默认隐藏敏感 | 待发布 |
 | 2026-11-05 | [向量记忆 UI/自检/完整重建](2026-11-05-vector-memory-ui-self-test.md) | 本地/云端 Tab；radio + 一键启动；真实 embedding 自检；stale 检测；重建到 pending=0 | 待发布 |

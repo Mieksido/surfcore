@@ -20,7 +20,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
-import { assertInteractEnabled, checkCommentAge, printAgeBlock } from '../lib/interact.mjs'
+import { assertInteractEnabled, assertProactiveAllowed, checkCommentAge, printAgeBlock } from '../lib/interact.mjs'
 // 2026-10-20（管理员定）：普通评论的硬闸门 —— 想说话就说话，但别把自己说成刷屏号 ✗
 //   一天 30 条 · 同一 UP 10 分钟 ≤1 · 同一视频 60 分钟 ≤1（默认值在 lib/limits.mjs；
 //   2026-10-22 起可在设置页 / bili.config.json 的 limits 段改）
@@ -391,6 +391,12 @@ if (GATE && parent && !TA && !FISH_GATHER && (String(type) === '11' || String(ty
 }
 if (!DYN_KIND && MINE) DYN_KIND = MINE_RAW === 'game' ? 'game' : 'best'
 const GATE_KIND = parent ? (TA ? 'ta' : FISH_GATHER ? 'comment' : DYN_KIND ? 'mine:' + DYN_KIND : 'reply') : 'comment'
+// 2026-11-08 用户定：interact.proactive=false = 「只回找你的人」。
+//   comment（顶层主动评论）/ ta（热评搭话）/ 鱼群聚拢（FISH_GATHER 归进 comment 类）一律不发；
+//   reply（回 @ 她、回复她的人）、mine:*（回自己动态下的评论）、--share（分享型）不受影响。
+//   放在 GATE 里 = 只拦"她自己决定的发言"，主人当场授权的发言照旧。
+if (GATE && (GATE_KIND === 'comment' || GATE_KIND === 'ta')
+  && !assertProactiveAllowed(GATE_KIND === 'ta' ? '主动搭话' : '主动评论')) process.exit(3)
 let upMid = ''
 let toMid = ''
 if (GATE) {

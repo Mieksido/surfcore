@@ -221,6 +221,7 @@
 | `persona` | `name`、`ownerTitle`、`selfClaim`、`diaryTitle` | 称呼与自称 |
 | `preferences` | `like`、`dislike`、`weights`（每个关键词 0–5 权重） | 选题偏好；权重决定每轮给该词分几条 |
 | `owner` | `mid`、`name` | 主人 B站 身份（分享型评论要 @ 的人） |
+| `interact` | `enabled`（沉默逛，全停）、`proactive`（只回找你的人）、`maxCommentAgeDays` | 对外发言闸：`proactive=false` 只停**主动评论 / 热评搭话 / 鱼群聚拢**；回 @ 她、回她评论、动态、私信分享都不受影响 |
 | `quota` | `shareDaily` | 分享型上限 |
 | `limits` | 四本账 + 冷却（`DEFAULT_LIMITS`） | 普通评论 / 回找我的人 / 主动搭话 / 动态回复 |
 | `dynamics` | `enabled`、`gapMin`、`kinds` | 四类动态（只存被改过的字段，缺省在 `kinds.mjs`） |

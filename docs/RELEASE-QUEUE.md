@@ -17,6 +17,42 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-08 03:40 · B站「只回找你的人」
+<!-- release-batch: start=2026-11-08T03:20+08:00 end=2026-11-08T03:40+08:00 commits=HEAD -->
+
+**覆盖提交**：`feat/bili-reply-only`（本批次提交，合并前用 `git log feat/bili-reply-only -1` 取 hash）
+**建议**：**0.8.9（minor）** —— 新增配置项 + 设置页开关，用户可见行为变化
+
+**改了什么**：
+- 新增 B站 配置 `interact.proactive`（默认 `true`，升级后行为不变）；`false` = 只回 @ 她 / 回复她的人。
+- `tools/lib/interact.mjs` 新增 `proactiveAllowed()` / `assertProactiveAllowed()`（拒绝码 `BILI_PROACTIVE_DISABLED` + 下一步提示）。
+- `tools/commands/comment.mjs` 在 `GATE` 内硬拦 `comment` / `ta` 两类 → 顶层主动评论、热评搭话、鱼群强制聚拢全部 `exit 3`；`reply` / `mine:*` / `--share` 不受影响。
+- `lib/scheduler.js`：唤醒提示改成三态（沉默逛 / 只回找你的人 / 正常），4.7/4.8 整段按开关替换；`dynTick` 的「搭话催进度」跟开关一起停。
+- `lib/client.js`：B站 → 互动与静默 新增「主动评论 / 搭话」开关，并改写该组说明，区分「沉默逛」与「只回不主动」。
+- `lib/store.js` + `tools/lib/config.mjs`：归一化与默认值（不收敛会被 `saveBiliConfig` 重建时丢掉）。
+- 新增 `scripts/test-bili-proactive-gate.mjs`；case 记录 `docs/cases/2026-11-08-bili-reply-only.md`。
+
+**没做**：
+- 没动 `dm.mjs`（私信分享通道）、动态（`daily.mjs` / `dynamics.*`）、`listenTick` / `dmTick`、`fishGuard`、QQ 桥接。
+- 没改 `dm-await.mjs` 的 `lastSeen` 竞态（另一个问题）。
+- 没做真实 B站 发送验证（需要真发一条评论，留给用户/发布后）。
+
+**验证**：
+```text
+node plugins/surfcore/scripts/test-bili-proactive-gate.mjs      # OK
+node plugins/surfcore/scripts/test-client-contract.mjs          # OK
+node plugins/surfcore/scripts/test-store.mjs                    # OK
+node plugins/surfcore/scripts/test-persona.mjs                  # OK
+node plugins/surfcore/scripts/test-admin-bili-prompt.mjs        # OK
+node plugins/surfcore/scripts/test-bili-automation.mjs          # OK
+npm run test:audit                                              # 136/143（7 个 spawn EPERM，HEAD 基线同样失败）
+```
+
+**风险**：
+- 关掉后她仍会看视频/评分/收藏/写日记/发动态 —— 只是不再主动发评论，用户可能误以为"什么都没做"（提示词已写明本轮该做什么）。
+- `--share` 走 `comment` 渠道时不受本开关管（设计如此）；将来切回 comment 需再定。
+- 回滚：配置设回 `true` 即恢复；代码 `git revert` 单提交。
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 
