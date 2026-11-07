@@ -2123,7 +2123,7 @@ ${body}`;
   function nodePathEnv() {
     const env = { ...process.env };
     try {
-      const nodeDir = path.dirname(process.execPath);
+      const nodeDir = path.dirname(findNodeExe());
       const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'Path';
       const current = String(env[pathKey] ?? '');
       if (nodeDir && !current.split(path.delimiter).includes(nodeDir)) {
@@ -2155,8 +2155,8 @@ ${body}`;
     return findSnowLumaInstallIn({ snowluma: snow, extraPaths });
   }
 
-  // SnowLuma 没有原生窗口，它的界面是 WebUI（默认 http://127.0.0.1:5100）。
-  // 端口从 SnowLuma 自己的 runtime.json 读，读不到就回退 5100。
+  // SnowLuma 没有原生窗口，它的界面是 WebUI（内置默认 http://127.0.0.1:5099）；
+  // 端口从 SnowLuma 自己的 runtime.json 读，读不到才回退 5099，并会在附近自动发现实际端口。
   function snowLumaWebui() {
     const cfg = readQqConfig().config?.snowluma ?? {};
     // 2026-11-06 真机事故：旧代码只读 root/app/config/runtime.json，但当前 SnowLuma 把
@@ -2186,8 +2186,60 @@ ${body}`;
         if (parsed.hostname && parsed.hostname !== '0.0.0.0' && parsed.hostname !== '::') host = parsed.hostname;
       } catch {}
     }
-    if (!port) port = 5100;
+    if (!port) port = 5099;
     return { host, port, url: explicitUrl || `http://${host}:${port}` };
+  }
+
+  /**
+   * SnowLuma 在配置端口被占用时会自动往后找（findAvailablePort，最多 50 个），
+   * 但 runtime.json 里的 webuiPort 不会跟着改。所以不能只探配置端口：
+   * 启动后/加载账号前要在附近扫一轮，并用页面标题确认真的是 SnowLuma。
+   */
+  function snowLumaWebuiCandidates(webui) {
+    const base = Math.max(1, Math.min(65535, Number(webui?.port) || 5099));
+    const ports = new Set();
+    for (const p of [5099, 5100, base]) ports.add(p);
+    // 与 SnowLuma 的 findAvailablePort(maxTries=50) 对齐，避免它挪到第 13 个以后我们漏掉。
+    for (let i = 1; i <= 50; i += 1) {
+      if (base + i <= 65535) ports.add(base + i);
+    }
+    return [...ports].filter((p) => p > 0 && p <= 65535);
+  }
+
+  async function probeSnowLumaWebui(webui, port = webui?.port) {
+    if (!Number.isInteger(Number(port)) || Number(port) <= 0) return false;
+    const host = webui?.host || '127.0.0.1';
+    if (!(await portOpen(Number(port), 350, host))) return false;
+    try {
+      const res = await fetch(`http://${host}:${port}/`, {
+        headers: { accept: 'text/html' },
+        signal: AbortSignal.timeout(1200),
+      });
+      if (!res.ok) return false;
+      const text = (await res.text()).slice(0, 5000);
+      // SnowLuma 的登录页/控制台 HTML 标题一定含品牌名；用来排除同端口的其它服务。
+      return /snowluma/i.test(text);
+    } catch {
+      return false;
+    }
+  }
+
+  async function discoverSnowLumaWebui(webui) {
+    const candidates = snowLumaWebuiCandidates(webui);
+    const results = await Promise.all(candidates.map(async (port) => ({
+      port,
+      ok: await probeSnowLumaWebui(webui, port),
+    })));
+    // 优先级：配置端口 → 默认 5099/5100 → 从小到大。
+    const preferred = [Number(webui?.port), 5099, 5100].filter((p) => Number.isInteger(p) && p > 0);
+    const found = results.filter((x) => x.ok).sort((a, b) => {
+      const ai = preferred.indexOf(a.port);
+      const bi = preferred.indexOf(b.port);
+      if (ai !== bi) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+      return a.port - b.port;
+    });
+    if (!found.length) return null;
+    return { host: webui?.host || '127.0.0.1', port: found[0].port, url: `http://${webui?.host || '127.0.0.1'}:${found[0].port}` };
   }
 
   // SnowLuma WebUI 的访问密码：优先用户显式填的，其次仓库 state 里的口令文件。
@@ -2202,16 +2254,24 @@ ${body}`;
     return Object.assign(new Error(String(error || code)), { code, hint, status });
   }
 
+  // 请求成功后记住实际地址，账号列表返回时不再重复扫一遍端口。
+  let resolvedSnowLumaWebui = null;
+
   async function snowLumaWebuiRequest(pathname, { method = 'GET', body = null, password = '' } = {}) {
-    const webui = snowLumaWebui();
+    let webui = snowLumaWebui();
     let up = false;
-    for (let i = 0; i < 8; i += 1) {
-      if (await portOpen(webui.port, 500, webui.host)) { up = true; break; }
-      await new Promise((resolve) => setTimeout(resolve, 400));
+    for (let i = 0; i < 5; i += 1) {
+      if (await probeSnowLumaWebui(webui, webui.port)) { up = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
     if (!up) {
-      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', 'SnowLuma 控制台还没起来', `先启动 SnowLuma；如果刚点了一键启动，等几秒再点「刷新」（${webui.url}）`);
+      const discovered = await discoverSnowLumaWebui(webui);
+      if (discovered) { webui = discovered; up = true; }
     }
+    if (!up) {
+      throw snowLumaWebuiError('SNOWLUMA_WEBUI_DOWN', 'SnowLuma 控制台还没起来', `先启动 SnowLuma；如果刚点了一键启动，等几秒再点「刷新」（配置端口 ${webui.port}，会在附近自动找实际端口）`);
+    }
+    resolvedSnowLumaWebui = webui;
     const pass = String(password || '').trim() || snowLumaWebuiPassword();
     if (!pass) {
       throw snowLumaWebuiError(
@@ -2283,7 +2343,8 @@ ${body}`;
       nickname: String(account?.nickname || account?.name || '').slice(0, 60),
       online: account?.online === true,
     }));
-    return { webui: snowLumaWebui().url, processes, accounts };
+    const webui = resolvedSnowLumaWebui || snowLumaWebui();
+    return { webui: webui.url, processes, accounts };
   }
 
   async function snowLumaLoadAccount(pid, password = '') {
@@ -2306,6 +2367,37 @@ ${body}`;
       return true;
     } catch {
       return false;
+    }
+  }
+
+  // 网盘资源用系统默认浏览器打开。只允许固定网盘域名，不接受任意 URL；
+  // 前端 window.open 在 Electron/新窗口策略下可能被拦，这个接口是可用的兜底。
+  const EXTERNAL_OPEN_HOSTS = new Set(['pan.quark.cn', 'pan.xunlei.com', 'pan.baidu.com', 'drive.uc.cn']);
+  function openExternalResourceUrl(raw) {
+    if (process.platform !== 'win32') {
+      return { ok: false, code: 'OPEN_UNSUPPORTED', error: '当前平台不支持自动打开浏览器', hint: '请复制链接后手动打开' };
+    }
+    const text = String(raw ?? '').trim();
+    if (!text || text.length > 2000 || /["\r\n]/.test(text)) {
+      return { ok: false, code: 'OPEN_URL_INVALID', error: '链接格式不合法', hint: '请复制链接后手动打开' };
+    }
+    let parsed;
+    try { parsed = new URL(text); } catch {
+      return { ok: false, code: 'OPEN_URL_INVALID', error: '链接不是合法 URL', hint: '请复制链接后手动打开' };
+    }
+    if (!/^https?:$/.test(parsed.protocol) || !EXTERNAL_OPEN_HOSTS.has(parsed.hostname.toLowerCase())) {
+      return { ok: false, code: 'OPEN_URL_NOT_ALLOWED', error: '只允许打开已配置的网盘域名', hint: '请复制链接后手动打开' };
+    }
+    if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
+      return { ok: false, code: 'OPEN_SKIPPED', error: '测试环境跳过打开浏览器', hint: '请复制链接后手动打开' };
+    }
+    try {
+      spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `"${text}"`], {
+        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
+      }).unref();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, code: 'OPEN_FAILED', error: `打开浏览器失败：${error?.message ?? error}`, hint: '请复制链接后手动打开' };
     }
   }
 
@@ -2335,9 +2427,13 @@ ${body}`;
         hint: 'QQ 桥接还没运行：设置 → SurfCore → 概览 → 启动 QQ（启动后再体检）',
       };
     }
-    const webui = snowLumaWebui();
+    let webui = snowLumaWebui();
     const onebot = (await portOpen(3000)) || (await portOpen(3001));
-    const webuiUp = await portOpen(webui.port, 600, webui.host);
+    let webuiUp = await probeSnowLumaWebui(webui, webui.port);
+    if (!webuiUp) {
+      const discovered = await discoverSnowLumaWebui(webui);
+      if (discovered) { webui = discovered; webuiUp = true; }
+    }
     if (onebot) {
       return {
         state: 'onebot-rejected',
@@ -2371,9 +2467,21 @@ ${body}`;
       const lower = launcher.toLowerCase();
       const isBatch = lower.endsWith('.bat') || lower.endsWith('.cmd');
       let target;
+      let nodeExe = '';
       if (isBatch && fs.existsSync(entry)) {
-        // 直接起 node：绕开 launcher.bat 里的 cmd 窗口和末尾的 pause
-        target = `"${process.execPath}" "${entry}"`;
+        // 直接起 node：绕开 launcher.bat 里的 cmd 窗口和末尾的 pause。
+        // 注意：插件在 DSH 宿主里跑，process.execPath 是 Harness.exe，不是 node.exe；
+        // 必须用 findNodeExe() 找到真正的 node，否则 VBS 会把 SnowLuma 的 index.mjs 交给 Harness 打开。
+        nodeExe = findNodeExe();
+        if (!/^node(?:\.exe)?$/i.test(path.basename(String(nodeExe)))) {
+          return {
+            ok: false,
+            code: 'SNOWLUMA_NODE_MISSING',
+            error: `找不到真正的 node.exe（当前解析到 ${nodeExe}）`,
+            hint: '确认 DSH 的 node 运行时存在，或设置 DSH_NODE 指向 node.exe；也可以把 snowluma.launchMode 改成 legacy 手动启动',
+          };
+        }
+        target = `"${nodeExe}" "${entry}"`;
       } else if (isBatch) {
         target = `"${process.env.ComSpec || 'cmd.exe'}" /d /c ""${launcher}""`;
       } else {
@@ -2393,9 +2501,9 @@ ${body}`;
       ].join('\r\n'), 'utf8');
       const explorer = path.join(process.env.SystemRoot || 'C:\\Windows', 'explorer.exe');
       spawn(explorer, [vbsPath], { detached: true, stdio: 'ignore', env, windowsHide: true }).unref();
-      return { ok: true, method: 'explorer+vbs' };
+      return { ok: true, method: 'explorer+vbs', target, vbs: vbsPath, nodeExe };
     } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) };
+      return { ok: false, code: 'SNOWLUMA_SPAWN_FAILED', error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录和系统是否允许运行 .vbs；也可改用 snowluma.launchMode=legacy' };
     }
   }
 
@@ -2405,17 +2513,25 @@ ${body}`;
     }
     const cfg = readQqConfig().config?.snowluma ?? {};
     if (cfg.allowLaunch !== true) {
-      return { ok: false, error: '未开启「允许插件打开 SnowLuma」：设置 → SurfCore → QQ → SnowLuma' };
+      return {
+        ok: false,
+        code: 'SNOWLUMA_LAUNCH_DISABLED',
+        error: '未开启「允许插件打开 SnowLuma」',
+        hint: '设置 → SurfCore → QQ → SnowLuma → 打开「允许插件打开 SnowLuma」，保存后再点一键启动',
+      };
     }
-    const webui = snowLumaWebui();
+    let webui = snowLumaWebui();
 
     // 已登录（OneBot 3000/3001 在听）：什么都不用做，也别弹窗口。
     if (await portOpen(3000) || await portOpen(3001)) {
       return { ok: true, already: true, opened: false, message: 'SnowLuma 已在运行且已登录' };
     }
 
-    // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
-    if (await portOpen(webui.port, 600, webui.host)) {
+    // 进程在、但 OneBot 没起 → 多半停在登录页：直接在附近找到实际 WebUI 并打开。
+    let existing = (await probeSnowLumaWebui(webui, webui.port)) ? webui : null;
+    if (!existing) existing = await discoverSnowLumaWebui(webui);
+    if (existing) {
+      webui = existing;
       const opened = openWebui ? openLocalUrl(webui.url) : false;
       return {
         ok: true,
@@ -2429,11 +2545,17 @@ ${body}`;
 
     const launcher = resolveSnowLumaLauncher();
     if (!launcher) {
-      return { ok: false, error: '找不到 SnowLuma 启动脚本：请在设置里填「SnowLuma 安装目录」或「启动脚本」' };
+      return {
+        ok: false,
+        code: 'SNOWLUMA_LAUNCHER_MISSING',
+        error: '找不到 SnowLuma 启动脚本',
+        hint: '在设置 → QQ → SnowLuma 里填「SnowLuma 安装目录」或「启动脚本」，再点一键启动',
+      };
     }
     try {
       const cwd = path.dirname(launcher);
       const lower = launcher.toLowerCase();
+      let launchDetail = null;
       // 2026-11-06：默认「隐藏 + 脱离 DSH 进程树」。想恢复旧行为（可见控制台、随 DSH 退出），
       // 设置 snowluma.launchMode = "legacy" 即可（不写默认 detached）。
       // 默认跟随「隐藏命令行黑框」开关；显式 launchMode 仍然优先。
@@ -2441,7 +2563,11 @@ ${body}`;
       let launchedBy = 'legacy';
       if (launchMode !== 'legacy') {
         const detachedResult = spawnSnowLumaDetached({ launcher, cwd, env: nodePathEnv() });
+        launchDetail = detachedResult;
         if (detachedResult.ok) launchedBy = detachedResult.method;
+        if (!detachedResult.ok && detachedResult.code === 'SNOWLUMA_NODE_MISSING') {
+          return { ...detachedResult, webui: webui.url, launcher, launchMode: 'detached' };
+        }
       }
       if (launchedBy === 'legacy' && (lower.endsWith('.bat') || lower.endsWith('.cmd'))) {
         // 2026-10-22 审计：旧写法把 basename 拼进 cmd 命令串，路径里带 `&` 可注入命令。
@@ -2454,7 +2580,7 @@ ${body}`;
           const appDir = path.dirname(launcher);
           const entry = path.join(appDir, 'index.mjs');
           if (fs.existsSync(entry)) {
-            spawn(process.execPath, [entry], {
+            spawn(findNodeExe(), [entry], {
               cwd: appDir, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: true,
             }).unref();
           } else {
@@ -2470,11 +2596,14 @@ ${body}`;
       } else if (launchedBy === 'legacy') {
         spawn(launcher, [], { cwd, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: hideConsoles === true }).unref();
       }
-      // 等 WebUI 端口起来（最多 10 秒）：起来了就打开浏览器；没起来也给出地址让用户自己点。
-      const until = Date.now() + 10_000;
+      // 等 WebUI 起来（最多 30 秒）：SnowLuma 在端口被占用时会自动往后挪，
+      // 所以不能只探配置端口；每次扫描附近 50 个端口并用页面标题确认真的是 SnowLuma。
+      const until = Date.now() + 30_000;
       while (Date.now() < until) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        if (await portOpen(webui.port, 600, webui.host)) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const discovered = await discoverSnowLumaWebui(webui);
+        if (discovered) {
+          webui = discovered;
           const opened = openWebui ? openLocalUrl(webui.url) : false;
           return {
             ok: true,
@@ -2488,23 +2617,48 @@ ${body}`;
           };
         }
       }
-      return { ok: true, started: true, pending: true, needsAccount: true, webui: webui.url, launcher, message: `已启动 SnowLuma，控制台稍后可访问：${webui.url}` };
+      return {
+        ok: false,
+        code: 'SNOWLUMA_LAUNCH_TIMEOUT',
+        error: `已发出启动命令，但 30 秒内没找到 SnowLuma 控制台（配置端口 ${webui.port}）`,
+        hint: '先看 SnowLuma 安装目录下的日志；也可以直接运行 launcher.bat 手动确认能打开控制台。若一直失败，把 snowluma.launchMode 设为 legacy 后再试',
+        needsAccount: true,
+        webui: webui.url,
+        launcher,
+        launchMode: launchedBy,
+        detail: {
+          configuredPort: webui.port,
+          scannedPorts: snowLumaWebuiCandidates(webui),
+          nodeExe: findNodeExe(),
+          launch: launchDetail,
+        },
+      };
     } catch (error) {
-      return { ok: false, error: `打开 SnowLuma 失败：${error?.message ?? error}` };
+      return {
+        ok: false,
+        code: 'SNOWLUMA_LAUNCH_FAILED',
+        error: `打开 SnowLuma 失败：${error?.message ?? error}`,
+        hint: '检查安装目录和 SnowLuma 日志；必要时手动运行 launcher.bat',
+      };
     }
   }
 
   /**
    * 关闭 SnowLuma（包括 explorer+wscript 拉起的孤儿进程）。
-   * 不按进程名盲杀：先用 5099/3000/3001 找 PID，再看命令行是否像 SnowLuma/index.mjs；
+   * 不按进程名盲杀：先用配置端口 + 5099~5110/3000/3001 找 PID，再看命令行是否像 SnowLuma/index.mjs；
    * 找不到端口时再按命令行兜底。失败返回结构化原因。
    */
   async function stopSnowLuma() {
     if (process.platform !== 'win32') {
       return { ok: false, code: 'SNOWLUMA_STOP_UNSUPPORTED', error: '当前平台不支持自动关闭 SnowLuma', hint: '请手动结束 SnowLuma 进程' };
     }
+    const basePort = Math.max(1, Math.min(65535, Number(snowLumaWebui().port) || 5099));
+    const stopPorts = [...new Set([
+      ...snowLumaWebuiCandidates({ ...snowLumaWebui(), port: basePort }),
+      3000, 3001,
+    ])].filter((p) => Number.isInteger(p) && p > 0 && p <= 65535);
     const script = [
-      '$ports=@(5099,3000,3001)',
+      `$ports=@(${stopPorts.join(',')})`,
       '$pids=@()',
       'foreach($p in $ports){ try { $pids += (Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess) } catch {} }',
       '$pids=$pids | Sort-Object -Unique',
@@ -2527,7 +2681,7 @@ ${body}`;
     } catch {}
     const pids = [...new Set(rows.map((row) => Number(row?.pid)).filter((pid) => Number.isInteger(pid) && pid > 0))];
     if (!pids.length) {
-      return { ok: true, stopped: [], message: '没找到运行中的 SnowLuma（5099/3000/3001 没有匹配进程）' };
+      return { ok: true, stopped: [], message: '没找到运行中的 SnowLuma（配置端口/5099~5110/3000/3001 没有匹配进程）' };
     }
     const stopped = [];
     const errors = [];
@@ -3153,7 +3307,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
         return launchItem(id, bridgeOk && snowOk, {
           message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
-          code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
+          code: bridgeOk && snowOk ? '' : (bridgeOk ? (snowluma?.code || 'QQ_START_PARTIAL') : (bridge?.code || 'QQ_BRIDGE_START_FAILED')),
           error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
           hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
           needsAccount: snowluma?.needsAccount === true,
@@ -4247,6 +4401,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/logs`) { handleLogs(res, url); return; }
     if (pathname === `${API_PREFIX}/owner-audit`) { await handleOwnerAudit(req, res, url); return; }
     if (pathname === `${API_PREFIX}/browse`) { await handleBrowse(req, res, url); return; }
+    if (pathname === `${API_PREFIX}/resources/open`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' }); return; }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+      const result = openExternalResourceUrl(body.url);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
     if (pathname === `${API_PREFIX}/privacy/explain`) {
       const body = req.method === 'POST' ? JSON.parse(await readBody(req) || '{}') : { text: url.searchParams.get('text') ?? '' };
       json(res, 200, { ok: true, ...explainText(String(body.text ?? '')) });

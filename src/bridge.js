@@ -1144,8 +1144,8 @@ function loadConfig() {
         // ── 会话滚动（2026-11-04）────────────────────────────────────────────
         // 一条 DSH 会话聊太久，每一步都要把整段历史重发一遍：实测 19.5 小时能到 43.5 万
         // token/步。到阈值就退役会话 + 留一段交接，下一段从这里接着聊。
-        rolloverEnabled: true,
-        rolloverTokens: 80000,           // 这条会话累计用掉多少 token 就换（0 = 不按 token）
+        rolloverEnabled: false,
+        rolloverContextTokens: 500000,   // 当前这一轮上下文超过多少 token 就换（0 = 不按 token）
         rolloverTurns: 0,                // 或聊够多少轮就换（0 = 不按轮数）
         rolloverSummary: true,           // 换会话时给下一段留交接块
         rolloverKeepRecent: 24,          // 交接块里带最近几句
@@ -6265,7 +6265,7 @@ async function main() {
             // 会话滚动（2026-11-04）：阈值必须收敛到安全区间——0 = 该维度不启用，
             // 但 0 也是"每次都换"的危险值，所以 token/轮数阈值允许 0，其余有下限。
             for (const [name, fallback, min, max] of [
-              ['rolloverTokens', 80000, 0, 2_000_000],
+              ['rolloverContextTokens', 500000, 0, 2_000_000],
               ['rolloverTurns', 0, 0, 100_000],
               ['rolloverKeepRecent', 24, 4, 200],
               ['rolloverSummaryMaxChars', 700, 120, 4000],
@@ -15094,12 +15094,16 @@ async function main() {
       ? { ...baseRollCfg, enabled: true, tokens: 0, turns: 1, minTurnsBeforeRoll: 0, summary: true }
       : baseRollCfg;
     if (rollCfg.enabled === false && st.rolloverPending !== true) return null;
-    const used = Math.max(0, tokenLedger.sessionTotal(sessionId) - (Number(st.sessionBaseTokens) || 0));
+    // 2026-11-07：滚动看「当前这一轮上下文」，不再看累计账单。
+    // 旧口径 sessionTotal 会把每轮重发的历史都累加，正常长会话 2 轮就能到几百万，
+    // 80k 阈值于是变成「每次唤醒都换」。
+    const contextTokens = Math.max(0, Number(tokenLedger.sessionContextTokens?.(sessionId)) || 0);
+    const totalTokens = Math.max(0, tokenLedger.sessionTotal(sessionId) - (Number(st.sessionBaseTokens) || 0));
     const wakes = (Number(st.sessionTurns) || 0) + 1;
-    const shouldRoll = st.rolloverPending === true || shouldRollSession({ usedTokens: used, turns: wakes, config: rollCfg });
+    const shouldRoll = st.rolloverPending === true || shouldRollSession({ contextTokens, turns: wakes, config: rollCfg });
     if (!shouldRoll) {
       st.sessionTurns = wakes;
-      st.sessionTokens = used;
+      st.sessionTokens = totalTokens;
       saveSocialV2State();
       return null;
     }
@@ -15109,11 +15113,11 @@ async function main() {
     // 先记 pending，让当前轮照常跑完；下一次投递开始前再换（提示词此时才构建，token 一定是最新的）。
     if (st.rolloverPending !== true && forceRoll !== true) {
       st.sessionTurns = wakes;
-      st.sessionTokens = used;
+      st.sessionTokens = totalTokens;
       st.rolloverPending = true;
       saveSocialV2State();
-      log(`[rollover] ${key} 已到阈值（${used} token / ${wakes} 次唤醒），下一轮投递开始前换会话（本轮不轮换，避免 token 失效）`);
-      return { deferred: true, used, wakes };
+      log(`[rollover] ${key} 上下文 ${contextTokens} / 累计 ${totalTokens} token / ${wakes} 次唤醒，下一轮投递开始前换会话（本轮不轮换，避免 token 失效）`);
+      return { deferred: true, contextTokens, totalTokens, wakes };
     }
     // 防重入：retireSession 会同步清状态，但同一 tick 里可能有并发唤醒。
     st.rolling = true;
@@ -15134,8 +15138,8 @@ async function main() {
       st.rolloverPending = false;
       saveSocialV2State();
       retireSession(key);
-      log(`[rollover] ${key} 已用 ${used} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? '（带交接）' : ''}`);
-      return { used, wakes, handoff: Boolean(st.handoffPending) };
+      log(`[rollover] ${key} 上下文 ${contextTokens} / 累计 ${totalTokens} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? '（带交接）' : ''}`);
+      return { contextTokens, totalTokens, wakes, handoff: Boolean(st.handoffPending) };
     } finally {
       st.rolling = false;
     }

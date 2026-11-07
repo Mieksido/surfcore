@@ -32,7 +32,7 @@
 
 纯逻辑：`normalizeRolloverConfig` / `shouldRollSession` / `buildHandoffBlock` / `handoffIsUseful`。
 
-- 阈值两个维度取"或"：`rolloverTokens`（默认 80000）、`rolloverTurns`（默认 0 = 不按轮数）；
+- 阈值两个维度取"或"：`rolloverContextTokens`（2026-11-07 起默认 500000，指**当前上下文**，不是累计账单）、`rolloverTurns`（默认 0 = 不按轮数）；
 - `rolloverMinTurns`（默认 2）：刚建的会话不滚，避免"和空气交接"；
 - 交接块用**规则拼**（最近几句 + 上次收尾摘要），不额外花一次模型调用；
 - 交接块明确写"不要提换过会话、不用重新自我介绍"，并跳过她自己说过的话（`isSelf`）。
@@ -71,7 +71,7 @@
 | 交接质量 | 规则拼的摘要不如模型写的 | 只补"刚才聊到哪"，事实靠记忆卡；交接块有字数上限 |
 | 频繁换会话 | 阈值调太小会导致每次唤醒都换 | `rolloverMinTurns` 兜底；不配 `rolloverTurns` 时只看 token |
 | 换会话时并发唤醒 | 同一 tick 两个唤醒都触发退役 | `st.rolling` 防重入 |
-| 缓存重建 | 换会话后前缀缓存全冷 | 换会话本来就是"付一次冷启动换长期便宜"，阈值 8 万足够摊薄 |
+| 缓存重建 | 换会话后前缀缓存全冷 | 换会话本来就是"付一次冷启动换长期便宜"，50 万当前上下文足够摊薄 |
 | 私聊窗口变短 | 4 秒可能让连发消息被拆成两轮 | 3 个值都可配；被拆时多花一轮，比干等 8 秒体感好 |
 
 ## 5. 验证
@@ -93,7 +93,7 @@ cd plugins/surfcore; npm test            # 0 失败
 ## 6. 回滚
 
 - 软回滚：设置页关「会话太长自动换新会话」（`socialV2.context.rolloverEnabled=false`），
-  或把 `rolloverTokens` 调到 0 且 `rolloverTurns` 调到 0；
+  或把 `rolloverContextTokens` 调到 0 且 `rolloverTurns` 调到 0；
 - 合并窗口回退：把三个值都改回 8000（等价旧行为）；
 - 硬回滚：删 `src/session-rollover.js` / `src/wake-batch.js`，还原 bridge 的调用点与
   `token-ledger` 的 `sessionTotal`；状态字段（`handoffPending` 等）可直接清。

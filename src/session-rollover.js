@@ -11,10 +11,10 @@
  * 真正的副作用（retireSession / 落盘 / 提示词注入）留在 bridge。
  */
 
-/** 默认阈值：8 万 token 换一次；turns = 0 表示不看轮数。 */
+/** 默认关闭：新用户不主动换会话；开启前必须理解上下文会被重置。 */
 export const DEFAULT_ROLLOVER = Object.freeze({
-  enabled: true,
-  tokens: 80000,
+  enabled: false,
+  tokens: 500000,
   turns: 0,
   summary: true,
   keepRecent: 24,
@@ -39,7 +39,10 @@ export function normalizeRolloverConfig(context = {}) {
   const enabled = rawEnabled === undefined ? DEFAULT_ROLLOVER.enabled : rawEnabled !== false;
   return {
     enabled,
-    tokens: clampInt(src.rolloverTokens, DEFAULT_ROLLOVER.tokens, 0, 2_000_000),
+    // 2026-11-07：口径从「累计计费」改为「当前上下文」。
+    // 旧字段 rolloverTokens 是累计账单含义，不能继续拿来当上下文阈值；
+    // 新字段 rolloverContextTokens 缺省 50 万，老配置里的 8 万不会再误触发。
+    tokens: clampInt(src.rolloverContextTokens, DEFAULT_ROLLOVER.tokens, 0, 2_000_000),
     turns: clampInt(src.rolloverTurns, DEFAULT_ROLLOVER.turns, 0, 100_000),
     summary: src.rolloverSummary === undefined ? DEFAULT_ROLLOVER.summary : src.rolloverSummary !== false,
     keepRecent: clampInt(src.rolloverKeepRecent, DEFAULT_ROLLOVER.keepRecent, 4, 200),
@@ -53,11 +56,14 @@ export function normalizeRolloverConfig(context = {}) {
  *
  * 两个阈值是"或"关系：谁先到都算。`tokens <= 0` / `turns <= 0` 表示该维度不启用，
  * 两个都关掉就等于完全不滚。
+ *
+ * `contextTokens` 是当前这一轮真正带入模型的上下文（不是会话累计账单）。
+ * 保留 `usedTokens` 作为旧名兼容测试/调用方。
  */
-export function shouldRollSession({ usedTokens = 0, turns = 0, config = DEFAULT_ROLLOVER } = {}) {
+export function shouldRollSession({ usedTokens = 0, contextTokens, turns = 0, config = DEFAULT_ROLLOVER } = {}) {
   const cfg = { ...DEFAULT_ROLLOVER, ...(config || {}) };
   if (cfg.enabled === false) return false;
-  const used = Math.max(0, Math.round(Number(usedTokens) || 0));
+  const used = Math.max(0, Math.round(Number(contextTokens ?? usedTokens) || 0));
   const count = Math.max(0, Math.round(Number(turns) || 0));
   if (count < cfg.minTurnsBeforeRoll) return false;
   const byTokens = cfg.tokens > 0 && used >= cfg.tokens;

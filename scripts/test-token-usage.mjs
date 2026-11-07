@@ -117,6 +117,8 @@ conv = ledger.conversation('group:100');
 assert(conv.turns[0].steps === 2, '同回合第 2 个 step 计入同一行');
 assert(conv.turns[0].buckets.cacheMiss === 1500 && conv.turns[0].buckets.output === 100, '同回合跨 step 累加');
 assert(conv.turns.length === 1, '两个 step 仍是同一轮对话');
+assert(ledger.sessionContextTokens('s1') === 400, '上下文取最近一轮 input（300+100），不是累计');
+assert(ledger.sessionTotal('s1') === 5700, '累计账单仍包含两轮/两步的全部 token');
 
 // 重连重放：同 seq 同内容不得翻倍
 const before = ledger.recent(50).length;
@@ -142,6 +144,7 @@ conv = ledger.conversation('group:100');
 const t2 = conv.turns.find((r) => r.turn === 2);
 assert(t2.buckets.cacheMiss === 1100 && t2.buckets.output === 22, 'llm/retry-started 之后同一 step 的第二次请求另算一次');
 assert(t2.attempts === 1, '重试次数被记录');
+assert(ledger.sessionContextTokens('s1') === 600, '重试后上下文取最后一次请求 input');
 
 // 基线：权威总量 = 基线 + 基线之后的增量
 ledger = freshLedger({ resolveKey: () => 'group:100' });

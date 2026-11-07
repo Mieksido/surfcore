@@ -24,31 +24,32 @@ const ok = (cond, label) => {
 console.log('## 1. 阈值归一化')
 {
   const d = normalizeRolloverConfig({})
-  ok(d.enabled === true, '默认开启')
-  ok(d.tokens === 80000, '默认 8 万 token')
+  ok(d.enabled === false, '默认关闭（新用户要自己开）')
+  ok(d.tokens === 500000, '默认当前上下文 50 万 token')
   ok(d.turns === 0, '默认不按轮数')
   ok(d.summary === true, '默认留交接')
 
   ok(normalizeRolloverConfig({ rolloverEnabled: false }).enabled === false, '可以关掉')
-  ok(normalizeRolloverConfig({ rolloverTokens: 12345 }).tokens === 12345, '阈值可配')
-  ok(normalizeRolloverConfig({ rolloverTokens: -5 }).tokens === 0, '负数收敛到 0（=不按 token）')
-  ok(normalizeRolloverConfig({ rolloverTokens: 9e9 }).tokens === 2_000_000, '超大值收敛到上限')
+  ok(normalizeRolloverConfig({ rolloverContextTokens: 12345 }).tokens === 12345, '阈值可配')
+  ok(normalizeRolloverConfig({ rolloverTokens: 80000 }).tokens === 500000, '旧累计字段 80000 不再误当上下文阈值')
+  ok(normalizeRolloverConfig({ rolloverContextTokens: -5 }).tokens === 0, '负数收敛到 0（=不按 token）')
+  ok(normalizeRolloverConfig({ rolloverContextTokens: 9e9 }).tokens === 2_000_000, '超大值收敛到上限')
   ok(normalizeRolloverConfig({ rolloverKeepRecent: 1 }).keepRecent === 4, 'keepRecent 下限 4')
   ok(normalizeRolloverConfig({ rolloverSummaryMaxChars: 10 }).summaryMaxChars === 120, '交接字数下限 120')
 }
 
 console.log('## 2. 该不该换会话')
 {
-  const cfg = { ...DEFAULT_ROLLOVER }
-  ok(shouldRollSession({ usedTokens: 79000, turns: 10, config: cfg }) === false, '没到阈值不换')
-  ok(shouldRollSession({ usedTokens: 80000, turns: 10, config: cfg }) === true, '刚好到阈值就换')
-  ok(shouldRollSession({ usedTokens: 200000, turns: 1, config: cfg }) === false, '刚建的会话（1 轮）不滚')
-  ok(shouldRollSession({ usedTokens: 0, turns: 99, config: { ...cfg, enabled: false } }) === false, '关掉后永不滚')
+  const cfg = { ...DEFAULT_ROLLOVER, enabled: true }
+  ok(shouldRollSession({ contextTokens: 499999, turns: 10, config: cfg }) === false, '上下文没到阈值不换')
+  ok(shouldRollSession({ contextTokens: 500000, turns: 10, config: cfg }) === true, '当前上下文刚好 50 万就换')
+  ok(shouldRollSession({ contextTokens: 2000000, turns: 1, config: cfg }) === false, '刚建的会话（1 轮）不滚')
+  ok(shouldRollSession({ contextTokens: 0, turns: 99, config: { ...cfg, enabled: false } }) === false, '关掉后永不滚')
 
   const byTurns = { ...cfg, tokens: 0, turns: 50 }
-  ok(shouldRollSession({ usedTokens: 999999, turns: 49, config: byTurns }) === false, '按轮数：49 < 50 不换')
-  ok(shouldRollSession({ usedTokens: 0, turns: 50, config: byTurns }) === true, '按轮数：到 50 就换')
-  ok(shouldRollSession({ usedTokens: 0, turns: 500, config: { ...cfg, tokens: 0, turns: 0 } }) === false, '两个维度都关 = 不滚')
+  ok(shouldRollSession({ contextTokens: 999999, turns: 49, config: byTurns }) === false, '按轮数：49 < 50 不换')
+  ok(shouldRollSession({ contextTokens: 0, turns: 50, config: byTurns }) === true, '按轮数：到 50 就换')
+  ok(shouldRollSession({ contextTokens: 0, turns: 500, config: { ...cfg, tokens: 0, turns: 0 } }) === false, '两个维度都关 = 不滚')
 }
 
 console.log('## 3. 交接块')
@@ -138,7 +139,20 @@ console.log('## 6. 接线钉子（防"写了模块但没接上"）')
   ok(bridge.includes('st.sessionBaseTokens = tokenLedger.sessionTotal(sessionId)'), '新建会话会记基线')
 
   const ui = read('plugins/surfcore/lib/client.js')
-  ok(ui.includes('socialV2.context.rolloverTokens'), '设置页有换会话阈值')
+  ok(ui.includes('socialV2.context.rolloverContextTokens'), '设置页有换会话阈值')
+  ok(ui.includes('旧会话停止并归档') && ui.includes('确定开启'), '开启会话滚动前必须解释后果并确认')
+  ok(ui.includes('必看！否则安装会出问题') && ui.includes('【必看安装顺序】'), '向量记忆说明按钮和安装顺序必须有红色必看警告')
+  ok(ui.includes('让模型跑起来的发动机'), '红色安装顺序下面要用大白话解释 runtime 是什么')
+  ok(ui.includes('onClick: () => openResource(key)') && ui.includes('onClick: () => copyResourceLink(key)'), '四个网盘各有打开与复制链接按钮')
+  ok(ui.includes('/resources/open') && ui.includes('copyResourceLink'), '网盘打开走宿主默认浏览器，复制链接作兜底')
+  const plugin = read('plugins/surfcore/lib/index.js')
+  ok(plugin.includes('openExternalResourceUrl') && plugin.includes('EXTERNAL_OPEN_HOSTS'), '宿主只允许打开固定网盘域名')
+  ok(plugin.includes('discoverSnowLumaWebui') && plugin.includes('probeSnowLumaWebui'), 'SnowLuma 端口被占用自动后移时必须发现实际端口')
+  ok(plugin.includes('i <= 50') && plugin.includes('30_000'), 'SnowLuma 端口扫描覆盖自身 50 个后移位，启动等待 30 秒')
+  ok(plugin.includes('if (!port) port = 5099'), 'SnowLuma 无配置时回退内置默认 5099')
+  ok(!plugin.includes('target = `"${process.execPath}"') && plugin.includes('nodeExe = findNodeExe()'), 'VBS 必须用真正的 node.exe，不能用 DSH 的 Harness.exe')
+  ok(plugin.includes('const nodeDir = path.dirname(findNodeExe())'), 'PATH 注入也要用真正的 node 目录')
+  ok(plugin.includes('配置端口 + 5099~5110'), '关闭 SnowLuma 要覆盖实际端口范围')
   ok(ui.includes('socialV2.wake.batchWindowPrivateMs'), '设置页有私聊窗口')
   ok(ui.includes('socialV2.wake.batchWindowDirectMs'), '设置页有点名窗口')
 
@@ -146,7 +160,8 @@ console.log('## 6. 接线钉子（防"写了模块但没接上"）')
   ok(example.socialV2?.wake?.batchWindowMs === 6000, '示例配置群聊窗口=6000')
   ok(example.socialV2?.wake?.batchWindowPrivateMs === 4000, '示例配置私聊窗口=4000')
   ok(example.socialV2?.wake?.batchWindowDirectMs === 3000, '示例配置点名窗口=3000')
-  ok(example.socialV2?.context?.rolloverTokens === 80000, '示例配置换会话阈值=80000')
+  ok(example.socialV2?.context?.rolloverEnabled === false, '示例配置：会话滚动默认关闭')
+  ok(example.socialV2?.context?.rolloverContextTokens === 500000, '示例配置换会话阈值=500000（当前上下文）')
 }
 
 console.log('## 7. 账本：今日用量与渠道（会话页的数据源）')

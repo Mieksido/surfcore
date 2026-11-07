@@ -1075,7 +1075,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
       "socialV2.context.wakeMaxChars": { cost: 3 },
       "socialV2.context.wakeMessageLimit": { cost: 2 },
       "socialV2.context.wakeRecentLimit": { cost: 1 },
-      "socialV2.context.rolloverTokens": { cost: 3 },
+      "socialV2.context.rolloverContextTokens": { cost: 3 },
       "socialV2.context.rolloverTurns": { cost: 2 },
       "socialV2.wake.batchWindowMs": { cost: 2 },
       "socialV2.wake.batchWindowPrivateMs": { cost: 2 },
@@ -1147,7 +1147,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("snowluma.launcherPath", "SnowLuma 安装目录", "解压出来的根目录（里面有 app）；例如 D:/Tools/SnowLuma2", "text", { browse: "dir" }),
         F("snowluma.launchScript", "启动脚本（可选）", "留空自动找 安装目录\\app\\launcher.bat", "text", { wide: true }),
         F("snowluma.homeDir", "SnowLuma home（app 目录）", "内含 config 的那个目录，一般是 安装目录 下的 app；填错会导致「检测不到」", "text", { browse: "dir" }),
-        F("snowluma.webuiPort", "控制台端口（可选）", "留空自动读 config/runtime.json；读不到才回退 5100", "number", { min: 1, max: 65535 }),
+        F("snowluma.webuiPort", "控制台端口（可选）", "留空自动读 config/runtime.json；读不到才回退 5099，并会自动发现附近实际端口", "number", { min: 1, max: 65535 }),
         F("snowluma.webuiUrl", "控制台地址（可选）", "例如 http://127.0.0.1:5099；填了优先于端口", "text", { wide: true }),
         F("snowluma.launchMode", "启动方式", "detached=隐藏并脱离 DSH 进程树（推荐）；legacy=旧窗口，DSH 退出会一起结束", "select", { options: [["detached", "隐藏 + 脱离 DSH（推荐）"], ["legacy", "旧方式（可见窗口）"]] }),
       ]},
@@ -1321,8 +1321,8 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.context.wakeMessageLimit", "唤醒消息上限", "", "number"),
         F("socialV2.context.wakeRecentLimit", "唤醒最近消息上限", "", "number"),
         F("socialV2.context.wakeMaxChars", "唤醒上下文最大字符", "", "number"),
-        F("socialV2.context.rolloverEnabled", "会话太长自动换新会话", "默认开。一条会话聊太久，每次请求都要重发整段历史（实测 19.5 小时能到 43.5 万 token/步）", "switch"),
-        F("socialV2.context.rolloverTokens", "换会话阈值（token）", "默认 80000；这条会话累计用到这么多就换。0 = 不按 token 判断", "number", { min: 0 }),
+        F("socialV2.context.rolloverEnabled", "会话太长自动换新会话", "默认关。开启后当前上下文超过阈值会在下一轮换新会话；旧上下文不再续接，只靠交接摘要和记忆卡接上，可能出现遗忘或回答不连贯。确认理解后再开。", "switch"),
+        F("socialV2.context.rolloverContextTokens", "换会话阈值（当前上下文 token）", "默认 500000；这一轮实际带进模型的上下文超过才换。0 = 不按 token 判断", "number", { min: 0 }),
         F("socialV2.context.rolloverTurns", "换会话阈值（唤醒次数）", "默认 0 = 不按次数；两个阈值谁先到都算", "number", { min: 0 }),
         F("socialV2.context.rolloverSummary", "换会话时留交接", "默认开。记忆卡每轮都注入，所以只补一句「刚才聊到哪」，不额外花模型调用", "switch"),
         F("socialV2.context.rolloverKeepRecent", "交接里带最近几句", "默认 24", "number", { min: 4, max: 200 }),
@@ -2406,7 +2406,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             (launchResult?.items ?? []).length ? h("div", { style: { marginTop: "6px" } },
               ...(launchResult.items).map((it) => h("div", { className: "qbw-kv", key: it.id },
                 h("span", null, `${it.ok ? "✓" : "✗"} ${it.label}`),
-                h("span", null, it.ok ? (it.message || (launchResult?._mode === "stop" ? "已停止" : "已启动")) : `${it.error || "失败"}${it.hint ? `；${it.hint}` : ""}`)))) : null,
+                h("span", null, it.ok ? (it.message || (launchResult?._mode === "stop" ? "已停止" : "已启动")) : `${it.code ? `［${it.code}］` : ""}${it.error || "失败"}${it.hint ? `；${it.hint}` : ""}`)))) : null,
             h("label", { className: "qbw-row", style: { alignItems: "center" } },
               h("span", { className: "qbw-label" }, "一键启动成功后弹窗提示"),
               h("input", {
@@ -3467,7 +3467,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     // 所有能省 token 的设置。之前做在 QQ 页卡片里属于位置错误；这里抽成共享组件：
     // Token 额度页最上方 + QQ 页花费卡片都用它。
     const SAVE_TOKEN_TIPS = [
-      ["会话太长自动换新会话", "默认 8 万 token 换一次；阈值调小更省，但交接更频繁", "QQ 页 · 二代 · 等待与上下文"],
+      ["会话太长自动换新会话", "默认关闭；开启后当前上下文 50 万 token 会换新会话，不是累计账单。阈值调小更省，但交接更频繁、可能遗忘前文", "QQ 页 · 二代 · 等待与上下文"],
       ["唤醒合并窗口", "被 @/叫名字 3 秒、私聊 4 秒、群聊 6 秒；调大更省，但回应更慢", "QQ 页 · 唤醒与收尾"],
       ["唤醒上下文最大字符", "默认 6000；调小只带更少的未读", "QQ 页 · 等待与上下文"],
       ["工具面开关", "关掉用不到的工具：每关一个，每次请求都少付一段说明", "QQ 页 · 二代 · 工具开关"],
@@ -3483,7 +3483,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
 
     const SAVE_TOKEN_PRESETS = {
       省钱: [
-        ["socialV2.context.rolloverTokens", 60000],
+        ["socialV2.context.rolloverContextTokens", 200000],
         ["socialV2.context.wakeMaxChars", 3000],
         ["socialV2.wake.batchWindowMs", 12000],
         ["socialV2.wake.batchWindowPrivateMs", 6000],
@@ -3494,7 +3494,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         ["persona.mode", "split"],
       ],
       均衡: [
-        ["socialV2.context.rolloverTokens", 80000],
+        ["socialV2.context.rolloverContextTokens", 500000],
         ["socialV2.context.wakeMaxChars", 6000],
         ["socialV2.wake.batchWindowMs", 6000],
         ["socialV2.wake.batchWindowPrivateMs", 4000],
@@ -3505,7 +3505,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         ["persona.mode", "split"],
       ],
       活跃: [
-        ["socialV2.context.rolloverTokens", 150000],
+        ["socialV2.context.rolloverContextTokens", 800000],
         ["socialV2.context.wakeMaxChars", 8000],
         ["socialV2.wake.batchWindowMs", 4000],
         ["socialV2.wake.batchWindowPrivateMs", 3000],
@@ -3518,7 +3518,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     };
 
     const SAVE_TOKEN_FIELDS = [
-      { path: "socialV2.context.rolloverTokens", label: "会话滚动阈值", type: "number", min: 20000, max: 300000, step: 10000, unit: "token", hint: "到阈值就换新会话；调小更省，但交接更频繁", where: "QQ 页 · 等待与上下文" },
+      { path: "socialV2.context.rolloverContextTokens", label: "会话滚动阈值（当前上下文）", type: "number", min: 50000, max: 1000000, step: 50000, unit: "token", hint: "当前这一轮上下文超过才换；不是累计账单。调小更省，但交接更频繁", where: "QQ 页 · 等待与上下文" },
       { path: "socialV2.context.wakeMaxChars", label: "唤醒上下文最大字符", type: "number", min: 1000, max: 16000, step: 500, unit: "字", hint: "每次唤醒最多带多少未读", where: "QQ 页 · 等待与上下文" },
       { path: "socialV2.wake.batchWindowMs", label: "群聊合并窗口", type: "number", min: 1000, max: 30000, step: 1000, unit: "ms", hint: "多条消息合并成一次唤醒", where: "QQ 页 · 唤醒与收尾" },
       { path: "socialV2.wake.batchWindowPrivateMs", label: "私聊合并窗口", type: "number", min: 1000, max: 30000, step: 1000, unit: "ms", hint: "私聊连续消息合并", where: "QQ 页 · 唤醒与收尾" },
@@ -6565,7 +6565,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         pane === "vector"
           ? h("div", null,
         h("div", { className: "qbw-actions", style: { marginBottom: "8px" } },
-          h(Btn, { kind: "qbw-btn2", onClick: () => setUsageOpen(true) }, "使用说明"),
+          h(Btn, { kind: "qbw-btn2", onClick: () => setUsageOpen(true) },
+            "使用说明",
+            h("span", { style: { color: "var(--qbw-err-text)", fontWeight: 700 } }, "（必看！否则安装会出问题）")),
           h(Btn, { kind: "qbw-btn2", onClick: onResource }, "获取网盘资源（语音、向量记忆模型）")),
         h(Section, { title: "向量记忆", note: "状态 / 存储 / 维护" },
           h(Row, { label: "启用向量存储", hint: "关掉 = 不再摄取/编码；两套存储独立，不影响叙事记忆" },
@@ -6724,6 +6726,20 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 h("li", null, "向量记忆像按意思翻旧账：记忆很多时也能捞出语义相近的细节，适合“我记得你说过类似的话”。")),
               h("p", { className: "qbw-hint" }, "优点：不用背关键词、记忆多了也能找、和叙事记忆同时保存互不冲突。"),
               h("p", { className: "qbw-hint" }, "注意：相似不等于事实，命中后仍要判断；敏感记录不会显示，也不会被注入。")),
+            h("div", {
+              style: {
+                color: "var(--qbw-err-text)",
+                fontWeight: 700,
+                lineHeight: 1.65,
+                margin: "10px 0 8px",
+                padding: "8px 10px",
+                border: "1px solid var(--qbw-err-text)",
+                borderRadius: "6px",
+                background: "color-mix(in srgb, var(--qbw-err-text) 10%, transparent)",
+              },
+            }, "【必看安装顺序】无论用本地模型还是服务商模型，一定要先下载并导入【runtime】否则其他包无法导入"),
+            h("p", { className: "qbw-hint", style: { margin: "0 0 10px" } },
+              "runtime 可以理解成“让模型跑起来的发动机”：模型是零件，runtime 负责把零件装好并驱动它。没有 runtime，模型包导入了也不会工作。"),
             h("div", { className: "qbw-tabs" },
               h("button", { className: "qbw-tab" + (usageTab === "local" ? " on" : ""), onClick: () => setUsageTab("local") }, "本地模型"),
               h("button", { className: "qbw-tab" + (usageTab === "cloud" ? " on" : ""), onClick: () => setUsageTab("cloud") }, "云端模型")),
@@ -7874,10 +7890,46 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         xunlei: "https://pan.xunlei.com/s/VP5iWnY5xJ1D8KpL-gFpAsj9A1?pwd=tqi7",
         baidu: "",
       };
-      const openResource = (kind) => {
+      const RESOURCE_NAMES = { quark: "夸克网盘", uc: "UC网盘", xunlei: "迅雷网盘", baidu: "百度网盘" };
+      const openResource = async (kind) => {
         const url = RESOURCE_LINKS[kind];
         if (!url) { notify("这个网盘的链接还没配置，等管理员补上"); return; }
-        window.open(url, "_blank", "noopener");
+        // 先用宿主 cmd start 调系统默认浏览器；Electron/新窗口策略拦住 window.open 时也能开。
+        try {
+          const r = await api("/resources/open", { method: "POST", body: { url } });
+          if (r.ok) { notify(`✓ 已用默认浏览器打开${RESOURCE_NAMES[kind]}`); return; }
+        } catch {}
+        try {
+          const opened = window.open(url, "_blank", "noopener");
+          if (!opened) notify(`⚠️ 浏览器拦截了新窗口；请点右侧「复制链接」，粘贴到浏览器打开${RESOURCE_NAMES[kind]}`);
+        } catch (e) {
+          notify(`✗ 打不开浏览器：${e.message}；请点右侧「复制链接」手动打开`);
+        }
+      };
+      const copyResourceLink = async (kind) => {
+        const url = RESOURCE_LINKS[kind];
+        if (!url) { notify("这个网盘的链接还没配置，等管理员补上"); return; }
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url);
+          else throw new Error("clipboard unavailable");
+          notify(`✓ 已复制${RESOURCE_NAMES[kind]}链接`);
+        } catch {
+          // 某些 Electron/受限页面不给 clipboard 权限，用隐藏 textarea 兜底。
+          try {
+            const ta = document.createElement("textarea");
+            ta.value = url;
+            ta.style.position = "fixed";
+            ta.style.left = "-9999px";
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand("copy");
+            ta.remove();
+            if (!ok) throw new Error("execCommand copy failed");
+            notify(`✓ 已复制${RESOURCE_NAMES[kind]}链接`);
+          } catch (e) {
+            notify(`✗ 复制失败：${e.message}；请手动选中链接复制`);
+          }
+        }
       };
       const applyBudget = (r) => {
         const previousLimits = budgetRef.current?.limits;
@@ -7969,6 +8021,24 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       }, [unified]);
 
       const save = async (restartBridge = false) => {
+        // 默认关闭；只有「从关到开」才弹确认，避免每次保存都打扰。
+        const wasRolloverOn = (() => {
+          try { return JSON.parse(saved || "{}").unified?.socialV2?.context?.rolloverEnabled === true; } catch { return false; }
+        })();
+        const willRolloverOn = normalizedUnified?.socialV2?.context?.rolloverEnabled === true;
+        if (!wasRolloverOn && willRolloverOn) {
+          const ok = window.confirm([
+            "开启「会话太长自动换新会话」后：",
+            "",
+            "• 当前上下文超过阈值时，下一轮会新建 DSH 会话；",
+            "• 旧会话停止并归档，聊天上下文不再续接，只靠交接摘要和记忆卡接上；",
+            "• 可能出现忘了前文、回答不连贯；",
+            "• 换会话后缓存要重建，短期费用/延迟可能上升。",
+            "",
+            "默认关闭，只建议明确需要控制长期上下文费用时开启。确定开启？",
+          ].join("\n"));
+          if (!ok) { setBusy(""); return; }
+        }
         setBusy("save"); setErr(""); setWarnings([]); setNotes([]);
         const resetSessions = adminDiscardContext;
         const shouldRestart = restartBridge || resetSessions;
@@ -8103,18 +8173,42 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           dirty ? h("span", { className: "qbw-dirty" }, "● 有改动还没保存（改了不点保存 = 没生效）") : h("span", { className: "qbw-ok" }, "已保存")),
         toastText ? h("div", { className: "qbw-toast", role: "status" }, toastText) : null,
         resourceOpen ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setResourceOpen(false); } },
-          h("div", { className: "qbw-modal", style: { maxWidth: "520px" } },
+          h("div", { className: "qbw-modal", style: { maxWidth: "560px" } },
             h("h3", null, "获取网盘资源"),
             h("p", { className: "qbw-hint" }, "语音包、向量记忆模型（runtime + 三个模型）都在网盘；选择你常用的网盘打开。"),
-            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginTop: "10px" } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr", gap: "10px", marginTop: "10px" } },
               [["quark", "夸克网盘"], ["uc", "UC网盘"], ["xunlei", "迅雷网盘"], ["baidu", "百度网盘"]]
-                .map(([key, label]) => h(Btn, {
-                  key,
-                  kind: "qbw-btn2",
-                  disabled: !RESOURCE_LINKS[key],
-                  title: RESOURCE_LINKS[key] ? `用默认浏览器打开${label}` : "链接待补",
-                }, RESOURCE_LINKS[key] ? label : `${label}（待补链）`))),
-            h("p", { className: "qbw-hint", style: { marginTop: "8px" } }, "夸克 / 迅雷已可用；百度 / UC 待补链。"),
+                .map(([key, label]) => {
+                  const url = RESOURCE_LINKS[key];
+                  return h("div", {
+                    key,
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "9px 10px",
+                      border: "1px solid rgba(127,127,127,.22)",
+                      borderRadius: "8px",
+                      minWidth: 0,
+                    },
+                  },
+                    h("div", { style: { flex: "1 1 auto", minWidth: 0 } },
+                      h("div", { style: { fontWeight: 600 } }, url ? label : `${label}（待补链）`),
+                      h("div", { className: "qbw-hint", style: { marginTop: "2px", wordBreak: "break-all" } }, url || "链接待补")),
+                    h(Btn, {
+                      kind: "qbw-btn2",
+                      disabled: !url,
+                      title: url ? `用默认浏览器打开${label}` : "链接待补",
+                      onClick: () => openResource(key),
+                    }, "打开"),
+                    h(Btn, {
+                      kind: "qbw-btn3",
+                      disabled: !url,
+                      title: url ? `复制${label}链接` : "链接待补",
+                      onClick: () => copyResourceLink(key),
+                    }, "复制链接"));
+                })),
+            h("p", { className: "qbw-hint", style: { marginTop: "8px" } }, "夸克 / 迅雷已可用；百度 / UC 待补链。打不开浏览器就点「复制链接」，粘贴到浏览器地址栏。"),
             h("div", { className: "qbw-actions" },
               h(Btn, { onClick: () => setResourceOpen(false) }, "关闭")))) : null,
         tokenAlert ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setTokenAlert(null); } },

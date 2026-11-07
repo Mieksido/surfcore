@@ -875,6 +875,48 @@ export function createTokenLedger({
   }
 
   /**
+   * 某条会话最近一轮实际带入模型的上下文大小（input token）。
+   *
+   * 与 sessionTotal() 的区别：
+   * - sessionTotal 是「这条会话历史累计计费量」，每轮把上下文重发一次都叠加；
+   * - contextTokens 只看最后一次 assistant usage 的 input 桶（cacheMiss/Hit/Write），
+   *   也就是模型这一轮真正看到的上下文，不含 output。
+   *
+   * 会话滚动应该用这个值，而不是累计计费量；否则一条正常长会话两轮就能到几百万。
+   * 没有采样（例如 DSH 尚未上报 usage）时返回 0，由调用方决定是否只按轮数/阈值判断。
+   */
+  function sessionContextTokens(sessionId) {
+    const sid = String(sessionId ?? '');
+    if (!sid) return 0;
+    const own = samplesBySession.get(sid);
+    if (!own || !own.size) return 0;
+    let latest = null;
+    const rank = (s) => [
+      Number.isFinite(Number(s.seq)) && Number(s.seq) >= 0 ? Number(s.seq) : -1,
+      Number(s.t) || 0,
+      Number(s.turn) || 0,
+      Number(s.step) || 0,
+      Number(s.retry) || 0
+    ];
+    for (const sk of own) {
+      const sample = samples.get(sk);
+      if (!sample) continue;
+      if (!latest) { latest = sample; continue; }
+      const a = rank(sample);
+      const b = rank(latest);
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] > b[i]) { latest = sample; break; }
+        if (a[i] < b[i]) break;
+      }
+    }
+    if (!latest) return 0;
+    const b = latest.buckets || {};
+    return Math.max(0, Number(b.cacheMiss) || 0)
+      + Math.max(0, Number(b.cacheHit) || 0)
+      + Math.max(0, Number(b.cacheWrite) || 0);
+  }
+
+  /**
    * 外部渠道上报一条用量（桌宠/代办/独立脚本）。
    * 幂等性由调用方负责（这里只追加，不做去重键）。
    */
@@ -1139,6 +1181,7 @@ export function createTokenLedger({
     dailyUsage,
     conversation,
     sessionTotal,
+    sessionContextTokens,
     series,
     recent,
     stats,
