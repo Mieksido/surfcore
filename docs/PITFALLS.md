@@ -4000,3 +4000,40 @@ npm run test:audit
   读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
 - **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
 - **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。
+
+---
+
+## #127（2026-11-08）B站 自主提示里的裸 `node` 不是真 node：写盘全 EPERM，整轮静默哑火
+
+**现象**
+- B站 会话按提示敲 `node "E:\deepseek\surfcore\plugins\surfcore\tools\bili.mjs" debrief <BV>`：
+  `Error: EPERM: operation not permitted, open 'C:\Users\lenovo\.dsh\shots\subs\<BV>-debrief.txt'`，退出码 1；封面下载同样 EPERM。
+- 同一条命令换成 DSH 运行时的 node 就完全正常。
+- 影响面不止 debrief：`daily --go` 写 `daily-dynamic.json`、`quota record`、字幕/视频缓存…… 凡是写盘的全挂 → 那一轮自动任务白跑（她还会以为"发了"，其实没发）。
+
+**根因（分层）**
+- 她的会话 `PATH` 里第一个 `node` 是 `E:\deepseek\qq\node.exe`（QQ 自带）。同一份 node.exe **复制到别的目录就正常写**，只有从原目录启动的进程写任何路径都 EPERM（该目录下的可执行文件被套了写受限 token，具体来源未深挖）。
+- `lib/scheduler.js` 把提示写死成 `node "…bili.mjs"`，于是每轮都撞。
+- 插件内部 `execFile(NODE_EXE, …)` 走的是 `findNodeExe()`（真 node），所以插件自己跑没事 —— **只有 agent 照着提示敲才中**；这解释了为什么"看起来插件都在正常工作，只有自主任务哑火"。
+
+**处置**
+- `lib/scheduler.js`：`TOOL_CMD` 改为 `` `& "${NODE_EXE}" "${biliMjs}"` ``（`NODE_EXE = findNodeExe()`）；`&` 前缀的原因写进注释。
+- 同文件里所有给她的 `node bili.mjs …` 文案改成 `bili.mjs …`（约定见 `toolLine()`），启动测试那条改成 `${tools} selftest`。
+- 生效条件：重启插件 / DSH 后，下一轮 tick 的提示就是真 node 绝对路径。
+
+**怎么验证**
+```text
+node --check plugins/surfcore/lib/scheduler.js
+node plugins/surfcore/scripts/test-bili-automation.mjs
+node plugins/surfcore/scripts/test-automation-config-api.mjs
+node plugins/surfcore/scripts/test-kind-signals.mjs
+```
+外加实测：`& "<findNodeExe 结果>" "…\bili.mjs" quota status` 能跑通。
+
+**预防**
+- 提示/脚本里**永远别写裸 `node`**：用 `findNodeExe()` 或 `${TOOL_CMD}`；新增命令文案一律走 `toolLine()`。
+- 本机遇到 EPERM 先 `where.exe node`，看是不是 `E:\deepseek\qq\node.exe`。
+
+**残余**
+- 本目录是安装副本（无 `.git`），升级插件会覆盖这次改动 —— 需要同步到 dev 分支才算持久。
+- `E:\deepseek\qq\node.exe` 为什么被写限制没查到底；换机器可能换个路径。

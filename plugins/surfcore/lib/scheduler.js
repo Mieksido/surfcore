@@ -299,7 +299,7 @@ function diaryPushLines() {
   try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")) } catch {}
   return cfg.diary?.push === false
     ? ["8) ⛔ 主人关掉了推送 —— **照写两本日记 ✓ 但这一步不要 notify 他** ✗"]
-    : ["8) 用 `node bili.mjs notify` 推给我：**「给他的信」里最想对我说的那一段原文** + 一句摘要",
+    : ["8) 用 `bili.mjs notify` 推给我：**「给他的信」里最想对我说的那一段原文** + 一句摘要",
        "   （2026-10-18 主人定：推**日记内容**，不只是流水账 ✓ 它读设置页「消息推送」的配置）"]
 }
 
@@ -327,7 +327,7 @@ function wakePrompt(st, tools = '') {
       } catch {}
       return [
         "",
-        "【还没跑启动测试】先提醒主人跑一次：`node ~/.dsh/plugins/surfcore/tools/bili.mjs selftest`",
+        "【还没跑启动测试】先提醒主人跑一次：`" + (tools || "bili.mjs") + " selftest`",
         "  并告诉他两件事：① 你的会话在 工作区 → 未分组 里（不点开看不见）② 要给那个会话「完全访问」权限",
         "",
       ]
@@ -337,7 +337,7 @@ function wakePrompt(st, tools = '') {
     ...(SILENT
       ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
       : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
-    '1) `node bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
+    '1) `bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
     `2) 读两本日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）`,
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
@@ -786,13 +786,13 @@ export function startScheduler(ctx, opts) {
                 ...(st.slotId ? [
                   '这次只是**一趟轻醒**，不用按“整晚不看”写两本长日记：',
                   '1) 写一小段（≤100 字）为什么这趟不想看，记进日记即可',
-                  '2) `node bili.mjs diary log night-skip --note "…理由…"`',
+                  '2) `bili.mjs diary log night-skip --note "…理由…"`',
                   '3) `comment-digest` 扫一眼有没有没回的评论',
                   '4) 推我一句就收工，下一趟到点继续 ✓',
                 ] : [
                   '按 AGENTS.md 的「不看的那晚」做（不要等我说话，直接做）：',
                   '1) **两本日记都要写**，而且必须写清"为什么不想看"（累/没吃饱/心情不好/就是不想… 不许只写"跳过"两个字 ✗）',
-                  '2) `node bili.mjs diary log night-skip --note "…理由…"`',
+                  '2) `bili.mjs diary log night-skip --note "…理由…"`',
                   '3) `comment-digest` 扫一眼有没有没回的评论',
                   '4) 推给我：**日记里最想对我说的那一段** + 今天谁找过你 ✓',
                 ]),
@@ -899,7 +899,12 @@ export function startScheduler(ctx, opts) {
     // ── 工具链绝对路径（2026-10-20）──────────────────────────────────
     //   她的会话 cwd 是用户主目录，`node bili.mjs` 在那里根本不存在 ✗
     //   2026-10-20 实测：她在 D:\ / C:\ 里 glob 了一圈找 bili.mjs，还超时了 ✗ → 每条提示都带上路径 ✓
-    const TOOL_CMD = `node "${biliMjs}"`
+    //   2026-11-08 实测：**PATH 上的 `node` 不一定是真 node**（本机是 E:\deepseek\qq\node.exe：
+    //   能跑 .mjs，但写任何文件都 EPERM，同一份 node.exe 复制到别的目录就正常 ✗）
+    //   → 她照提示敲 `node bili.mjs …` 时 debrief 缓存 / daily 状态 / 额度账本全写不进，
+    //     整轮静默哑火 ✗ → 提示里改用 findNodeExe() 解析出的**真 node 绝对路径**；
+    //     PowerShell 调带引号的完整路径必须以 `&` 开头（否则 "Unexpected token"）✓
+    const TOOL_CMD = `& "${NODE_EXE}" "${biliMjs}"`
     const toolLine = () => `［工具］所有命令都用这一条：\`${TOOL_CMD} <子命令>\`（提示里写 "bili.mjs" 的都指它）—— 别去别处找 ✗`
 
     async function dmTick() {
@@ -1008,7 +1013,7 @@ export function startScheduler(ctx, opts) {
               `【有人找你】${fresh.length} 条新消息：${who}。`,
               '',
               '按 AGENTS.md 的「倾听」做（不要等我说话，直接做）：',
-              '1) `node bili.mjs comment-digest --hours 24` —— 把积压的**一起看**（合并策略 ✓ 不可关）',
+              '1) `bili.mjs comment-digest --hours 24` —— 把积压的**一起看**（合并策略 ✓ 不可关）',
               '2) 只回「一两句能答清的提问 + 轻互动」，一条收住；吵架/要隐私/长篇追问/代表主人承诺 → 不回 ✗',
               '2.5) ⭐ **疑似被攻击/阴阳怪气 → 不回，改 `attack add` 记待审**（带序号，自动私信报备给管理员；他晚上审完批准才回）',
               '     例：`attack add --oid … --root … --parent … --who "昵称" --text "他的原话" [--suggest "你想回的"]`；待审不占额度 ✓',
@@ -1135,7 +1140,7 @@ export function startScheduler(ctx, opts) {
                   '1) 看是谁、说了什么；范围按主人设置（只回主人 / 只回 @她的）✓',
                   '   是主人 → 比平时更温柔，先回应再说话，不杠不顶嘴 ✓',
                   '2) 回一句就收住（弹幕不是评论区，别长篇 ✗）；吵架/要隐私/不认识的 → 不回 ✗',
-                  '   发弹幕：`node bili.mjs danmaku send --msg "…" --reply-mid <对方mid> --reply-name <对方昵称>` → `--dry` → `--go` ✓（**不用审核 ✓ 也不用报备 ✗ 2026-10-18 主人定**）',
+                  '   发弹幕：`bili.mjs danmaku send --msg "…" --reply-mid <对方mid> --reply-name <对方昵称>` → `--dry` → `--go` ✓（**不用审核 ✓ 也不用报备 ✗ 2026-10-18 主人定**）',
                 ].join('\n'),
               }],
             }, new AbortController().signal)
