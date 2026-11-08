@@ -38,6 +38,31 @@ function exactId(value) {
   return String(value ?? '')
 }
 
+// ⚠️ 2026-11-08 实测（用户反馈"我 @ 了她，她回了但我 B站 看不到"）：
+//   **动态**收件箱 uri 里带的是**动态 id**（dyn_id），不是评论区的 oid。
+//   拿 dyn_id 去 POST /x/v2/reply/add 会返回 code=0，但评论挂不到真正的评论区 ——
+//   新版 opus 页面不展示，谁都看不见（正确 oid 下 rcount=0）。
+//   真实 oid 是 `polymer/web-dynamic/v1/detail` 的 `basic.comment_id_str`。
+//   按 dyn_id 缓存（限制 200 条，避免长跑内存涨），失败就退回原 oid，绝不阻断收件箱。
+const dynOidCache = new Map()
+export async function dynamicCommentOid(dynId, headers) {
+  const key = String(dynId ?? '').trim()
+  if (!key) return ''
+  if (dynOidCache.has(key)) return dynOidCache.get(key)
+  let oid = ''
+  try {
+    const r = await fetch(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=${key}`, { headers })
+    const j = await r.json()
+    const cid = j?.code === 0 ? j?.data?.item?.basic?.comment_id_str : ''
+    if (cid) oid = String(cid)
+  } catch { /* 网络/风控失败：退回原 oid，至少不比以前更差 */ }
+  if (oid) {
+    if (dynOidCache.size >= 200) dynOidCache.delete(dynOidCache.keys().next().value)
+    dynOidCache.set(key, oid)
+  }
+  return oid
+}
+
 /**
  * 把收件箱坐标规范成 POST /x/v2/reply/add 需要的 { root, parent }。
  *
@@ -77,6 +102,12 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
         sourceId: it.item?.source_id,
         targetId: it.item?.target_id,
       })
+      const business = Number(it.item?.business_id ?? 1)
+      const rawOid = idFromUri(uri) || exactId(it.item?.subject_id)
+      // 动态（11/17）的 uri 是动态 id，必须换成评论区的 comment_id_str（见 dynamicCommentOid）。
+      const oid = (business === 11 || business === 17)
+        ? ((await dynamicCommentOid(rawOid, headers)) || rawOid)
+        : rawOid
       out.push({
         kind,
         id: String(it.id),
@@ -87,8 +118,8 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
         title: String(it.item?.title ?? ''),
         source: String(it.item?.source_content ?? ''),
         target: String(it.item?.target_reply_content ?? ''),
-        business: Number(it.item?.business_id ?? 1),
-        oid: idFromUri(uri) || exactId(it.item?.subject_id),
+        business,
+        oid,
         root: coords.root,
         parent: coords.parent,
         // 保留 source/target 的原始 id：调用方需要区分“来消息那条”和“被回复那条”。

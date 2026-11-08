@@ -64,5 +64,71 @@ assert.equal(idFromUri('https://t.bilibili.com/412794232#reply1'), '412794232');
 assert.equal(idFromUri('https://www.bilibili.com/opus/1261813571425140745'), '1261813571425140745');
 assert.equal(idFromUri('https://www.bilibili.com/video/BV1xx411c7mD/'), '');
 
+// ⑥ 动态（2026-11-08 实测）：uri 里是 dyn_id，不是评论区 oid。
+//   拿 dyn_id 去 reply/add 会 code=0 但挂空（新版 opus 页面不展示）→ 必须换成 comment_id_str。
+{
+  const feedPayload = {
+    code: 0,
+    data: {
+      last_view_at: 0,
+      cursor: '',
+      items: [{
+        id: 6,
+        reply_time: 1794126000,
+        user: { nickname: '主人', mid: '34406991' },
+        item: {
+          business_id: 11,
+          subject_id: 1264999573864054790,
+          root_id: 319596946833,
+          source_id: 319596946833,
+          uri: 'https://t.bilibili.com/1264999573864054790#reply319596946833',
+          title: '',
+        },
+      }],
+    },
+  };
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('polymer/web-dynamic/v1/detail')) {
+      return { json: async () => ({ code: 0, data: { item: { basic: { comment_id_str: '413846048', comment_type: 11 } } } }) };
+    }
+    return { json: async () => feedPayload };
+  };
+  const feed = await pullFeed('at', { headers: {}, pages: 1 });
+  assert.equal(feed.items[0].oid, '413846048', '动态必须用 comment_id_str 当 oid，否则评论挂空');
+  assert.equal(feed.items[0].business, 11);
+  assert.ok(
+    calls.some((u) => u.includes('polymer/web-dynamic/v1/detail?id=1264999573864054790')),
+    '必须按 dyn_id 去查 detail',
+  );
+}
+
+// ⑦ detail 查不到（风控/删除）→ 退回原 oid，不能阻断收件箱
+{
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('polymer/web-dynamic/v1/detail')) {
+      return { json: async () => ({ code: -404, message: '啥都木有' }) };
+    }
+    return {
+      json: async () => ({
+        code: 0,
+        data: {
+          last_view_at: 0,
+          cursor: '',
+          items: [{
+            id: 7,
+            reply_time: 1,
+            user: { nickname: 'x', mid: '1' },
+            item: { business_id: 11, subject_id: 1261813571425140745, uri: 'https://t.bilibili.com/1261813571425140745#reply1' },
+          }],
+        },
+      }),
+    };
+  };
+  const feed = await pullFeed('at', { headers: {}, pages: 1 });
+  assert.equal(feed.items[0].oid, '1261813571425140745', '解析失败要退回原 oid，不能把收件箱搞崩');
+}
+
 globalThis.fetch = realFetch;
 console.log('msgfeed oid tests OK');
