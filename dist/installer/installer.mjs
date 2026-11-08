@@ -232,10 +232,26 @@ async function main() {
     if (!ZIP_ARG) {
       resolvedTag = await resolveTag();
       const repoZip = `${REPO}/archive/refs/tags/${resolvedTag}.zip`;
-      say(`  下载 ${repoZip}`);
-      const dl = run('powershell', ['-NoProfile', '-Command',
-        `$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '${repoZip}' -OutFile '${zip}'`], { timeout: 300000 });
-      if (!dl.ok || !fs.existsSync(zip)) { bad(`下载失败：${dl.out.slice(0, 300)}`); say('        可以手动下载后放在本目录，命名 surfcore.zip，再重跑本程序'); process.exit(1); }
+      // 2026-11-08：GitHub 归档下载在部分网络下会"连上但不动"；而 Windows 上 spawnSync 的
+      // timeout 只杀 cmd/shell，下载进程仍可能持有 stdio，让调用方在超时之后继续卡住（实测
+      // 30+ 分钟 0 字节）。这里：PowerShell 侧显式 -TimeoutSec + 失败重试 + 备用 codeload 地址，
+      // Node 侧再核对文件大小，确保"下载卡死"能在 2 分钟内变成可照做的报错。
+      const codeloadZip = `https://codeload.github.com/Mieksido/surfcore/zip/refs/tags/${resolvedTag}`;
+      const candidates = [repoZip, codeloadZip];
+      let downloaded = false;
+      for (const url of candidates) {
+        say(`  下载 ${url}`);
+        const dl = run('powershell', ['-NoProfile', '-Command',
+          `$ProgressPreference='SilentlyContinue';` +
+          `[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;` +
+          `Remove-Item -LiteralPath '${zip}' -Force -ErrorAction SilentlyContinue;` +
+          `try { Invoke-WebRequest -Uri '${url}' -OutFile '${zip}' -UseBasicParsing -TimeoutSec 90 } catch { exit 1 }`],
+          { timeout: 120000 });
+        const size = fs.existsSync(zip) ? fs.statSync(zip).size : 0;
+        if (dl.ok && size > 1024 * 1024) { downloaded = true; break; }
+        bad(`下载未完成（${url}）：${String(dl.out).slice(0, 300)}`);
+      }
+      if (!downloaded) { bad('下载失败：请手动下载 tag 归档，放到本目录命名 surfcore.zip，再用 --zip surfcore.zip 重跑'); process.exit(1); }
     } else {
       ok(`使用本地 zip：${zip}`);
     }
