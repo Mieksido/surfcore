@@ -3,8 +3,9 @@
 # 陌生人用法（复制这一行到 PowerShell）：
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Mieksido/surfcore/main/scripts/bootstrap.ps1 | iex"
 #
-# 只检查环境不安装：
-#   ... | iex -Check
+# 只检查环境不安装（`iex` 没有 -Check 参数，管道后也传不了 switch —— 先落盘，再 -File 调用）：
+#   $f="$env:TEMP\bootstrap.ps1"; irm https://raw.githubusercontent.com/Mieksido/surfcore/main/scripts/bootstrap.ps1 -OutFile $f
+#   powershell -NoProfile -ExecutionPolicy Bypass -File $f -Check
 #
 # 自定义安装位置：
 #   $env:SURFCORE_DIR = 'D:\surfcore'; ... | iex

@@ -31,11 +31,17 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { dshModulesDir } from './dsh-modules.mjs';
+import { detectProfile } from './detect-profile.mjs';
 import { discoverDshSessionCookie, NodeApiClient, unwrap } from '../src/dsh-client.js';
 
 const ROOT = process.cwd();
 const DSH_MODULES = dshModulesDir();
 const DSH_HOME = path.join(os.homedir(), '.dsh');
+// 别再硬编码 profiles/web：DSH 可能装成 desktop/自定义 profile，写死会让"部署侧"断言全部
+// 指向一个不存在的目录（ENOENT 被当成失败，看起来像 SurfCore 没装上）。
+// detect-profile 的顺序：显式 DSH_PROFILE → 正在运行的 DSH 进程 → 最近使用的 profile → 唯一 profile → web 兜底。
+const PROFILE = detectProfile();
+const PROFILE_DIR = path.join(DSH_HOME, 'profiles', PROFILE);
 const BASE = process.env.DSH_BASE_URL || 'http://127.0.0.1:3080';
 
 let pass = 0, fail = 0;
@@ -140,10 +146,10 @@ if (scanned.names.size === 0) {
   check('守卫名单无拼错的假名（restrict 不会静默失效）', fabricated.length === 0, fabricated.join(', ') || `扫过 ${scanned.packages.length} 个包`);
 }
 
-const patch = fs.readFileSync(path.join(DSH_HOME, 'profiles/web/cordis.patch.yml'), 'utf8');
+const patch = fs.readFileSync(path.join(PROFILE_DIR, 'cordis.patch.yml'), 'utf8');
 const patchDoc = yaml.load(patch);
 const mcpIds = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert.map((x) => x.id));
-check('profile patch 含 3 个 MCP 且无重复', mcpIds.length === 3 && new Set(mcpIds).size === 3, mcpIds.join(', '));
+check(`profile ${PROFILE} patch 含 3 个 MCP 且无重复`, mcpIds.length === 3 && new Set(mcpIds).size === 3, mcpIds.join(', '));
 const snowlumaEntry = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert).find((x) => x.id === 'mcp-snowluma');
 check('mcp-snowluma 带 toolCallTimeoutMs=725000', snowlumaEntry?.config?.toolCallTimeoutMs === 725000);
 check('mcp 路径指向本仓库', mcpIds.every((id) => {
@@ -151,10 +157,10 @@ check('mcp 路径指向本仓库', mcpIds.every((id) => {
   return String(e.config.args[0]).includes('surfcore');
 }));
 
-const pkg = JSON.parse(fs.readFileSync(path.join(DSH_HOME, 'profiles/web/package.json'), 'utf8'));
-check('profile bundles 含 surfcore', pkg.dsh.profile.bundles.includes('surfcore'));
+const pkg = JSON.parse(fs.readFileSync(path.join(PROFILE_DIR, 'package.json'), 'utf8'));
+check(`profile ${PROFILE} bundles 含 surfcore`, pkg.dsh.profile.bundles.includes('surfcore'));
 check('surfcore link 依赖已注册', String(pkg.dependencies['surfcore'] ?? '').startsWith('link:'));
-check('surfcore 已 link 进 node_modules', fs.existsSync(path.join(DSH_HOME, 'profiles/web/node_modules/surfcore')));
+check(`surfcore 已 link 进 node_modules（profile ${PROFILE}）`, fs.existsSync(path.join(PROFILE_DIR, 'node_modules/surfcore')));
 
 // ── 3. 仓库配置：模型 ───────────────────────────────────────────────────────
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
