@@ -1134,13 +1134,22 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
     await fsp.writeFile(file, text, 'utf8');
     if (body.speaker) {
       const vdir = path.join(dir, 'voices');
-      const first = (await fsp.readdir(vdir).catch(() => [])).find((x) => x.startsWith('age12'));
-      if (first) {
-        const vf = path.join(vdir, first, 'voice.json');
-        const v = JSON.parse(await fsp.readFile(vf, 'utf8').catch(() => '{}'));
-        v.speaker = String(body.speaker);
-        await fsp.writeFile(vf, JSON.stringify(v, null, 2) + '\n', 'utf8');
-      }
+      const voiceMeta = (manifests(cfg).find((m) => m.id === id)?.voices ?? [])[0] ?? {};
+      // 2026-11-08：以前这里在 voices/ 不存在或没有 age12* 目录时**静默跳过**，而读侧
+      // readCloudConfig() 又要求 speaker 才 configured:true —— 用户把三项填全、点保存、
+      // 回显也成功，启动却仍报"云端包还没填密钥"。全新安装没有 voices/ 很正常：
+      // 语音仓库把 voices/ 写进了 .gitignore，GitHub 归档里根本没有这个目录。
+      // 现在按清单里的音色 id 补建最小 voice.json（voxd 以目录名为音色 id，只读里面的 speaker）。
+      // 取舍：相比"显式报错"，自动补建不会把用户卡死（报错只会让"手建目录"成为唯一出路）；
+      // 代价是这个函数会写包目录——它本来就在写 config.toml，语义一致。
+      const first = (await fsp.readdir(vdir).catch(() => [])).find((x) => x.startsWith('age12')) || voiceMeta.id || 'age12-cloud';
+      const vf = path.join(vdir, first, 'voice.json');
+      const v = JSON.parse((await fsp.readFile(vf, 'utf8').catch(() => '{}')).replace(/^\uFEFF/, ''));
+      v.id = v.id ?? first;
+      v.label = v.label ?? voiceMeta.label ?? first;
+      v.speaker = String(body.speaker);
+      await fsp.mkdir(path.dirname(vf), { recursive: true });
+      await fsp.writeFile(vf, JSON.stringify(v, null, 2) + '\n', 'utf8');
     }
     return { ok: true, file };
   }
@@ -1198,7 +1207,9 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
       const vdir = path.join(dir, 'voices');
       const first = (await fsp.readdir(vdir)).find((x) => x.startsWith('age12'));
       if (first) {
-        const v = JSON.parse(await fsp.readFile(path.join(vdir, first, 'voice.json'), 'utf8'));
+        // 容忍用户手工创建的 voice.json 带 UTF-8 BOM（PowerShell 5.1/7 的
+        // `Set-Content -Encoding utf8` 都会写 BOM，`JSON.parse` 会直接抛错并被外层 catch 吞掉）。
+        const v = JSON.parse((await fsp.readFile(path.join(vdir, first, 'voice.json'), 'utf8')).replace(/^\uFEFF/, ''));
         speaker = String(v.speaker || '');
       }
     } catch {}
