@@ -47,6 +47,11 @@
 | 2 | 清单与提交逐字节一致 | `node scripts/release-manifest.mjs --verify-ref HEAD` | `问题 0 个` |
 | 3 | 发布物与清单一致 | 下载 tag 归档 → `node scripts/release-manifest.mjs --verify <dir>` | `不符 0 / 缺失 0` |
 | 3b | 归档下载不可达时的备用核对 | `GH_TOKEN=... node scripts/verify-remote-manifest.mjs <repo> vX.Y.Z` | `一致 504 / 不符 0 / 缺失 0` |
+| 4 | 安装器解析到的最新版 = 本次 tag | `node dist/installer/installer.mjs --print-tag` | 输出 `vX.Y.Z` = `v$(node -p "require('./package.json').version")` |
+
+> 门禁 4 的背景：`dist/installer/installer.mjs` 曾把 `TAG` 写死成 `v0.3.2` 并且 5 个中版本没更新，
+> 双击安装的人装到的永远是旧版。现在改成运行期解析 `releases/latest`（失败再走页面跳转 / PowerShell 走系统代理 / 本机缓存），
+> 这条命令就是"发布完成后安装器真的能解析到新版本"的可执行证明；`--print-tag` 只读网络、不安装任何东西。
 
 **发布脚本纪律**：`scripts/publish-via-api.mjs` 必须用 `git show HEAD:<path>` 取内容上传；
 禁止读工作区文件（Windows CRLF → 远端仓库 CRLF → 校验必失败）。
