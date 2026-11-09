@@ -30,7 +30,7 @@ export const MASK = '********';
 const BIDI_DEFAULTS = {
   owner: { mid: '', name: '' },
   self: { mid: '', name: '' },
-  persona: { name: '', ownerTitle: '主人', selfClaim: '我' },
+  persona: { name: '', ownerTitle: '', selfClaim: '我' },
   night: {
     windows: [{ start: '20:00', end: '24:00', wakes: 1 }],
     skipChance: 0.3,

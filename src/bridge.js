@@ -2091,7 +2091,7 @@ async function main() {
     const owner = String(cfg.ownerQQ ?? '');
     if (kind === 'private') {
       // 私聊：对方就是主人才能触发（别人私聊机器人不该出声）
-      if (who === 'owner' && String(id) !== owner) return '仅主人可触发语音（当前私聊对象不是主人）';
+      if (who === 'owner' && String(id) !== owner) return '仅管理员可触发语音（当前私聊对象不是管理员）';
       if (who === 'list' && !cfgVoice.trigger.members.includes(String(id)) && String(id) !== owner) {
         return '该成员不在语音触发名单里';
       }
@@ -2101,14 +2101,14 @@ async function main() {
     // 群聊：只要主人在最近 10 分钟内开过口就放行。
     // 别人说话/发表情/转发**不会**取消这个授权（这是之前最反人类的一条）。
     const ownerAt = Number(voiceOwnerAt.get(String(key)) ?? 0);
-    if (!ownerAt) return '仅主人可触发语音（这个群还没有主人发言记录）';
+    if (!ownerAt) return '仅管理员可触发语音（这个群还没有管理员发言记录）';
     const WINDOW = 10 * 60 * 1000;
     if (Date.now() - ownerAt > WINDOW) {
-      return '最近 10 分钟主人都没说话，不能主动发语音';
+      return '最近 10 分钟管理员都没说话，不能主动发语音';
     }
     // 一条主人消息最多换一条语音：发过之后要等主人再说一句
     if ((voiceLastSentAt.get(String(key)) ?? 0) >= ownerAt) {
-      return '这条消息已经发过语音了，等主人再说一句';
+      return '这条消息已经发过语音了，等管理员再说一句';
     }
     if (who === 'list') {
       const ok = last.isOwner === true || cfgVoice.trigger.members.includes(String(last.userId));
@@ -4083,8 +4083,8 @@ async function main() {
         event: 'allowlist-reconciled',
         action: 'fixed',
         reason: { code: 'ALLOWLIST_RECONCILED', message: warnings.map((w) => w.code).join(', ') },
-        impact: '白名单已自动纠正（移除机器人自己 / 补上主人）。不纠正时主人私信会被当作未授权会话忽略。',
-        recommendation: '如需增删，请在设置页保存；系统会保留已有条目并确保主人在私聊白名单里。',
+        impact: '白名单已自动纠正（移除机器人自己 / 补上管理员）。不纠正时管理员私信会被当作未授权会话忽略。',
+        recommendation: '如需增删，请在设置页保存；系统会保留已有条目并确保管理员在私聊白名单里。',
         confidence: 'confirmed',
         dedupeKey: `allowlist:${reason}:${allow.private.join(',')}:${allow.groups.join(',')}`,
       });
@@ -5808,7 +5808,7 @@ async function main() {
             enabled: cfg.purpose?.enabled !== false,
             mode: currentMode,
             ownerUin: purposeOwnerId(),
-            ownerName: String(adminIdentity()?.displayName || '').trim() || '主人',
+            ownerName: String(adminIdentity()?.displayName || '').trim(),
             config: cfg.purpose,
             state: summarizePurposeState(purposeState, { config: cfg.purpose }),
             running: Boolean(purposeRun),
@@ -12522,7 +12522,7 @@ async function main() {
       config: cfg.purpose,
       mode: currentMode,
       ownerUin: owner,
-      ownerName: String(adminIdentity()?.displayName || '').trim() || '主人',
+      ownerName: String(adminIdentity()?.displayName || '').trim(),
       token,
       contextBlocks: purposeContextBlocks(`private:${owner}`),
       materials,
@@ -13427,8 +13427,9 @@ async function main() {
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
   function personaIdentityText() {
-    let owner = '主人';
-    try { owner = String(adminIdentity()?.displayName || '主人').trim() || '主人'; } catch {}
+    // 2026-11-09：关系平等，不再默认叫「主人」；有名字就让她知道名字，没有就只说“对方”。
+    let owner = '';
+    try { owner = String(adminIdentity()?.displayName || '').trim(); } catch {}
     return buildPersonaIdentity({ name: personaNameFromCard(roleRawContent(), selfDisplayName || '这个角色'), owner });
   }
 

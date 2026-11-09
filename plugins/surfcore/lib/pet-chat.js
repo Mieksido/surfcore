@@ -112,7 +112,7 @@ export function buildPetMemoryEvents({ userText = '', replyText = '', at = Date.
       at: at - 1,
       platform: 'pet',
       kind: 'private',
-      sender: '主人',
+      sender: '对方',
       isOwner: true,
       private: true,
       direct: true,
@@ -206,7 +206,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const u = readUnified();
     const unified = u.hasAdmin ? u.config : { ...u.config, admin: undefined };
     const admin = adminFromSources({ unified, qq: qqConfig(), bili: (() => { try { return readBiliConfig().config; } catch { return {}; } })() });
-    return { name: String(admin?.displayName || '').trim() || '主人', qq: String(admin?.qq || '').trim() };
+    return { name: String(admin?.displayName || '').trim() || '', qq: String(admin?.qq || '').trim() };
   }
 
   function voiceSettings() {

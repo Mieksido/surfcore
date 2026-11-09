@@ -115,11 +115,11 @@ function cleanAnecdote(text) {
 
 /** 公开评论里可能出现 owner 的 B 站昵称；统一换成配置里的称呼，避免把两套身份搅在一起。
  *  昵称来自 bili.config.json 的 owner.name，不再把任何具体账号写死进产品。 */
-function redactOwnerName(text, ownerName = '', replacement = '主人') {
+function redactOwnerName(text, ownerName = '', replacement = '对方') {
   const source = String(text ?? '');
   const name = String(ownerName ?? '').trim();
   if (!name) return source;
-  return source.split(name).join(String(replacement || '主人'));
+  return source.split(name).join(String(replacement || '对方'));
 }
 
 function parseDiaryBlocks(text, fallbackDate) {
@@ -197,7 +197,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
   function redactOwner(text) {
     const config = cfg();
     const ownerName = String(config?.owner?.name ?? '').trim();
-    const title = String(config?.persona?.ownerTitle ?? '').trim() || '主人';
+    const title = String(config?.persona?.ownerTitle ?? '').trim() || '你';
     return redactOwnerName(text, ownerName, title);
   }
 
@@ -510,7 +510,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     lines.push('');
     lines.push(`- B 站账号：**${self.name || 'B站账号'}**（mid ${self.mid || '未知'}）。`);
     const ownerTitle = String(persona.ownerTitle ?? '').trim();
-    lines.push(`- 那边的我就是同一个角色${persona.name ? `（也叫 **${persona.name}**）` : ''}${ownerTitle && ownerTitle !== '主人' ? `，称呼主人为「${ownerTitle}」` : ''}；QQ 和 B 站是同一个人。`);
+    lines.push(`- 那边的我就是同一个角色${persona.name ? `（也叫 **${persona.name}**）` : ''}${ownerTitle && ownerTitle !== '你' ? `，称呼对方为「${ownerTitle}」` : ''}；QQ 和 B 站是同一个人。`);
     lines.push('- 群友用「B站那个号」「B站的我」或账号昵称称呼我时，说的就是我本人，不是别人。');
     lines.push(`- 喜欢：${(prefs.like ?? []).join('、') || '（未配置）'}。`);
     lines.push(`- 不喜欢：${(prefs.dislike ?? []).join('、') || '（未配置）'}。`);

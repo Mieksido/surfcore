@@ -44,9 +44,9 @@ assert.ok(injectionPoints >= 2, `人格卡注入点数量异常：${injectionPoi
 assert.match(bridge, /if \(opts\.personaOnly\) return base;/, 'roleHintForMode 缺少 personaOnly 短路');
 
 // ③ 引擎契约。fixture 不用 # 标题，避免被 role-card 的小节解析改变形状。
-const identity = buildPersonaIdentity({ name: '小测', owner: '主人' });
+const identity = buildPersonaIdentity({ name: '小测', owner: '阿测' });
 assert.match(identity, /你是小测/, '身份底座没有角色名');
-assert.match(identity, /你的主人是主人/, '身份底座没有主人（B 依赖的锚点）');
+assert.match(identity, /对方叫阿测|你们是熟人/, '身份底座缺对方锚点');
 
 const core = '测试用核心：喜欢下雨天，说话软。';
 const toneLayer = '测试用语气：句子短、爱用波浪号。';

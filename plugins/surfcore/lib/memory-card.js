@@ -208,7 +208,7 @@ export function memoryCardSnapshot(config = memoryCardConfig()) {
         at: card.meta.firstMetAt || card.meta.firstOwnerAt || null,
         recordIds: Array.isArray(card.meta.firstMetRecordIds) ? card.meta.firstMetRecordIds : [],
         eventId: card.meta.firstMetEventId || null,
-        title: record?.title || '（自动：最早一条主人互动）',
+        title: record?.title || '（自动：最早一条你的互动）',
         preview: record?.text?.slice(0, 200) || '',
         mergedCount: Array.isArray(card.meta.firstMetRecordIds) ? card.meta.firstMetRecordIds.length : 0,
       };

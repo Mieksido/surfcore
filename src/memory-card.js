@@ -543,7 +543,7 @@ export function designateFirstMeeting(card, ids, { now = Date.now() } = {}) {
   const selected = wanted.map((id) => card.records.find((record) => record.id === id)).filter(Boolean);
   if (selected.length !== wanted.length) return { ok: false, error: '有记忆已经不存在，请刷新后重试' };
   if (selected.some((record) => !asArray(record.tags).includes('owner'))) {
-    return { ok: false, error: '「初次相遇」只能选和主人（管理员）的互动' };
+    return { ok: false, error: '「初次相遇」只能选和对方的互动' };
   }
   // 移除上一次「手动合并」的事件（它已经进全量卡了；单条标记不删）
   if (card.meta.firstMetSource === 'manual' && card.meta.firstMetEventId) {
@@ -570,12 +570,12 @@ export function designateFirstMeeting(card, ids, { now = Date.now() } = {}) {
     tags.add('owner'); tags.add('first'); tags.add('initial');
     event.tags = [...tags];
   } else {
-    const text = `和主人的初次相遇：${selected.map((record) => `${dateOnly(record.createdAt)} ${String(record.text ?? '').slice(0, 160)}`).join('；')}`.slice(0, 1200);
+    const text = `和对方的初次相遇：${selected.map((record) => `${dateOnly(record.createdAt)} ${String(record.text ?? '').slice(0, 160)}`).join('；')}`.slice(0, 1200);
     const result = addMemoryRecord(card, {
       source: 'manual',
       sourceId: `first-meet:${hash(wanted.slice().sort().join('|'), 12)}`,
       text,
-      title: '和主人的初次相遇',
+      title: '和对方的初次相遇',
       detail: `由 ${selected.length} 条记忆合并（${wanted.join(', ')}）`,
       isOwner: true,
       isPrivate: true,
@@ -584,7 +584,7 @@ export function designateFirstMeeting(card, ids, { now = Date.now() } = {}) {
       manualImportance: 100,
       scope: 'qq',
       platform: 'qq',
-      speaker: '主人',
+      speaker: '对方',
       tags: ['owner', 'first', 'initial', 'first-met'],
       createdAt: firstAt,
       lastSeenAt: lastAt,
@@ -905,9 +905,9 @@ export function renderFullMemoryCard(records, { now = Date.now(), truncated = fa
   }
   const byDate = (a, b) => timeOf(a.createdAt, 0) - timeOf(b.createdAt, 0);
   const sections = [
-    ['## 初次相遇（和主人）', groups.firstMet.sort(byDate)],
-    ['## 最初的日子（和主人）', groups.initial.sort(byDate)],
-    ['## 和主人（管理员）', groups.owner.sort(byDate)],
+    ['## 初次相遇（和对方）', groups.firstMet.sort(byDate)],
+    ['## 最初的日子（和对方）', groups.initial.sort(byDate)],
+    ['## 和对方', groups.owner.sort(byDate)],
     ['## 桌宠（私下相处）', groups.pet.sort(byDate)],
     ['## B站（冲浪）', groups.bili.sort(byDate)],
     ['## QQ 与群里的记忆', groups.qq.sort(byDate)],
@@ -926,7 +926,7 @@ export function renderFullMemoryCard(records, { now = Date.now(), truncated = fa
     lines.push('', title);
     for (const record of records) {
       const text = String(record.text ?? record.title ?? '').replace(/\s+/g, ' ').trim();
-      const who = asArray(record.tags).includes('owner') ? '主人' : (record.speaker || '');
+      const who = asArray(record.tags).includes('owner') ? '对方' : (record.speaker || '');
       const prefix = who ? `${who}：` : '';
       const reply = record.botReply ? ` → 她回：${short(String(record.botReply), 600)}` : '';
       lines.push(`- ${dateOnly(record.createdAt)} [清晰] ${prefix}${short(text, 1200)}${reply}（重要 ${record.importance}）`);
@@ -1127,7 +1127,7 @@ export function scoreMemory(input = {}, config = {}) {
 
   if (isOwner) {
     importance += isPrivate ? 42 : 32;
-    reasons.push(isPrivate ? '主人私聊' : '主人在群里说话');
+    reasons.push(isPrivate ? '对方私聊' : '对方在群里说话');
   }
   if (direct) {
     importance += 8;
@@ -1390,13 +1390,13 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
         platform: 'pet',
         scope: 'pet',
         text,
-        title: `桌宠 · 和主人：${short(text, 22)}`,
+        title: `桌宠 · 和对方：${short(text, 22)}`,
         isOwner: true,
         isPrivate: true,
         direct: true,
         createdAt: at,
         lastSeenAt: at,
-        speaker: '主人',
+        speaker: '对方',
         private: true,
         conversationKey: 'pet',
         tags: ['pet', 'owner'],

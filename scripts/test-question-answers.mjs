@@ -33,9 +33,9 @@ console.log('## 2. 谁能消费 pending');
 
 console.log('## 3. 来源标注');
 {
-  ok(responderNote({ isOwner: true }).includes('主人'), '主人来源');
+  ok(responderNote({ isOwner: true }).includes('管理员'), '管理员来源');
   const g = responderNote({ isOwner: false, sender: '张三' });
-  ok(g.includes('非主人') && g.includes('张三'), '群友来源带昵称与非主人');
+  ok(g.includes('非管理员') && g.includes('张三'), '群友来源带昵称与非管理员');
   ok(responderNote({ isOwner: false }).includes('未知'), '缺昵称不崩');
 }
 
@@ -44,9 +44,9 @@ console.log('## 4. 单选题：selected 必须留空（DSH 约束），选项文
   const pending = { questions: [{ id: 'q1', header: '普通', options: [{ label: '继续' }, { label: '停' }] }] };
   const hit = buildQuestionAnswers(pending, '继续', { isOwner: false, sender: '张三' });
   ok(hit[0].selected.length === 0, '单选命中：selected 为空（否则 DSH 拒收）');
-  ok(hit[0].custom.includes('继续') && hit[0].custom.includes('非主人'), '单选命中：选项文字 + 来源都在 custom');
+  ok(hit[0].custom.includes('继续') && hit[0].custom.includes('非管理员'), '单选命中：选项文字 + 来源都在 custom');
   const typed = buildQuestionAnswers(pending, '随便聊聊', { isOwner: true });
-  ok(typed[0].custom.includes('随便聊聊') && typed[0].custom.includes('主人'), '单选自由文本：原文 + 来源');
+  ok(typed[0].custom.includes('随便聊聊') && typed[0].custom.includes('管理员'), '单选自由文本：原文 + 来源');
   ok(typed[0].selected.length === 0, '单选自由文本：selected 仍为空');
 }
 
@@ -55,7 +55,7 @@ console.log('## 5. 多选题：selected 保留 + custom 带来源（DSH 允许�
   const pending = { questions: [{ id: 'q2', header: '普通', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }] };
   const hit = buildQuestionAnswers(pending, 'A', { isOwner: false, sender: '张三' });
   ok(hit[0].selected.length === 1 && hit[0].selected[0] === 'A', '多选命中：selected 保留');
-  ok(hit[0].custom.includes('非主人'), '多选命中：custom 带来源');
+  ok(hit[0].custom.includes('非管理员'), '多选命中：custom 带来源');
   const typed = buildQuestionAnswers(pending, 'C', { isOwner: true });
   ok(typed[0].selected.length === 0 && typed[0].custom.includes('C'), '多选自由文本：原文进 custom');
 }

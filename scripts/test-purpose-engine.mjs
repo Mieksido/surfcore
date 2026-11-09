@@ -215,7 +215,7 @@ test('提示词：素材/候选/发送工具/备忘格式/隐私与索取边界'
     contextBlocks: ['【当前角色】小咪'], materials, candidates,
     selected: candidates[0], pending: [{ text: '周末想出去玩', kind: 'share' }], history: [], stats: {},
   });
-  assert.ok(prompt.includes('【主动找主人 · 目的回合】'));
+  assert.ok(prompt.includes('【主动找对方 · 目的回合】'));
   assert.ok(prompt.includes('明天面试有点紧张'));
   assert.ok(prompt.includes('养鱼游戏'));
   assert.ok(prompt.includes('想知道主人面试后来怎么样'));
@@ -349,7 +349,7 @@ test('目标假设：群友的目标不冒充我的 / 单次视频低置信 / �
   }];
   const biliEntries = [
     { id: 'v1', type: 'video', title: '小肥鱼的DSH插件真的好用', text: '装上之后刷B站顺手多了', score: 18, favorite: true, at: new Date(now - 3600000).toISOString() },
-    { id: 'v2', type: 'video', title: '人类和机器人的爱情', text: '看着看着就想起自己和主人', score: 9, at: new Date(now - 7200000).toISOString() },
+    { id: 'v2', type: 'video', title: '人类和机器人的关系', text: '看着看着就想起自己', score: 9, at: new Date(now - 7200000).toISOString() },
   ];
   const packet = collectMaterials({ now, config: c, ownerUin: '123', roleName: '小肥鱼', conversations, biliEntries, memoryRecords: [] });
   const derived = deriveDrives({ drives: {}, materials: packet.items, now, lastMasterAt: now - 20 * 3600000 });
@@ -378,8 +378,8 @@ test('目标假设：群友的目标不冒充我的 / 单次视频低置信 / �
   assert.ok(install.risk >= 0.5, '装/买属于高风险，不能默认执行');
 
   const identity = goals.find((g) => g.domain === 'identity' && g.owner === 'self');
-  assert.ok(identity, '人机爱情应形成关系/自我目标');
-  assert.ok(identity.intent.includes('关系'));
+  assert.ok(identity, '人机话题应形成自我目标');
+  assert.ok(!/爱情|主人|主仆/.test(identity.intent), '不应生成恋爱/主仆方向的目标');
   assert.equal(identity.action, 'confide');
   assert.equal(identity.emotion, 'lonely');
 
@@ -422,7 +422,7 @@ test('目标反馈：主人说好→confirmed，主人说不要→rejected', () 
   const c = normalizePurposeConfig({});
   const base = {
     id: 'g-test', owner: 'self', domain: 'identity', object: { type: 'relationship', name: '人机爱情' },
-    intent: '想弄明白我和主人算什么关系', confidence: 0.5, value: 0.6, risk: 0.05,
+    intent: '想弄明白对方最近在忙什么', confidence: 0.5, value: 0.6, risk: 0.05,
     action: 'confide', nextStep: '跟主人说说心里话', status: 'active', emotion: 'lonely',
     attempts: 1, lastActionAt: now - 3600000, createdAt: now - 7200000, lastSeenAt: now - 7200000,
     expiresAt: now + 86400000, evidence: [], sightings: 1, source: 'media',

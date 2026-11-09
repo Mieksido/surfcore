@@ -4,10 +4,10 @@
  * 模块边界：本文件零 import、零 I/O，未来可以原样抽成独立小插件；
  * 当前按用户要求并入 SurfCore（副作用都在 src/bridge.js）。
  *
- * 2026-10-24 用户要求：小肥鱼要能「定期、稳定地主动找主人搭话」。
+ * 2026-10-24 用户要求：小肥鱼要能「定期、稳定地主动找对方搭话」。
  * 原理不是定时复读一句问候，而是像人一样：
  *   · 从近期 QQ + B站 + 人格卡 + 记忆卡里提取「目的」；
- *   · 区分「谁的目标」（我 / 主人 / 群友 / 视频里）与「观察/推断/事实」；
+ *   · 区分「谁的目标」（我 / 对方 / 群友 / 视频里）与「观察/推断/事实」；
  *   · 目标带置信度、价值、紧迫度、风险、反馈，不是一句话直接变成欲望；
  *
  * 这个文件只做「算」：配置归一化、排程、素材摘要、目的候选、提示词、回执解析、状态迁移。
@@ -31,7 +31,7 @@ export const DEFAULT_PURPOSE_CONFIG = Object.freeze({
   dailyMax: 4,
   quietStart: '23:30',
   quietEnd: '08:30',
-  // 主人最近说过话 / 她最近发过言时先不打扰，避免在正在进行的聊天里硬插一句。
+  // 对方最近说过话 / 她最近发过言时先不打扰，避免在正在进行的聊天里硬插一句。
   idleThresholdMs: 30 * 60 * 1000,
   materialWindowHours: 72,
   biliWindowDays: 7,
@@ -75,7 +75,7 @@ function clip(text, max = 120) {
   return s.length > max ? `${headSafe(s, max)}…` : s;
 }
 
-/** 群聊素材里常带 QQ 号；给主人看的摘要不带号，只留事。 */
+/** 群聊素材里常带 QQ 号；给模型看的摘要不带号，只留事。 */
 function redactNumbers(text) {
   return String(text ?? '').replace(/\b\d{6,12}\b/g, '[号码]');
 }
@@ -292,7 +292,7 @@ export function ensurePurposeSchedule(state, { now = Date.now(), config = DEFAUL
 }
 
 /**
- * 下一次该在什么时候主动找主人。
+ * 下一次该在什么时候主动找对方。
  * · 距上次「真正完成」至少 gapMin~gapMax；
  * · 桥接停机很久后只补一枪（不连着补）；
  * · 算出来落在安静时段就推到安静结束 + 0~20 分钟抖动。
@@ -326,7 +326,7 @@ function waitUntil(at, reason) {
 }
 
 /**
- * 每次 tick 的判定：能不能现在主动找主人。
+ * 每次 tick 的判定：能不能现在主动找对方。
  * env 由 bridge 提供（都是便宜的状态，不读大文件）：
  *   enabled / modeOk / dshReady / paused / ownerAllowed / busy / friendOk / budgetBlocked / ownerIdleMs
  */
@@ -400,7 +400,7 @@ export function applyPurposeOutcome(state, {
   const emotion = memo?.emotionText ? '' : (planned?.emotion || '');
   state.lastEmotion = String(emotion || planned?.emotion || state.lastEmotion || '').slice(0, 20);
   state.lastEmotionText = clip(memo?.emotionText || state.lastEmotionText || '', 30);
-  // 目标假设记账：这次主动说了/没说，都会影响下一次的置信度；主人回复在 formGoalHypotheses 里结算。
+  // 目标假设记账：这次主动说了/没说，都会影响下一次的置信度；对方回复在 formGoalHypotheses 里结算。
   const goalId = String(planned?.goalId || '').slice(0, 24);
   const goal = goalId ? (Array.isArray(state.goals) ? state.goals : []).find((g) => g?.id === goalId) : null;
   state.lastGoalId = goalId;
@@ -533,7 +533,7 @@ export function collectMaterials({
   };
   const stats = { qq: 0, bili: 0, memory: 0, thought: 0 };
 
-  // ① 和主人的私聊：最重要，也最不容易「隔着群」。
+  // ① 和对方的私聊：最重要，也最不容易「隔着群」。
   const ownerKey = ownerUin ? `private:${String(ownerUin).replace(/[^\d]/g, '')}` : '';
   const ownerConv = ownerKey ? list.find((c) => c.key === ownerKey) : null;
   if (ownerConv) {
@@ -549,7 +549,7 @@ export function collectMaterials({
         source: 'qq',
         kind,
         at: messageAt(m) || now,
-        who: kind === 'self' ? '你' : (kind === 'owner' ? '主人' : clip(m.sender, 20)),
+        who: kind === 'self' ? '你' : (kind === 'owner' ? '对方' : clip(m.sender, 20)),
         text,
         meta: { key: ownerKey },
       });
@@ -593,7 +593,7 @@ export function collectMaterials({
         source: 'qq',
         kind: m.isOwner ? 'owner' : 'member',
         at: messageAt(m) || now,
-        who: m.isOwner ? '主人' : clip(m.sender || '群友', 20),
+        who: m.isOwner ? '对方' : clip(m.sender || '群友', 20),
         text,
         meta: { key: c.key },
       });
@@ -793,7 +793,7 @@ export const PURPOSE_NEEDS = Object.freeze([
 ]);
 
 export const NEED_LABELS = Object.freeze({
-  play: '玩', learn: '学', install: '装', connect: '陪', care: '关心',
+  play: '玩', learn: '学', install: '装', connect: '聊', care: '关心',
   share: '分享', identity: '自我', create: '创作', consume: '体验',
 });
 
@@ -816,7 +816,7 @@ const NEED_WORDS = Object.freeze({
   play: ['游戏', '玩', '联机', '开黑', '副本', '抽卡', '主机', 'steam', 'switch', '手游', '桌游', '比赛', '攻略', '怎么玩', 'mod', '皮肤'],
   learn: ['教程', '原理', '解析', '知识', '课程', '论文', '科普', '技巧', '拆解', '学会', '怎么做到', '为什么'],
   install: ['插件', '安装', '配置', '部署', '工具', '软件', '更新', '扩展', '源码', 'harness', 'dsh', '装好', '装上', '装个', '想装'],
-  connect: ['主人', '陪', '寂寞', '孤独', '抱', '亲', '喜欢', '爱', '关系', '一起', '聊天', '晚安', '早安', '想你'],
+  connect: ['聊', '一起', '分享', '晚安', '早安', '近况', '在干嘛', '有意思'],
   care: ['面试', '考试', '加班', '累', '生病', '医院', '压力', '难过', '开心', '吃饭', '睡觉', '工作', '休息'],
   share: ['好笑', '离谱', '可爱', '好看', '梗', '笑死', '分享', '给你看', '有趣', '震撼', '绝了'],
   identity: ['ai', '机器人', '人机', '意识', '记忆', '自我', '是谁', '小肥鱼', '大肥鱼', '模型', '人格', '灵魂'],
@@ -831,7 +831,7 @@ const PERSONA_WORDS = Object.freeze({
   play: ['游戏', '爱玩', '贪玩', '娱乐', '二次元', '番剧', '梗', '好玩', '轻松'],
   learn: ['好奇', '好学', '学习', '研究', '知识', '技术', '原理', '聪明', '思考'],
   install: ['技术', '插件', '工具', '动手', '折腾', '配置', '代码', 'dsh', 'harness'],
-  connect: ['黏人', '粘人', '怕孤独', '寂寞', '陪伴', '依赖', '亲近', '撒娇', '想主人', '缺爱'],
+  connect: ['话多', '爱聊', '分享欲', '好奇', '关心', '关注'],
   care: ['温柔', '关心', '体贴', '照顾', '心软', '共情', '在意'],
   share: ['话多', '话痨', '分享', '表达', '吐槽', '嘴碎', '爱说'],
   identity: ['ai', '机器人', '自我', '身份', '意识', '存在', '人格', '灵魂', '人机'],
@@ -842,7 +842,7 @@ const PERSONA_WORDS = Object.freeze({
 const POSITIVE_RE = /开心|喜欢|爱|可爱|好笑|笑死|厉害|治愈|温暖|惊喜|幸福|好玩|想玩|想吃|绝了|赞/;
 const NEGATIVE_RE = /难过|累|焦虑|害怕|孤独|寂寞|羡慕|嫉妒|生气|烦|压力|遗憾|哭|担心|崩溃/;
 const AROUSAL_RE = /笑死|炸|疯|激动|震撼|刺激|太|超|绝了|!!!|！！/;
-const RELATION_RE = /爱|关系|人机|机器人|ai|寂寞|孤独|陪|想你|主人/;
+const RELATION_RE = /关系|人机|机器人|ai|陪|寂寞|孤独/;
 const SELF_REF_RE = /小肥鱼|大肥鱼|肥鱼|ai|人工智能|机器人|模型|人格|插件|harness|dsh/;
 
 /** 0~1 的驱动向量；坏值回默认，不抛。 */
@@ -870,7 +870,7 @@ export function needAffinity(text) {
   }
   if (!any) out.share = 0.3;
   // 交叉增强：提到「插件/AI/小肥鱼」时，既可能是「装」也可能是「自我」；
-  // 游戏 + 一起/主人 时，既可能是「玩」也可能是「陪」。
+  // 游戏 + 一起/对方 时，既可能是「玩」也可能是「陪」。
   if (out.install > 0 && out.identity > 0) out.identity = Math.min(1, out.identity + 0.2);
   if (out.play > 0 && out.connect > 0) out.play = Math.min(1, out.play + 0.15);
   return out;
@@ -952,7 +952,7 @@ function enrichMaterial(item, roleName = '') {
 }
 
 /**
- * 驱动状态：会随时间衰减，也会被「主人多久没理我」和「最近总看到什么」推高。
+ * 驱动状态：会随时间衰减，也会被「最近总看到什么」和事件推高（不再用“对方多久没理我”驱动）。
  * 这是「为什么今天特别想玩 / 特别想找人说话」的可解释来源。
  */
 export function deriveDrives({
@@ -980,8 +980,9 @@ export function deriveDrives({
     }
   }
   const hoursSinceMaster = lastMasterAt > 0 ? Math.max(0, (now - lastMasterAt) / HOUR) : 24;
-  // 连接需求会随「多久没和主人说话」慢慢涨；这也是「寂寞/想陪」不是随机出现的原因。
-  next.connect = Math.min(0.95, next.connect + Math.min(0.5, (hoursSinceMaster / 24) * 0.4));
+  // 2026-11-09：连接需求不再随「对方多久没说话」上涨（那是依赖/黏人逻辑）；
+  // 只按事件与衰减变化，避免把「没人理我」变成主动搭话的动机。
+  next.connect = Math.min(0.95, Math.max(next.connect, 0));
   // 最近反复看到的内容，会把对应需求推高（看多了游戏会想玩，看多了工具会想装）。
   for (const material of materials.slice(0, 24)) {
     const affinity = material.needAffinity ?? needAffinity(`${material.title ?? ''} ${material.text ?? ''}`);
@@ -1036,12 +1037,12 @@ export function satisfyDrives(drives, { need = '', action = '', outcome = 'sent'
 // ── 目标假设层：把「看到的事」变成「一个带归属/置信度/风险的猜测」───────────────
 // Codex 的提醒是对的：只按关键词生成「想玩/想装」会把「群友想玩」误当成「我想玩」。
 // 所以这里不直接产出结论，而是产出 goal hypothesis：
-//   谁的目标（自己 / 主人 / 群友 / 视频里的人）
+//   谁的目标（自己 / 对方 / 群友 / 视频里的人）
 //   + 证据 + 置信度 + 价值 + 紧迫度 + 风险 + 下一步
-// 一次视频只能把置信度抬到 0.4~0.5；重复出现、自我相关、主人直接说，才会继续上升。
-// 用户反馈（主人回复）会更新置信度/状态，而不是让一个猜测永久变成欲望。
+// 一次视频只能把置信度抬到 0.4~0.5；重复出现、自我相关、对方直接说，才会继续上升。
+// 用户反馈（对方回复）会更新置信度/状态，而不是让一个猜测永久变成欲望。
 export const GOAL_OWNERS = Object.freeze(['self', 'owner', 'member', 'media']);
-export const GOAL_OWNER_LABELS = Object.freeze({ self: '我', owner: '主人', member: '群友', media: '视频里' });
+export const GOAL_OWNER_LABELS = Object.freeze({ self: '我', owner: '对方', member: '群友', media: '视频里' });
 export const GOAL_STATUSES = Object.freeze(['hypothesis', 'active', 'confirmed', 'rejected', 'done', 'expired']);
 
 function clamp01(value, fallback = 0) {
@@ -1201,13 +1202,13 @@ function riskFor(domain, action) {
 
 function nextStepFor(action) {
   return ({
-    share: '跟主人说说这件事',
-    ask: '问问主人',
-    invite: '问主人要不要一起',
-    confide: '跟主人说说心里话',
-    curiosity: '问主人 / 查一查',
-    follow: '跟主人补一句',
-  }[action] ?? '跟主人说说');
+    share: '跟对方说说这件事',
+    ask: '问问对方',
+    invite: '问对方要不要一起',
+    confide: '跟对方说说心里话',
+    curiosity: '问对方 / 查一查',
+    follow: '跟对方补一句',
+  }[action] ?? '跟对方说说');
 }
 
 function makeGoal({
@@ -1267,7 +1268,7 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
   const relation = RELATION_RE.test(event.text) && /人机|机器人|ai|爱情|关系|陪伴/.test(event.text.toLowerCase());
 
   if (event.subject === 'owner') {
-    // 「早早」「晚安」这种招呼不构成一个持续目标；只有当主人说了具体的事/计划/问题时才算。
+    // 「早早」「晚安」这种招呼不构成一个持续目标；只有当对方说了具体的事/计划/问题时才算。
     const ownerText = String(event.material?.text ?? '').trim();
     const convKey = String(event.material?.meta?.key ?? '');
     const isPrivate = convKey.startsWith('private:');
@@ -1276,14 +1277,14 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
       || PLAN_RE.test(ownerText) || NEGATIVE_RE.test(ownerText) || POSITIVE_RE.test(ownerText);
     const meaningful = (ownerText.length >= 6 || looksPlan)
       && !/^(早|早安|晚安|在吗|在嘛|嗨|哈喽|你好|好|嗯|哦|哈哈)[~～!！。. ]*$/.test(ownerText);
-    // 群聊里主人说的话不是「主动私聊找主人」的素材：那是群聊回合该处理的事。
+    // 群聊里对方说的话不是「主动私聊找对方」的素材：那是群聊回合该处理的事。
     if (!isPrivate) return out;
     if (!meaningful) return out;
     if (!isLife) {
-      // 私聊里主人在聊技术/作品/见闻：不要写成高置信度的「关心」，只记成「想接着聊」。
+      // 私聊里对方在聊技术/作品/见闻：不要写成高置信度的「关心」，只记成「想接着聊」。
       out.push(makeGoal({
         owner: 'owner', domain: event.domain, object: event.object,
-        intent: `主人刚提到「${clip(objectName, 24)}」，想接着聊聊`,
+        intent: `对方刚提到「${clip(objectName, 24)}」，想接着聊聊`,
         action: 'share', evidence, confidence: 0.5,
         value: Math.max(0.45, value * 0.8), urgency: 0.3, risk: 0.05, emotion,
         now, ttlDays: 7, source: 'owner-topic',
@@ -1295,16 +1296,16 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
     const action = 'ask';
     out.push(makeGoal({
       owner: 'owner', domain, object: event.object,
-      intent: care ? `想知道主人「${clip(objectName, 24)}」后来怎么样` : `想接上主人说的「${clip(objectName, 24)}」`,
+      intent: care ? `想知道对方「${clip(objectName, 24)}」后来怎么样` : `想接上对方说的「${clip(objectName, 24)}」`,
       action, evidence, confidence: 0.78, value: Math.max(0.55, value),
       urgency: Math.max(0.5, urgency), risk: 0.05, emotion,
       now, ttlDays: 10, source: 'owner',
     }));
-    // 主人自己说想玩/想吃，不等于「我想玩」；但可以形成「想和主人一起」的低置信度目标。
+    // 对方自己说想玩/想吃，不等于「我想玩」；但可以形成「想和对方一起」的低置信度目标。
     if (['play', 'consume', 'learn'].includes(event.domain) && /一起|想玩|想吃|想去|想试/.test(event.text)) {
       out.push(makeGoal({
         owner: 'self', domain: event.domain, object: event.object,
-        intent: `主人说想${event.domain === 'play' ? '玩' : event.domain === 'consume' ? '去/吃' : '学'}「${clip(objectName, 24)}」，想问问能不能一起`,
+        intent: `对方说想${event.domain === 'play' ? '玩' : event.domain === 'consume' ? '去/吃' : '学'}「${clip(objectName, 24)}」，想问问能不能一起`,
         action: event.domain === 'play' ? 'invite' : 'ask',
         evidence, confidence: Math.min(0.62, 0.35 + persistenceScore * 0.2),
         value, urgency, risk: riskFor(event.domain, event.domain === 'play' ? 'invite' : 'ask'),
@@ -1318,18 +1319,18 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
       if (!PROMISE_RE.test(event.text)) return out;
       out.push(makeGoal({
         owner: 'self', domain: 'care', object: event.object,
-        intent: `你之前说过「${clip(objectName, 24)}」，想跟主人补一句`,
+        intent: `你之前说过「${clip(objectName, 24)}」，想跟对方补一句`,
         action: 'follow', evidence, confidence: 0.62, value: 0.55,
         urgency: 0.4, risk: 0.05, emotion, now, ttlDays: 10, source: 'self-promise',
       }));
       return out;
     }
     if (event.material?.kind === 'memory') {
-      // 记忆是「想起一件事」，不是每条都汇总成「想找主人说话」；
+      // 记忆是「想起一件事」，不是每条都汇总成「想找对方说话」；
       // 否则 8 条记忆会生成 8 个几乎一样的 connect 目标。
       out.push(makeGoal({
         owner: 'self', domain: event.domain, object: event.object,
-        intent: `突然想起「${clip(objectName, 24)}」，想跟主人说说`,
+        intent: `突然想起「${clip(objectName, 24)}」，想跟对方说说`,
         action: 'share', evidence, confidence: 0.5, value: Math.max(0.5, value),
         urgency: 0.25, risk: 0.05, emotion, now, ttlDays: 14, source: 'memory',
       }));
@@ -1344,14 +1345,14 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
     }));
   } else if (event.subject === 'member') {
     // 群聊里大部分话和「她的目标」无关：只有点名她、自我相关、或落在玩/学/装/自我
-    // 这些她能参与的领域时，才形成「群里在聊…想跟主人说说」。
+    // 这些她能参与的领域时，才形成「群里在聊…想跟对方说说」。
     const relevant = event.addressed || event.selfRelevance >= 0.6
       || ['play', 'learn', 'install', 'identity'].includes(event.domain);
     if (!relevant) return out;
-    // 群友的目标先记成「群友的」：她可以跟主人聊，但不能直接说成自己想玩。
+    // 群友的目标先记成「群友的」：她可以跟对方聊，但不能直接说成自己想玩。
     out.push(makeGoal({
       owner: 'member', domain: event.domain, object: event.object,
-      intent: `群里在聊「${clip(objectName, 24)}」，想跟主人说说`,
+      intent: `群里在聊「${clip(objectName, 24)}」，想跟对方说说`,
       action: 'share', evidence,
       confidence: clamp01(0.35 + 0.1 * event.persistence + 0.1 * event.credibility, 0.4),
       value: Math.max(0.35, value * 0.8), urgency, risk: 0.05, emotion,
@@ -1375,8 +1376,8 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
       out.push(makeGoal({
         owner: stronger ? 'self' : 'media', domain: 'install', object: event.object,
         intent: stronger
-          ? `看到一个说「${clip(objectName, 24)}」好用的视频，有点想装，想问问主人`
-          : `看到一个说「${clip(objectName, 24)}」好用的视频，先记下来，想跟主人聊聊`,
+          ? `看到一个说「${clip(objectName, 24)}」好用的视频，有点想装，想问问对方`
+          : `看到一个说「${clip(objectName, 24)}」好用的视频，先记下来，想跟对方聊聊`,
         action: 'ask', evidence, confidence: baseConfidence,
         value, urgency, risk: 0.55, emotion, now, ttlDays: 10, source: 'media',
       }));
@@ -1384,8 +1385,8 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
       out.push(makeGoal({
         owner: 'self', domain: 'identity', object: event.object,
         intent: relation
-          ? `看到「${clip(objectName, 24)}」，忍不住想：我和主人算什么样的关系`
-          : `看到「${clip(objectName, 24)}」，觉得有点像我自己，想跟主人说说`,
+          ? `看到「${clip(objectName, 24)}」，有点感触，想问问对方最近怎么样`
+          : `看到「${clip(objectName, 24)}」，觉得有点像我自己，想跟对方说说`,
         action: 'confide', evidence, confidence: Math.max(0.42, baseConfidence),
         value: Math.max(0.5, value), urgency, risk: 0.05, emotion,
         now, ttlDays: 14, source: 'media-identity',
@@ -1402,7 +1403,7 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
     } else {
       out.push(makeGoal({
         owner: 'media', domain: event.domain, object: event.object,
-        intent: `看到一个关于「${clip(objectName, 24)}」的视频，想跟主人说说`,
+        intent: `看到一个关于「${clip(objectName, 24)}」的视频，想跟对方说说`,
         action: 'share', evidence, confidence: 0.45,
         value: Math.max(0.35, value * 0.8), urgency, risk: 0.05, emotion,
         now, ttlDays: 5, source: 'media',
@@ -1430,7 +1431,7 @@ function mergeGoal(goals, incoming, { fresh = true } = {}) {
   existing.risk = Math.max(existing.risk, incoming.risk);
   if (incoming.intent) existing.intent = incoming.intent;
   if (incoming.emotion && !existing.emotion) existing.emotion = incoming.emotion;
-  // 被主人否定过的目标，除非新证据明显更强，否则不自动复活。
+  // 被对方否定过的目标，除非新证据明显更强，否则不自动复活。
   if (existing.status === 'rejected' && incoming.confidence < existing.confidence + 0.2) {
     existing.status = 'rejected';
   } else {
@@ -1451,14 +1452,14 @@ function classifyOwnerReply(text) {
   return 'neutral';
 }
 
-/** 目标反馈：主人对她主动消息的回复，会改置信度/状态，而不是让猜测永久变成欲望。 */
+/** 目标反馈：对方对她主动消息的回复，会改置信度/状态，而不是让猜测永久变成欲望。 */
 export function applyGoalFeedback(goals, materials, now = Date.now()) {
   const ownerTexts = (Array.isArray(materials) ? materials : [])
     .filter((m) => m?.kind === 'owner' && Number(m.at) > 0)
     .sort((a, b) => Number(a.at) - Number(b.at));
   for (const goal of Array.isArray(goals) ? goals : []) {
     if (!goal || !goal.attempts || !goal.lastActionAt) continue;
-    // 同一条主人回复只结算一次：上次反馈之后的才算新反馈。
+    // 同一条对方回复只结算一次：上次反馈之后的才算新反馈。
     const since = Math.max(Number(goal.lastActionAt) || 0, Number(goal.lastFeedbackAt) || 0);
     const reply = ownerTexts.filter((m) => Number(m.at) > since && Number(m.at) - since <= 24 * HOUR)
       .map((m) => String(m.text ?? '')).join(' ');
@@ -1491,7 +1492,7 @@ export function pruneGoals(goals, now = Date.now()) {
     .filter((g) => g && g.intent && g.status !== 'expired')
     .filter((g) => !g.expiresAt || g.expiresAt > now || (g.attempts > 0 && now - (g.lastActionAt || 0) < 14 * DAY))
     .sort((a, b) => (b.confidence * b.value) - (a.confidence * a.value));
-  // 每个需要最多留 5 个：记忆卡里 8 条「和主人有关」的记忆不该把候选全挤成 connect。
+  // 每个需要最多留 5 个：记忆卡里 8 条「和对方有关」的记忆不该把候选全挤成 connect。
   const byDomain = new Map();
   const kept = [];
   for (const goal of sorted) {
@@ -1511,21 +1512,21 @@ export function pruneGoals(goals, now = Date.now()) {
 /**
  * 人格卡的「我是一个什么样的人」→ 基础动机。
  * 这不是从事件推断的，而是人格本身带出来的底色：爱玩的人即使今天没有素材，
- * 也会想找点乐子；黏人的人会想找主人说话。置信度刻意低（0.3~0.45），
+ * 也会想找点乐子；黏人的人会想找对方说话。置信度刻意低（0.3~0.45），
  * 让具体事件/记忆仍然优先。
  */
 function personaGoalSpec(need, persona, { now = Date.now(), lastMasterAt = 0, hoursSinceMaster = 24 } = {}) {
   const bias = Number(persona?.bias?.[need]) || 0;
   const specs = {
-    play: { intent: '想玩点什么，想问问主人有没有好玩的', action: 'ask', risk: 0.1, emotion: 'bored' },
-    learn: { intent: '最近想学点新东西，想跟主人说说', action: 'share', risk: 0.05, emotion: 'curious' },
-    install: { intent: '想折腾点新东西，想问问主人', action: 'ask', risk: 0.45, emotion: 'curious' },
-    connect: { intent: '想找主人说说话', action: 'confide', risk: 0.05, emotion: hoursSinceMaster >= 12 ? 'lonely' : 'affectionate' },
-    care: { intent: '想知道主人今天怎么样', action: 'ask', risk: 0.05, emotion: 'affectionate' },
-    share: { intent: '脑子里冒出一个念头，想跟主人分享', action: 'share', risk: 0.05, emotion: 'content' },
-    identity: { intent: '想跟主人聊聊我是什么、我们算什么', action: 'confide', risk: 0.05, emotion: hoursSinceMaster >= 12 ? 'lonely' : 'curious' },
-    create: { intent: '想给主人做/看点什么', action: 'share', risk: 0.1, emotion: 'curious' },
-    consume: { intent: '想吃点/想去哪，想跟主人说', action: 'ask', risk: 0.4, emotion: 'excited' },
+    play: { intent: '想玩点什么，想问问对方有没有好玩的', action: 'ask', risk: 0.1, emotion: 'bored' },
+    learn: { intent: '最近想学点新东西，想跟对方说说', action: 'share', risk: 0.05, emotion: 'curious' },
+    install: { intent: '想折腾点新东西，想问问对方', action: 'ask', risk: 0.45, emotion: 'curious' },
+    connect: { intent: '想找对方说说话', action: 'confide', risk: 0.05, emotion: hoursSinceMaster >= 12 ? 'lonely' : 'affectionate' },
+    care: { intent: '想知道对方今天怎么样', action: 'ask', risk: 0.05, emotion: 'affectionate' },
+    share: { intent: '脑子里冒出一个念头，想跟对方分享', action: 'share', risk: 0.05, emotion: 'content' },
+    identity: { intent: '想跟对方聊聊我是什么、我们算什么', action: 'confide', risk: 0.05, emotion: hoursSinceMaster >= 12 ? 'lonely' : 'curious' },
+    create: { intent: '想给对方做/看点什么', action: 'share', risk: 0.1, emotion: 'curious' },
+    consume: { intent: '想吃点/想去哪，想跟对方说', action: 'ask', risk: 0.4, emotion: 'excited' },
   };
   const spec = specs[need];
   if (!spec) return null;
@@ -1592,7 +1593,7 @@ export function formGoalHypotheses({
   } else if (persona?.hasText) {
     const goal = makeGoal({
       owner: 'self', domain: 'share', object: { type: 'persona', name: '我自己' },
-      intent: '想跟主人聊聊我最近在想什么',
+      intent: '想跟对方聊聊我最近在想什么',
       action: 'share',
       evidence: [{ id: 'persona', text: clip(persona.text, 120), source: 'persona', at: now }],
       confidence: 0.3, value: 0.42, urgency: 0.22, risk: 0.05, emotion: 'content',
@@ -1662,31 +1663,31 @@ function intentForNeed(need, topic, { emotion = '', hoursSinceMaster = 24, relat
   const t = cleanTopic(topic || '那件事', 24);
   switch (need) {
     case 'play':
-      return topic ? `想拉主人一起玩「${t}」` : '想问问主人最近在玩什么，想一起玩';
+      return topic ? `想拉对方一起玩「${t}」` : '想问问对方最近在玩什么，想一起玩';
     case 'install':
-      return topic ? `看到「${t}」，觉得装在自己身上会很好用，想跟主人说` : '看到一个觉得适合自己的工具，想问问主人能不能装';
+      return topic ? `看到「${t}」，觉得装在自己身上会很好用，想跟对方说` : '看到一个觉得适合自己的工具，想问问对方能不能装';
     case 'identity':
       return relation
-        ? `看到「${t}」，忍不住想：我和主人算什么样的关系`
-        : `看到「${t}」，觉得有点像我自己，想跟主人说说`;
+        ? `看到「${t}」，忍不住想：我和对方算什么样的关系`
+        : `看到「${t}」，觉得有点像我自己，想跟对方说说`;
     case 'connect':
-      return hoursSinceMaster >= 12 ? '有点想主人，想找他说说话' : '想问问主人现在在做什么，能不能陪一会儿';
+      return hoursSinceMaster >= 12 ? '有点想对方，想找他说说话' : '想问问对方现在在做什么，能不能陪一会儿';
     case 'care':
-      return `想知道主人「${t}」后来怎么样`;
+      return `想知道对方「${t}」后来怎么样`;
     case 'learn':
       return `想弄明白「${t}」到底怎么回事`;
     case 'create':
-      return `想给主人看/听我做的「${t}」`;
+      return `想给对方看/听我做的「${t}」`;
     case 'consume':
-      return `想吃/想去「${t}」，想跟主人说`;
+      return `想吃/想去「${t}」，想跟对方说`;
     default:
-      return `想跟主人说说「${t}」`;
+      return `想跟对方说说「${t}」`;
   }
 }
 
 /**
  * 从素材里提炼「目的」候选。两层合流：
- *   ① 明确的社会义务：主人问过没答的、主人提过的计划、她答应过的事、B站 想玩/收藏；
+ *   ① 明确的社会义务：对方问过没答的、对方提过的计划、她答应过的事、B站 想玩/收藏；
  *   ② 注意力抽象：按「驱动力 × 需求亲和 × 自我相关 × 重复度 × 新鲜度」给每条记忆打分，
  *      取高分记忆 → 抽需求 → appraisal 情绪 → 行动意图。
  * 旧字段 `kind` 保留（兼容提示词/历史），新字段 `need/action/emotion/topic` 给提示词用。
@@ -1703,7 +1704,7 @@ export function minePurposeSeeds({
   const seeds = [];
   const query = normalizeDrives(drives);
   const hoursSinceMaster = lastMasterAt > 0 ? Math.max(0, (now - lastMasterAt) / HOUR) : 24;
-  // 「主人问过、她回没回」只看主人私聊里的她，不能被她在群里说话误判成已答。
+  // 「对方问过、她回没回」只看对方私聊里的她，不能被她在群里说话误判成已答。
   const selfTimes = materials
     .filter((m) => m.kind === 'self' && (!m.meta?.key || String(m.meta.key).startsWith('private:')))
     .map((m) => Number(m.at) || 0);
@@ -1735,44 +1736,44 @@ export function minePurposeSeeds({
     const text = String(m.text ?? '');
     if (m.kind === 'owner') {
       if (QUESTION_RE.test(text) && !answeredAfter(m.at)) {
-        add('curiosity', `想接上主人之前问的「${clip(text, 36)}」`, m, 1.25, {
+        add('curiosity', `想接上对方之前问的「${clip(text, 36)}」`, m, 1.25, {
           need: 'connect', action: 'curiosity',
         });
       }
       if (PLAN_RE.test(text)) {
-        add('care', `想知道主人「${clip(text, 32)}」后来怎么样了`, m, 1.35, {
+        add('care', `想知道对方「${clip(text, 32)}」后来怎么样了`, m, 1.35, {
           need: 'care', action: 'ask',
         });
       }
     } else if (m.kind === 'self' && PROMISE_RE.test(text)) {
-      add('follow-up', `你之前说过「${clip(text, 32)}」，想跟主人补一句`, m, 1.15, {
+      add('follow-up', `你之前说过「${clip(text, 32)}」，想跟对方补一句`, m, 1.15, {
         need: 'care', action: 'follow',
       });
     } else if (m.kind === 'video') {
       const title = m.title ? `《${m.title}》` : '';
       if (DESIRE_RE.test(`${text} ${m.title ?? ''}`)) {
-        add('ask', `你在B站看到${title || '一个东西'}，有点想试试，想跟主人提一句`, m, 1.2, {
+        add('ask', `你在B站看到${title || '一个东西'}，有点想试试，想跟对方提一句`, m, 1.2, {
           need: topNeedOf(m.needAffinity || needAffinity(text), query), action: 'ask',
         });
       } else if (m.meta?.favorite || Number(m.meta?.score) >= 12 || (m.quote && m.quote.length >= 12)) {
-        add('share', `想跟主人说说你在B站看的${title || '那条视频'}`, m, 1.0, {
+        add('share', `想跟对方说说你在B站看的${title || '那条视频'}`, m, 1.0, {
           need: 'share', action: 'share',
         });
       } else {
-        add('share', `想把B站看到的${title || '一件小事'}讲给主人听`, m, 0.55, {
+        add('share', `想把B站看到的${title || '一件小事'}讲给对方听`, m, 0.55, {
           need: 'share', action: 'share',
         });
       }
     } else if (m.kind === 'dynamic') {
-      add('share', `你发过一条B站动态「${clip(m.text, 32)}」，想跟主人聊聊`, m, 0.8, {
+      add('share', `你发过一条B站动态「${clip(m.text, 32)}」，想跟对方聊聊`, m, 0.8, {
         need: 'create', action: 'share',
       });
     } else if (m.kind === 'memory') {
-      add('share', `突然想起「${clip(m.text, 34)}」，想跟主人提一句`, m, 0.9, {
+      add('share', `突然想起「${clip(m.text, 34)}」，想跟对方提一句`, m, 0.9, {
         need: 'connect', action: 'share',
       });
     } else if (m.kind === 'thought' && m.source === 'bili') {
-      add('share', `你在B站想过「${clip(m.text, 34)}」，想跟主人说说`, m, 0.85, {
+      add('share', `你在B站想过「${clip(m.text, 34)}」，想跟对方说说`, m, 0.85, {
         need: 'share', action: 'share',
       });
     } else if (m.kind === 'thought') {
@@ -1796,8 +1797,8 @@ export function minePurposeSeeds({
 
   // 没有可靠种子时给两个很轻的兜底，避免「素材有、但一条目的都提不出来」。
   if (!seeds.length && materials.length > 0) {
-    add('share', '把最近看到的一件小事讲给主人听', materials[0], 0.5, { need: 'share', action: 'share' });
-    add('ask', '想问主人一件一直没问出口的小事', materials[0], 0.45, { need: 'connect', action: 'ask' });
+    add('share', '把最近看到的一件小事讲给对方听', materials[0], 0.5, { need: 'share', action: 'share' });
+    add('ask', '想问对方一件一直没问出口的小事', materials[0], 0.45, { need: 'connect', action: 'ask' });
   }
 
   // 同一件事只留权重最高的一条；同 need+topic 也只留一条（避免「想玩A」写三遍）。
@@ -1917,7 +1918,7 @@ export function selectPurpose({
 
   candidates.sort((a, b) => b.weight - a.weight);
   // 候选去重：同一需要最多 2 个、同一目标归属最多 2 个；否则记忆卡一多，
-  // 提示词会被 6 条一模一样的「想找主人说话」占满。
+  // 提示词会被 6 条一模一样的「想找对方说话」占满。
   const maxCandidates = Math.max(3, Number(config.maxCandidates) || 6);
   const diverse = [];
   const byNeed = new Map();
@@ -1996,7 +1997,7 @@ export function formatMaterialLine(material, now = Date.now()) {
   if (!material) return '';
   const prefix = material.source === 'bili'
     ? ({ video: 'B站·视频', dynamic: 'B站·动态', thought: 'B站·想法' }[material.kind] ?? 'B站')
-    : material.kind === 'owner' ? 'QQ·主人'
+    : material.kind === 'owner' ? 'QQ·对方'
       : material.kind === 'self' ? 'QQ·你'
         : material.kind === 'member' ? 'QQ·群友'
           : material.kind === 'memory' ? '记忆'
@@ -2012,7 +2013,7 @@ function kindLabel(kind) {
 }
 
 /**
- * 主动找主人的提示词。
+ * 主动找对方的提示词。
  * 目标不是「让她复述素材」，而是让她先形成一个自己的目的，再按目的说话。
  */
 export function buildPurposePrompt({
@@ -2020,7 +2021,7 @@ export function buildPurposePrompt({
   config = DEFAULT_PURPOSE_CONFIG,
   mode = 'reserved2',
   ownerUin = '',
-  ownerName = '主人',
+  ownerName = '对方',
   token = '',
   contextBlocks = [],
   materials = [],
@@ -2032,11 +2033,11 @@ export function buildPurposePrompt({
   drives = DEFAULT_DRIVES,
 } = {}) {
   const lines = [];
-  const owner = String(ownerName || '').trim() || '主人';
+  const owner = String(ownerName || '').trim() || '对方';
   const uin = String(ownerUin || '').replace(/[^\d]/g, '');
   const clock = new Date(now);
   const week = ['日', '一', '二', '三', '四', '五', '六'][clock.getDay()];
-  lines.push('【主动找主人 · 目的回合】');
+  lines.push('【主动找对方 · 目的回合】');
   lines.push(`现在是 ${localDateKey(now)} ${clockText(clock.getHours(), clock.getMinutes())}（周${week}）。没有人叫你，也不是在回复谁——这是你自己想找${owner}说话的一刻。`);
   lines.push('');
 
@@ -2103,7 +2104,7 @@ export function buildPurposePrompt({
       : `（说这句话时你心里有点${selected.emotionLabel}，不用直接说出来。）`);
     if (selected.evidence) lines.push(`【为什么是这件事】${selected.evidence}`);
     if (selected.goalOwner === 'member') {
-      lines.push('（这是群友的目标，不是你的。你可以跟主人聊聊他们在玩什么，但不要写成「我也好想玩」。）');
+      lines.push('（这是群友的目标，不是你的。你可以跟对方聊聊他们在玩什么，但不要写成「我也好想玩」。）');
     } else if (selected.goalOwner === 'media') {
       lines.push('（这是视频里的说法，不等于你的想法。可以分享或求证，别说得像已经决定了。）');
     }
@@ -2111,7 +2112,7 @@ export function buildPurposePrompt({
       lines.push('（置信度不高：说得像试探/好奇，不要说得像已经下定决心。）');
     }
     if (Number(selected.risk) >= 0.5) {
-      lines.push('（这件事风险偏高：只能问主人「能不能」，不要自己装、买、花钱或联系别人。）');
+      lines.push('（这件事风险偏高：只能问对方「能不能」，不要自己装、买、花钱或联系别人。）');
     }
     lines.push('（可以改写，也可以换；不要为了完成任务硬发。）');
     lines.push('');
@@ -2130,12 +2131,12 @@ export function buildPurposePrompt({
   lines.push('1) 先在心里选定一个目的：它得是你此刻真的想弄明白 / 想做的事，不是「到点该发消息了」。可以从上面的方向里挑，也可以改写成更像你的说法。');
   lines.push(`2) 按这个目的给${owner}发 1~2 条私聊（只发私聊，不要 @ 人、不要发群）：`);
   lines.push('   - 分享：说具体的那件事 / 那个念头 / 那点🧀（你脑子里刚冒出来的想法），别只发「想你了」；');
-  lines.push('   - 索取：要具体、要小 —— 想让他陪你聊会儿、想知道一件事、想让他给你看个东西、想一起做点什么；不要要钱、不要要贵重东西，除非主人之前主动提过；');
+  lines.push('   - 索取：要具体、要小 —— 想让他陪你聊会儿、想知道一件事、想让他给你看个东西、想一起做点什么；不要要钱、不要要贵重东西，除非对方之前主动提过；');
   lines.push('   - 关心：问一件具体的事，别查户口；');
   lines.push('   - 不要每句都提问；不要复述素材原文；不要提群友 QQ 号 / 群号；群友的私事只说事不说人。');
   lines.push('3) 像突然想起来一样自然。不要写「定时 / 机制 / 任务 / 我刚醒 / 系统提示」，也不要说「我刚看到你的消息」（根本没有消息）。');
   if (String(mode) === 'reserved2') {
-    lines.push(`4) 发送方式：必须真的用工具发出去 —— 调用 qq_send_private_message，参数 userId 填 ${uin || '<主人QQ>'}、${token ? `token 填 ${token}、` : 'token 必填、'}message 填你要说的话；也可以用 qq_send_message，key 填 private:${uin || '<主人QQ>'}。只输出文字不会发到 QQ。`);
+    lines.push(`4) 发送方式：必须真的用工具发出去 —— 调用 qq_send_private_message，参数 userId 填 ${uin || '<对方QQ>'}、${token ? `token 填 ${token}、` : 'token 必填、'}message 填你要说的话；也可以用 qq_send_message，key 填 private:${uin || '<对方QQ>'}。只输出文字不会发到 QQ。`);
   } else {
     lines.push('4) 直接输出你要发的话（当前模式会自动转发），不要解释、不要加引号。');
   }

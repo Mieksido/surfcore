@@ -36,7 +36,7 @@ await test('只读预览：会读素材/拼提示词，但不建会话、不投�
   assert.equal(r.ok, true);
   assert.equal(r.preview, true);
   assert.ok(r.materials.length >= 2);
-  assert.ok(r.prompt.includes('【主动找主人 · 目的回合】'));
+  assert.ok(r.prompt.includes('【主动找对方 · 目的回合】'));
   assert.ok(r.prompt.includes('qq_send_private_message'));
   assert.ok(r.prompt.includes('明天面试有点紧张'));
   assert.equal(h.calls.prompts.length, 0);

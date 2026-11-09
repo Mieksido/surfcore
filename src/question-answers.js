@@ -35,7 +35,7 @@ export function canConsumePending(pending, isOwner) {
 /** 程序填的来源说明（给模型看的上下文，不是权限凭证）。 */
 export function responderNote({ isOwner = false, sender = '' } = {}) {
   const name = String(sender ?? '').trim().slice(0, 40) || '未知';
-  return isOwner ? '【回答者：主人】' : `【回答者：群友「${name}」（非主人）】`;
+  return isOwner ? '【回答者：管理员】' : `【回答者：群友「${name}」（非管理员）】`;
 }
 
 /**

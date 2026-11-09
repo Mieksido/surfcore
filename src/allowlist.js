@@ -49,7 +49,7 @@ export function normalizeAllowlist({ allow, ownerQQ = '', selfUserId = '' } = {}
   }
   if (QQ_RE.test(owner) && !privateIds.some((id) => String(id) === owner)) {
     privateIds = [...privateIds, Number(owner)];
-    warnings.push({ code: 'ALLOW_OWNER_ADDED', message: `私聊白名单缺少主人（${owner}），已补上（否则主人私信会被忽略）` });
+    warnings.push({ code: 'ALLOW_OWNER_ADDED', message: `私聊白名单缺少管理员（${owner}），已补上（否则管理员私信会被忽略）` });
   }
   if (!QQ_RE.test(owner) && !self) {
     // 没有主人也没有 self：不推断，只把非法项去掉（changed 由下面比较决定）。

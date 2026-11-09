@@ -10,7 +10,7 @@ const store = fs.readFileSync(path.join(root, 'plugins/surfcore/lib/store.js'), 
 
 assert.ok(identity.includes('gentle: source.gentle === true'), '缺省必须是关闭，只有显式 true 才开');
 assert.ok(identity.includes('if (!a.gentle) return \'\';'), '关闭后连管理员提示块也不注入');
-assert.ok(identity.includes("? '【管理员·温柔】' : ''"), '关闭后不再留【管理员】标记');
+assert.ok(identity.includes("? '【管理员】' : ''"), '关闭后不再留【管理员】标记');
 assert.ok(store.includes('gentle: false'), '新装默认配置必须关闭');
 
 assert.ok(client.includes('AdminGentleEnableModal'), '开启必须有风险弹窗');

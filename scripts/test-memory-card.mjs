@@ -37,7 +37,7 @@ test('重要度：和主人的情绪互动最重，第一次见面是永久锚�
   assert.equal(first.importance, 100);
   assert.equal(first.pinned, true);
   assert.equal(first.kind, 'first');
-  assert.ok(first.reasons.some((r) => r.includes('主人')));
+  assert.ok(first.reasons.some((r) => r.includes('对方')));
   assert.ok(first.reasons.some((r) => r.includes('情绪')));
 
   const ownerEmotion = scoreMemory({

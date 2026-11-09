@@ -621,7 +621,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
     // 为什么放在最上面：用户要求管理员的 QQ 号与 B站 UID 默认是同一个人，
     // 这是比「鱼群保护 / 作息」更基础的身份设置。两个标签页改的是同一个
     // unified.admin，保存时由宿主投影到 qq.ownerQQ 与 bili.owner.mid。
-    // 主人特权操作审计：只读桥接写好的 state/owner-audit.jsonl。
+    // 管理员操作审计：只读桥接写好的 state/owner-audit.jsonl。
     function AuditModal({ onClose, toast }) {
       const [data, setData] = useState(null);
       const [err, setErr] = useState("");
@@ -654,7 +654,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
               entries.slice().reverse().map((e, i) => h("div", { key: i, style: { borderBottom: "1px solid rgba(127,127,127,.18)", padding: "5px 0" } },
                 h("div", null, h("b", null, e.event || "?"), " · ", new Date(e.at).toLocaleString("zh-CN", { hour12: false })),
                 h("div", { style: { opacity: 0.8 } },
-                  `操作者：${e.actor?.isOwner ? "主人" : "群友"} ${mask(e.actor?.id)} · 授权：${e.auth?.rule || "—"}/${e.auth?.decision || "—"} · 结果：${e.result?.ok ? "成功" : (e.result?.errorCode || "失败")}`),
+                  `操作者：${e.actor?.isOwner ? "管理员" : "群友"} ${mask(e.actor?.id)} · 授权：${e.auth?.rule || "—"}/${e.auth?.decision || "—"} · 结果：${e.result?.ok ? "成功" : (e.result?.errorCode || "失败")}`),
                 e.ref?.session ? h("div", { style: { opacity: 0.55 } }, `关联：${e.ref.session}${e.ref.role ? " · " + e.ref.role : ""}`) : null)))
             : h("p", { className: "qbw-hint" }, "还没有记录。"),
           h("div", { className: "qbw-actions" },
@@ -1161,7 +1161,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       ]},
       { group: "鱼群保护（QQ）", note: "多个同类角色同群时自动少说；只影响群聊自动参与，私聊/管理员不受影响；保存后重启 QQ 桥接生效", fields: [
         F("fishGuard.enabled", "启用 QQ 鱼群保护", "关掉 = 永远按原逻辑参与", "switch"),
-        F("socialV2.ignoreSpamCommands", "忽略 # 刷屏指令", "默认开；非主人发的 #sl 这类短指令不唤醒/不回复；@/引用/主人不受影响", "switch"),
+        F("socialV2.ignoreSpamCommands", "忽略 # 刷屏指令", "默认开；非管理员发的 #sl 这类短指令不唤醒/不回复；@/引用/管理员不受影响", "switch"),
         F("fishGuard.windowMs", "统计窗口（ms）", "默认 600000（10 分钟）", "number", { min: 60000 }),
         F("fishGuard.cooldownMs", "触发后冷却（ms）", "默认 600000；冷却内只回直接叫它的人", "number", { min: 60000 }),
         F("fishGuard.maxFish", "多少条不同的鱼算泛滥", "默认 5（不同发送者）", "number", { min: 2, max: 20 }),
@@ -1350,7 +1350,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
     ];
 
     const BILI_FIELDS = [
-      { group: "她自己（只读）", note: "管理员（主人）的 QQ 与 B站 mid 在标签页顶部统一设置 →", fields: [
+      { group: "她自己（只读）", note: "你的 QQ 与 B站 mid 在标签页顶部统一设置 →", fields: [
         // owner.mid / owner.name 不在这里：已上移到「管理员」卡片，和 QQ 号一起保存。
         F("self.mid", "她自己 mid", "只读（来自 cookie / nav）", "text", { readOnly: true }),
         F("self.name", "她自己昵称", "只读（来自 nav）", "text", { readOnly: true }),
@@ -1411,7 +1411,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("fishGuard.nameSuffixes", "鱼名结尾词", "逗号分隔；默认 肥鱼,fish,鱼（最后一个字是鱼也算；接受极小概率误伤真人）", "list"),
         F("fishGuard.extraFishMids", "额外认定的鱼 mid", "逗号分隔；改名了也能认出来（B站 mid）", "list"),
         F("fishGuard.exemptNames", "豁免昵称", "逗号分隔", "list"),
-        F("fishGuard.exemptMids", "豁免 mid", "逗号分隔；主人/自己会被代码强制排除", "list"),
+        F("fishGuard.exemptMids", "豁免 mid", "逗号分隔；你/自己会被代码强制排除", "list"),
       ]},
       { group: "鱼群保护（B站）", note: "评论区鱼太多就不发新楼层；优先回鱼；给鱼点赞（只拦她自己决定的发言，下一轮醒来生效）", fields: [
         F("fishGuard.enabled", "启用 B站鱼群保护", "关掉 = 永远发新楼层", "switch"),
@@ -1449,10 +1449,10 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("listen.oncePerPerson", "同一个人最多回一条", "30 天内只回一次", "switch"),
         F("listen.allDay", "全天监听", "关掉 = 只在她醒着的窗口里回", "switch"),
         F("listen.dm", "私信监听", "有私信就叫醒她", "switch"),
-        F("listen.dmScope", "私信监听范围", "只认主人 / 谁找她都回", "select", { options: [["owner", "只认主人"], ["all", "谁找她都回"]] }),
+        F("listen.dmScope", "私信监听范围", "只认你 / 谁找她都回", "select", { options: [["owner", "只认你"], ["all", "谁找她都回"]] }),
         F("listen.live", "直播间监听", "", "switch"),
         F("listen.liveRoom", "直播间房间号", "留空 = 不蹲直播"),
-        F("listen.liveScope", "直播间只回", "只回主人 / 只回艾特她的", "select", { options: [["owner", "只回主人"], ["mention", "只回艾特她的"]] }),
+        F("listen.liveScope", "直播间只回", "只回你 / 只回艾特她的", "select", { options: [["owner", "只回你"], ["mention", "只回艾特她的"]] }),
       ]},
       { group: "日记与推送", fields: [
         F("diary.push", "推送日记摘要", "日记照写；只控制推不推", "switch"),
@@ -2536,7 +2536,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           `规则：窗口 ${Math.round((data.config.windowMs || 0) / 60000)} 分钟 · 冷却 ${Math.round((data.config.cooldownMs || 0) / 60000)} 分钟 · 不同鱼 ≥${data.config.maxFish} · 连续 ${data.config.maxConsecutiveFish} 条 · 单鱼 ${data.config.singleFishMaxConsecutive} 条`) : null);
     }
 
-    // ── 目的机制（主动找主人）：独立栏目「目的」里的设置与状态 ──────────────
+    // ── 目的机制（主动搭话）：独立栏目「目的」里的设置与状态 ──────────────
     // 载体（QQ / 桌宠）由 PurposeCarrierCard 选择；这里只做节奏、素材、预览与试一次。
     // 状态/预览/出发都走 /purpose/*：插件按当前载体路由到桥接或桌宠。
     function PurposeCard({ cfg, set, busy, setBusy, toast, carrier }) {
@@ -2660,7 +2660,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
         h("div", { style: { display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" } },
           h("div", null,
-            h("h4", { style: { margin: 0 } }, "主动找主人 · 目的机制",
+            h("h4", { style: { margin: 0 } }, "主动搭话 · 目的机制",
               status ? h("span", { className: "qbw-badge " + (status.enabled ? "ok" : "warn") }, status.enabled ? "开" : "关") : null,
               status?.carrier ? h("span", { className: "qbw-badge" }, status.carrier === "pet" ? "载体：桌宠" : "载体：QQ") : null,
               status?.focus ? h("span", { className: "qbw-badge warn" }, "专注中 · 自动停") : null),
@@ -3331,7 +3331,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }),
         // 目的机制已独立成「目的」栏目；QQ 页只留一张指路卡，避免两处各改一半。
         h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
-          h("h4", null, "主动找主人 · 目的机制"),
+          h("h4", null, "主动搭话 · 目的机制"),
           h("p", null, "已独立成「目的」栏目：可选载体（桌宠 / QQ）、主动搭话形式、节奏、素材、预览与试一次。",
             "目的状态和 QQ / B站 / 记忆共用当前角色；载体切到桌宠后不会同时私聊你。"),
           h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
@@ -3344,7 +3344,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             readOnly: (f) => f.readOnly || (f.path.join(".") === "self.mid") || (f.path.join(".") === "self.name"),
             onSave,
             categories: QQ_ADV_CATEGORIES,
-            groupExtra: (g) => g.group === "连接与身份" ? h(Row, { label: "运行模式", hint: "chat=普通安全聊天；reserved=一代仿真；reserved2=二代工具仿真；closed-agent=仅主人私聊全工具。只运行当前模式，其他模式配置不生效" },
+            groupExtra: (g) => g.group === "连接与身份" ? h(Row, { label: "运行模式", hint: "chat=普通安全聊天；reserved=一代仿真；reserved2=二代工具仿真；closed-agent=仅管理员私聊全工具。只运行当前模式，其他模式配置不生效" },
               h("select", { className: "qbw-select", value: overview?.mode?.effective ?? "reserved2", onChange: async (e) => {
                 try { await api("/mode", { method: "POST", body: { mode: e.target.value } }); toast(`✓ 模式已切到 ${e.target.value}`); await reload(); } catch (err) { toast(`✗ ${err.message}`); }
               } },
@@ -3693,9 +3693,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           `共 ${data.total ?? items.length} 条${q ? `（过滤后 ${items.length} 条）` : ""} · 数据文件 ${data.file || "—"}`) : null);
     }
 
-    // ── B站 扫码登录（鱼 / 主人）────────────────────────────────────────────
+    // ── B站 扫码登录（小肥鱼 / 你的账号）────────────────────────────────────────────
     // 用宿主启动 Edge headless 打开官方登录页，把页面里的二维码取出来显示给用户；
-    // 扫码成功后宿主只保存 cookie（鱼写 credentials.json，主人写 owner-credentials.json），
+    // 扫码成功后宿主只保存 cookie（小肥鱼写 credentials.json，你的账号写 owner-credentials.json），
     // 客户端永远拿不到 cookie，只拿到 mid/昵称。
     function BiliQrModal({ target = "owner", onClose, onConfirmed }) {
       const [state, setState] = useState({ phase: "starting" });
@@ -3768,7 +3768,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         onClose?.();
       };
 
-      const title = target === "fish" ? "扫码绑定小肥鱼的 B站 账号" : "扫码登录主人的 B站 账号";
+      const title = target === "fish" ? "扫码绑定小肥鱼的 B站 账号" : "扫码登录你的 B站 账号";
       const live = state.phase === "waiting" || state.phase === "scanned";
       return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) close(); } },
         h("div", { className: "qbw-modal", style: { maxWidth: "430px" } },
@@ -3783,12 +3783,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               state.phase === "scanned" ? "已扫码，请在手机上确认登录" : "打开 B站 App → 扫一扫 → 确认登录"),
             h("p", { className: "qbw-hint", style: { textAlign: "center" } },
               target === "owner"
-                ? "只保存 cookie 用来读取偏好；不会用主人号发评论/动态。"
+                ? "只保存 cookie 用来读取偏好；不会用你的号发评论/动态。"
                 : "绑定后她会用这个号看视频、评论、发动态。"),
-            state.expected?.mid ? h("p", { className: "qbw-hint", style: { textAlign: "center" } }, `期望账号：${state.expected.name || (target === "fish" ? "小肥鱼" : "主人")}（${state.expected.mid}）；扫错号会被拒绝。`) : null,
+            state.expected?.mid ? h("p", { className: "qbw-hint", style: { textAlign: "center" } }, `期望账号：${state.expected.name || (target === "fish" ? "小肥鱼" : "你的账号")}（${state.expected.mid}）；扫错号会被拒绝。`) : null,
             target === "fish" ? h("label", { className: "qbw-hint", style: { display: "flex", gap: "6px", alignItems: "center", justifyContent: "center", marginTop: "8px" } },
               h("input", { type: "checkbox", checked: allowSameAsOwner, onChange: (e) => setAllowSameAsOwner(e.target.checked) }),
-              "我只有一个 B站 号（主人=小肥鱼），允许用主人号当小肥鱼") : null) : null,
+              "我只有一个 B站 号（你的号=小肥鱼），允许用你的号当小肥鱼") : null) : null,
           state.phase === "confirmed" ? h("div", null,
             h("p", { style: { textAlign: "center", fontSize: "15px", color: "var(--qbw-ok-text)", fontWeight: 600 } }, "✅ 登录成功"),
             h("p", { style: { textAlign: "center" } },
@@ -3801,7 +3801,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("p", { className: "qbw-hint" }, "建议：点下面「重新生成」；如果一直过期，确认手机 B站 App 能正常扫码。")) : null,
           state.phase === "wrong" ? h("div", null,
             h("p", { className: "qbw-err" }, `✗ ${state.error || "扫错账号"}`),
-            h("p", { className: "qbw-hint" }, "扫错号不会保存。要点：① 想用主人同一个号 → 勾下方「我只有一个 B站 号」再扫；② 想换到别的号 → 点下面「换号（清除旧凭据）」再扫。"),
+            h("p", { className: "qbw-hint" }, "扫错号不会保存。要点：① 想用自己的号 → 勾下方「我只有一个 B站 号」再扫；② 想换到别的号 → 点下面「换号（清除旧凭据）」再扫。"),
             h("p", { className: "qbw-hint" }, state.hint || "")) : null,
           state.phase === "error" ? h("div", null,
             h("p", { className: "qbw-err" }, `✗ ${state.error || "扫码失败"}`),
@@ -3869,10 +3869,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         try {
           const result = await api(`/preferences/scan?sources=history,favorites,local&limit=24&target=${target}`);
           if (result?.ok === false) throw new Error(result.error || "扫描失败");
-          // 旧宿主不认 target 会直接按鱼扫；不能把鱼的结果冒充主人，宁可让用户重载插件。
+          // 旧宿主不认 target 会直接按鱼扫；不能把鱼的结果冒充你的账号，宁可让用户重载插件。
           if (target !== "fish" && result.target !== target) {
             setScan(null);
-            setScanErr("宿主插件还是旧代码（不认「抓取主人/两者」）：重启 DSH 或重载 surfcore 后再抓。");
+            setScanErr("宿主插件还是旧代码（不认「抓取你的账号/两者」）：重启 DSH 或重载 surfcore 后再抓。");
             return;
           }
           if (result.ownerLoginRequired) { setScan(null); setQrTarget("owner"); return; }
@@ -3950,20 +3950,20 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("input", { className: "qbw-input", placeholder: "新关键词（如：猫咪 / 异环 / 手书）", value: newWord, onChange: (e) => setNewWord(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") addWord(); } }),
           h(Btn, { kind: "qbw-btn2", onClick: addWord, disabled: !newWord.trim() }, "+ 加到爱看"),
           h("select", { className: "qbw-select", value: target, onChange: (e) => setTarget(e.target.value), title: "抓谁的口味" },
-            h("option", { value: "owner" }, "抓取主人"),
+            h("option", { value: "owner" }, "抓取你的账号"),
             h("option", { value: "fish" }, "抓取小肥鱼"),
             h("option", { value: "both" }, "两者都抓")),
           h(Btn, { onClick: runScan, disabled: scanning }, scanning ? "抓取中…" : "一键抓取我的偏好")),
         accounts ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-          "主人账号：", accounts.owner?.configured ? `${accounts.owner.name || "（未取到昵称）"}（${accounts.owner.mid}）已扫码登录` : "未登录（点抓取会弹二维码）",
+          "你的账号：", accounts.owner?.configured ? `${accounts.owner.name || "（未取到昵称）"}（${accounts.owner.mid}）已扫码登录` : "未登录（点抓取会弹二维码）",
           " · 小肥鱼：", accounts.fish?.configured ? `${accounts.fish.name || "（未取到昵称）"}（${accounts.fish.mid}）已绑定` : "未绑定（B站 页可扫码）") : null,
         h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
           "抓取是只读的：读当前选中账号的观看历史 / 收藏夹 + 本地观看记录；不读浏览器登录的账号、不读 QQ 聊天、不点赞、不改账号。",
-          "抓主人需要先用主人的 B站 App 扫二维码；扫错号会被拒绝。"),
+          "抓你的账号需要先用你的 B站 App 扫二维码；扫错号会被拒绝。"),
         scanErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, `✗ ${scanErr}`) : null,
         scan ? h("div", { style: { marginTop: "8px" } },
           (scan.accounts ?? []).length ? h("div", { className: "qbw-hint" },
-            `抓取账号：${(scan.accounts ?? []).map((item) => `${item.role === "owner" ? "主人" : "小肥鱼"} ${item.name || item.mid}（${item.mid}）`).join(" · ")}`) : null,
+            `抓取账号：${(scan.accounts ?? []).map((item) => `${item.role === "owner" ? "你的账号" : "小肥鱼"} ${item.name || item.mid}（${item.mid}）`).join(" · ")}`) : null,
           h("div", { className: "qbw-hint" }, `来源：${(scan.sources ?? []).map((item) => `${item.ok ? "✓" : "✗"} ${item.name}${item.items != null ? `（${item.items}）` : ""}${item.error ? ` ${item.error}` : ""}`).join(" · ")}`),
           candidates.length ? h("div", { className: "qbw-chips" }, candidates.map((item) => {
             const already = exists(item.keyword);
@@ -4003,7 +4003,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         try {
           const r = await api("/bili/account/verify", { method: "POST", body: { target } });
           setAccountCheck((s) => ({ ...s, [target]: r }));
-          if (r.ok) toast(`✓ ${target === "owner" ? "主人" : "小肥鱼"} 登录有效：${r.account?.name}（${r.account?.mid}）`);
+          if (r.ok) toast(`✓ ${target === "owner" ? "你的账号" : "小肥鱼"} 登录有效：${r.account?.name}（${r.account?.mid}）`);
           else toast(`✗ 核查失败：${r.error || "原因不明"}`);
           await loadAccounts();
         } catch (e) {
@@ -4031,7 +4031,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("h4", null, "B站 登录账号"),
         h("div", { className: "qbw-hint", style: { marginTop: "2px" } },
           "显示扫码登录的账号；「核查」会读凭据文件再问一次 B站，确认登录还有效、mid 没串。"),
-        [["fish", "小肥鱼"], ["owner", "主人"]].map(([target, label]) => {
+        [["fish", "小肥鱼"], ["owner", "你的账号"]].map(([target, label]) => {
           const acc = target === "owner" ? accounts?.owner : accounts?.fish;
           const chk = accountCheck[target] || {};
           return h("div", { key: target, style: { marginTop: "8px", padding: "8px 10px", border: "1px solid rgba(127,127,127,.2)", borderRadius: "8px" } },
@@ -4282,7 +4282,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "人格卡：一页编辑，不再分栏"),
           "四层都在这一页，保存一次全部写入；拆分只生成草稿，不会自动覆盖你的卡。",
           h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-            h("b", null, "身份底座自动带："), "无论 tone / full / 日常，系统都会先带一行「你是谁、主人是谁」；身份不需要只写在核心里。")),
+            h("b", null, "身份底座自动带："), "无论 tone / full / 日常，系统都会先带一行「你是谁、对方是谁」；身份不需要只写在核心里。")),
         h("div", { className: "qbw-hint", style: { margin: "6px 0" } },
           "写法：", h("b", null, "核心"), " 写“我是谁/价值观/底线”；", h("b", null, "语气"), " 只写口癖、句子长短、称呼、标点；", h("b", null, "日常"), " 写近期心情/习惯；", h("b", null, "场景"), " 写平台差异。"),
         h("div", { className: "qbw-actions", style: { marginBottom: "6px" } },
@@ -4293,7 +4293,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         err ? h("div", { className: "qbw-err", style: { marginBottom: "6px" } }, err) : null,
         box("core", "人格核心", "身份、价值观、底线。不是每次群聊都加载；但身份底座会单独带。"),
         box("tone", "人格语气", "口癖、句子长短、称呼、标点、语气词。日常群聊默认只加载语气层。"),
-        box("daily", "人格日常", "近期状态、习惯、心情。保存时自动写入「你是谁、主人是谁」；拆分也会多留一份在日层层。"),
+        box("daily", "人格日常", "近期状态、习惯、心情。保存时自动写入「你是谁、对方是谁」；拆分也会多留一份在日层层。"),
         h("div", { className: "qbw-group", style: { marginTop: "6px" } }, "场景人格", h("small", null, "平台差异；没有就留空")),
         h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: "2px" } },
           ...Object.entries(sceneLabels).map(([id, label]) => h(Btn, {
@@ -4388,23 +4388,23 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const pin = (record) => act("pin", { id: record.id, pinned: !record.pinned });
       const forget = (record) => {
         const extra = record.firstMet
-          ? "\n这是初次相遇记录；删除后会自动选下一条最早的主人互动。全量卡仍保留副本。"
+          ? "\n这是初次相遇记录；删除后会自动选下一条最早的互动。全量卡仍保留副本。"
           : "";
         if (!confirm(`确定忘掉「${record.title || record.text.slice(0, 20)}」？这是不可逆的（会先备份整张卡）。${extra}`)) return;
         act("forget", { id: record.id });
       };
       const toggleSelect = (id) => setSelected((list) => list.includes(id) ? list.filter((item) => item !== id) : [...list, id]);
       const setFirstMeet = async () => {
-        if (!selected.length) { toast("✗ 先勾选至少一条和主人的互动"); return; }
+        if (!selected.length) { toast("✗ 先勾选至少一条和你的互动"); return; }
         const msg = selected.length > 1
-          ? `把选中的 ${selected.length} 条合并成一个「和主人的初次相遇」事件？原记录会从衰减卡移除，但全量卡已保留。`
-          : "把这条设为和主人的初次相遇？";
+          ? `把选中的 ${selected.length} 条合并成一个「和你的初次相遇」事件？原记录会从衰减卡移除，但全量卡已保留。`
+          : "把这条设为和你的初次相遇？";
         if (!confirm(msg)) return;
         await act("set-first-meet", { ids: selected });
         setSelected([]);
       };
       const clearFirstMeet = async () => {
-        if (!confirm("取消手动指定的初次相遇，恢复为“最早一条主人互动”？")) return;
+        if (!confirm("取消手动指定的初次相遇，恢复为“最早一条你的互动”？")) return;
         await act("clear-first-meet");
         setSelected([]);
       };
@@ -4463,7 +4463,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("b", null, status.unlimited ? `记忆卡到警告值的 ${status.percent}% 了。` : `容量到 ${status.percent}% 了。`),
             status.unlimited
               ? "已设为不限制字数，不会自动压缩或删除；建议手动整理，或把上限/警告值调低。"
-              : "建议压缩：会先把最不重要的旧记忆模糊化，置顶的、和主人相关的重要记忆不会动。",
+              : "建议压缩：会先把最不重要的旧记忆模糊化，置顶的、和你相关的重要记忆不会动。",
             !status.unlimited && level >= 3 ? "（已满 100%，新记忆会自动压缩，但仍建议检查。）" : "") : null,
           h("div", { className: "qbw-hint" },
             `最近整理：${fmtTime(status.lastMaintenanceAt)} · 上次每日遗忘：${status.lastDecayDate || "还没跑"} · 注入预算 QQ ${config.injectMaxChars?.qq ?? 0} / B站 ${config.injectMaxChars?.bili ?? 0} 字`),
@@ -4495,7 +4495,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         manual.open ? h("div", { className: "qbw-card" },
           h("h4", null, "手动记一条"),
           h("div", { className: "qbw-hint" }, "自动记忆之外，你（管理员）可以直接写一条；scope=QQ 的不会进 B站 提示词。"),
-          h("textarea", { className: "qbw-textarea", style: { marginTop: "8px" }, value: manual.text, onChange: (e) => setManual((m) => ({ ...m, text: e.target.value })), placeholder: "例：2026-10-22 主人说周末带我去看海。" }),
+          h("textarea", { className: "qbw-textarea", style: { marginTop: "8px" }, value: manual.text, onChange: (e) => setManual((m) => ({ ...m, text: e.target.value })), placeholder: "例：2026-10-22 对方说周末去看海。" }),
           h("div", { className: "qbw-actions" },
             h("label", { className: "qbw-hint" }, "重要度 ",
               h("input", { className: "qbw-input", type: "number", min: 1, max: 100, value: manual.importance, onChange: (e) => setManual((m) => ({ ...m, importance: Number(e.target.value) })), style: { width: "90px", minWidth: "90px" } })),
@@ -4548,7 +4548,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("input", { className: "qbw-input", type: "number", min: 1, max: 60, value: config.recentDays ?? 7, onChange: (e) => setConfig("recentDays", Number(e.target.value)) })),
           h(Row, { label: "多少天后开始模糊", hint: "新记忆的保护期；到期后每天降一档" },
             h("input", { className: "qbw-input", type: "number", min: 0, max: 60, value: config.fuzzyAfterDays ?? 7, onChange: (e) => setConfig("fuzzyAfterDays", Number(e.target.value)) })),
-          h(Row, { label: "多少天后可以遗忘", hint: "只对「不重要且非主人」的记忆生效" },
+          h(Row, { label: "多少天后可以遗忘", hint: "只对「不重要且非你」的记忆生效" },
             h("input", { className: "qbw-input", type: "number", min: 7, max: 365, value: config.forgetAfterDays ?? 60, onChange: (e) => setConfig("forgetAfterDays", Number(e.target.value)) })),
           h(Row, { label: "每日整理时间（点）", hint: "到点后第一次 tick 执行；本地时间" },
             h("input", { className: "qbw-input", type: "number", min: 0, max: 23, value: config.dailyHour ?? 4, onChange: (e) => setConfig("dailyHour", Number(e.target.value)) })),
@@ -4561,14 +4561,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h(Section, { title: "最近记忆", note: `${data.records?.length ?? 0} 条（按重要度）`, collapsible: false },
           h("div", { className: "qbw-infobox" },
             h("b", null, "初次相遇："),
-            data.firstMet?.source === "manual" ? "手动指定" : "自动（最早一条主人互动）",
+            data.firstMet?.source === "manual" ? "手动指定" : "自动（最早一条你的互动）",
             data.firstMet?.at ? ` · ${fmtDate(data.firstMet.at)}` : "",
             data.firstMet?.mergedCount > 1 ? ` · 由 ${data.firstMet.mergedCount} 条合并` : "",
             h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-              data.firstMet?.preview || "（还没有主人互动；有了以后会自动把最早一条标为初次相遇）")),
+              data.firstMet?.preview || "（还没有你的互动；有了以后会自动把最早一条标为初次相遇）")),
           h("div", { className: "qbw-search" },
             h("span", { className: "qbw-label" }, "多选操作"),
-            h("span", { className: "qbw-hint" }, `已选 ${selected.length} 条${selectedHasNonOwner ? "（含非主人记忆）" : ""}；多选会合并为一个事件；初次相遇只能选主人的互动`),
+            h("span", { className: "qbw-hint" }, `已选 ${selected.length} 条${selectedHasNonOwner ? "（含非你的记忆）" : ""}；多选会合并为一个事件；初次相遇只能选你的互动`),
             h(Btn, { onClick: setFirstMeet, disabled: !!busy || !selected.length || selectedHasNonOwner }, "设为初次相遇"),
             h(Btn, { onClick: mergeSelected, disabled: !!busy || selected.length < 2 }, "合并为一个事件"),
             data.firstMet?.source === "manual" ? h(Btn, { kind: "qbw-btn2", onClick: clearFirstMeet, disabled: !!busy }, "恢复自动") : null),
@@ -4583,14 +4583,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               "合并后置顶"),
             h("span", { className: "qbw-hint" }, "合并会移除原记录（全量卡已保留），只留一个事件；可稍后取消置顶")),
           h("div", { className: "qbw-hint", style: { marginBottom: "6px" } },
-            `「最初」是独立判定：只算和主人的互动，从首次互动起 30 天窗口；前 10 天最容易被标为最初，之后逐渐降低。当前标记 ${status.counts?.initial ?? 0} 条。`),
+            `「最初」是独立判定：只算和你的互动，从首次互动起 30 天窗口；前 10 天最容易被标为最初，之后逐渐降低。当前标记 ${status.counts?.initial ?? 0} 条。`),
           (data.records ?? []).slice(0, 30).map((record) => h("div", { key: record.id, className: "qbw-rec" },
             h("div", null,
               h("div", { className: "qbw-rec-title" },
                 h("input", {
                   type: "checkbox", checked: selected.includes(record.id),
                   onChange: () => toggleSelect(record.id),
-                  title: "选中后可合并为一个事件；初次相遇只能选主人的互动",
+                  title: "选中后可合并为一个事件；初次相遇只能选你的互动",
                   style: { verticalAlign: "middle", marginRight: "6px" },
                 }),
                 h("span", { className: "qbw-chip " + (record.clarity === "vivid" ? "on" : record.clarity === "fuzzy" ? "warn" : record.clarity === "trace" ? "bad" : "") }, clarityLabel[record.clarity] ?? record.clarity),
@@ -5367,7 +5367,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", { style: { display: "flex", gap: "10px", alignItems: "center", marginTop: "8px", flexWrap: "wrap", fontSize: "13px" } },
             "允许谁触发",
             h("select", { value: rules.triggerWho, onChange: (e) => setRules({ ...rules, triggerWho: e.target.value }), style: { width: "180px" } },
-              h("option", { value: "owner" }, "仅主人（推荐）"),
+              h("option", { value: "owner" }, "仅管理员（推荐）"),
               h("option", { value: "anyone" }, "任何人"),
               h("option", { value: "list" }, "指定成员"))),
           h("div", { style: { display: "flex", gap: "10px", alignItems: "center", marginTop: "8px", flexWrap: "wrap", fontSize: "13px" } },
@@ -5379,7 +5379,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             "允许 AI 主动发语音（默认关；关着只有你手动试发才出声）"),
           h("div", { style: { marginTop: "8px" } }, h(Btn, { onClick: saveRules }, "保存触发规则")),
           h("div", { style: { fontSize: "12px", opacity: 0.7, marginTop: "6px" } },
-            "仅主人可触发：群聊里最后一条消息必须是你发的（5 分钟内），且一条消息最多换一条语音。")) : null);
+            "仅管理员可触发：群聊里最后一条消息必须是你发的（5 分钟内），且一条消息最多换一条语音。")) : null);
     }
 
     function MemoryTab({ qq, unified, setUnified, overview, busy, setBusy, toast, reload }) {
@@ -5896,7 +5896,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           flow.phase === "form" ? h("div", null,
             h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
               flow.snow?.online ? `已连上 SnowLuma：${flow.snow.nickname || ""}（${flow.snow.uin || "?"}）` : `没连上 SnowLuma：${flow.error || "先启动并扫码登录"}`),
-            h("div", { className: "qbw-group" }, "主人 QQ（你的号，不是机器人号）"),
+            h("div", { className: "qbw-group" }, "你的 QQ（不是机器人号）"),
             h("input", { className: "qbw-input", value: flow.owner, onChange: (e) => setFlow({ ...flow, owner: e.target.value }), style: { width: "100%" } }),
             h("div", { className: "qbw-group", style: { marginTop: "10px" } }, `把哪些群加进白名单（${flow.groups.length} 个）`),
             flow.groups.length === 0
@@ -6821,7 +6821,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("p", null, `记忆卡已经用到 ${memoryAlert.percent ?? 0}%（${memoryAlert.chars ?? 0}/${memoryAlert.maxChars ?? 0} 字）。`),
             h("div", { className: "qbw-meter " + ((memoryAlert.level ?? 0) >= 2 ? "bad" : "warn") },
               h("i", { style: { width: `${Math.min(100, Number(memoryAlert.percent) || 0)}%` } })),
-            h("p", null, "继续增长会挤掉提示词预算。压缩只会把最不重要的旧记忆先变模糊，置顶的、和主人相关的重要记忆不会动。"),
+            h("p", null, "继续增长会挤掉提示词预算。压缩只会把最不重要的旧记忆先变模糊，置顶的、和你相关的重要记忆不会动。"),
             h("div", { className: "qbw-actions" },
               h(Btn, { onClick: compressMemoryCardNow, disabled: !!busy }, busy === "mc-alert" ? "压缩中…" : "立即压缩到 80%"),
               h(Btn, { kind: "qbw-btn2", onClick: () => { setTab("memory"); setMemoryAlert(null); } }, "去记忆页看看"),

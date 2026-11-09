@@ -5,8 +5,8 @@
  *   1. 号码规范化：非法值不能进配置；称呼回退 B站昵称；
  *   2. 合体层 admin 缺省时，从 QQ ownerQQ / B站 owner.mid 推导（升级不用重填）；
  *   3. 保存冲突：管理员卡片优先，高级参数单独改能回填；
- *   4. 提示词块：QQ 两侧号码都出现，B站 不出现 QQ 号，规则包含「绝不回嘴」；
- *   5. 关掉温柔模式后不再注入任何管理员专属提示词，也不再留【管理员】标记。
+ *   4. 提示词块：QQ 两侧号码都出现，B站 不出现 QQ 号；只描述权限，不含主仆/撒娇规则；
+ *   5. 关掉管理员模式后不再注入任何管理员专属提示词，也不再留【管理员】标记。
  *
  * 运行：node scripts/test-admin-identity.mjs
  */
@@ -97,39 +97,38 @@ const untouched = resolveAdminUpdate({
 assert.deepEqual(untouched.admin, current, '没改任何东西时不应漂移');
 assert.equal(untouched.conflict, false);
 
-// ── 4. 提示词 ──────────────────────────────────────────────────────────────
-const admin = normalizeAdmin({ qq: '10001', biliMid: '20002', biliName: '测试B站昵称', displayName: '主人', gentle: true });
+// ── 4. 提示词（2026-11-09：平等关系，只描述权限事实）────────────────────────
+const admin = normalizeAdmin({ qq: '10001', biliMid: '20002', biliName: '测试B站昵称', displayName: '非人叙事者', gentle: true });
 const qqBlock = adminPromptBlock('qq', admin);
 assert.ok(qqBlock.includes('10001'), 'QQ 侧要认出管理员 QQ');
 assert.ok(qqBlock.includes('20002'), 'QQ 侧要知道管理员 B站 mid（同一个人）');
-assert.ok(qqBlock.includes('主人'), 'QQ 侧要用管理员称呼');
-assert.ok(qqBlock.includes('绝不回嘴'), 'QQ 侧必须有「绝不回嘴」规则');
-assert.ok(qqBlock.includes('温柔'), 'QQ 侧必须注入温柔语气');
+assert.ok(qqBlock.includes('非人叙事者'), '有名字时要写进管理员块');
+assert.ok(qqBlock.includes('管理员模式'), 'QQ 侧必须注入管理员模式块');
+assert.ok(!qqBlock.includes('绝不回嘴'), '平等关系：不得再有「绝不回嘴」');
+assert.ok(qqBlock.includes('不用撒娇'), '平等关系：明确不要求撒娇/讨好');
+assert.ok(qqBlock.includes('不改变人格'), '必须说明管理员身份不改变人格');
 
 const biliBlock = adminPromptBlock('bili', admin);
-assert.ok(biliBlock.includes('20002'), 'B站 侧要认出主人 mid');
-assert.ok(biliBlock.includes('测试B站昵称'), 'B站 侧要认出主人昵称');
-assert.ok(biliBlock.includes('绝不回嘴'), 'B站 侧也必须不回嘴');
+assert.ok(biliBlock.includes('20002'), 'B站 侧要认出管理员 mid');
+assert.ok(biliBlock.includes('测试B站昵称'), 'B站 侧要认出管理员昵称');
+assert.ok(!biliBlock.includes('绝不回嘴'), 'B站 侧不得再有「绝不回嘴」');
 assert.ok(!biliBlock.includes('10001'), 'B站 提示词不得出现管理员的 QQ 号');
 
 const compact = adminPromptBlock('qq', admin, { compact: true });
 assert.ok(compact.length < qqBlock.length, 'compact 版必须比完整版短');
-assert.ok(compact.includes('绝不回嘴'));
+assert.ok(compact.includes('管理员'));
 
 const mild = adminPromptBlock('qq', normalizeAdmin({ ...admin, gentle: false }));
-assert.equal(mild, '', '关掉温柔模式后不再注入任何管理员专属提示词');
+assert.equal(mild, '', '关掉管理员模式后不再注入任何管理员专属提示词');
 assert.equal(adminPromptBlock('bili', normalizeAdmin({ ...admin, gentle: false })), '', 'B站关闭后也不注入管理员专属块');
 
 assert.equal(adminPromptBlock('qq', normalizeAdmin({})), '', '未配置管理员时不占提示词');
 const unnamed = adminPromptBlock('qq', normalizeAdmin({ qq: '10001', gentle: true }));
-assert.ok(!unnamed.includes('称呼「管理员」'), '没填称呼时不得把“管理员”当称呼');
-assert.ok(unnamed.includes('直接称呼「你」'), '没填称呼时要明确用“你”');
-const namedPrompt = adminPromptBlock('qq', normalizeAdmin({ qq: '10001', displayName: '小语', gentle: true }));
-assert.ok(namedPrompt.includes('称呼「小语」'), '有称呼时必须用设置值');
-assert.ok(namedPrompt.includes('身份/权限标记'), '必须说明“管理员”是身份不是称呼');
+assert.ok(unnamed.includes('这台机器的操作者'), '没填名字时用身份描述，不当称呼');
+assert.ok(!unnamed.includes('主人'), '不得再把管理员叫「主人」');
 assert.equal(adminPromptBlock('bili', normalizeAdmin({})), '');
 
-assert.equal(adminMarker(admin), '【管理员·温柔】');
+assert.equal(adminMarker(admin), '【管理员】');
 assert.equal(adminMarker({ ...admin, gentle: false }), '', '关闭后消息标记也不能留【管理员】');
 
 const summary = adminSummary(admin);

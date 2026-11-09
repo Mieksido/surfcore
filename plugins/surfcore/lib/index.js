@@ -1183,16 +1183,17 @@ export function apply(ctx) {
       const qq = readQqConfig();
       admin = adminSummary(unified?.config?.admin ?? qq?.config?.admin);
     } catch {}
-    const owner = String(admin?.displayName || '').trim() || '主人';
-    return `你是${name}；你的主人是${owner}。`;
+    const owner = String(admin?.displayName || '').trim();
+    const other = owner ? `对方叫${owner}` : '对方是你认识的人';
+    return `你是${name}；${other}。你们是熟人，朋友式相处。`;
   }
 
   function withDailyIdentity(text, identity = personaIdentityLine()) {
     const body = String(text ?? '').trim();
     if (!body) return identity;
     if (body.includes(identity)) return body;
-    // 已有明确“我是谁/主人是谁”的旧日常也保留，不重复堆。
-    if (/你是|我是/.test(body) && /主人/.test(body)) return body;
+    // 已有明确“我是谁/对方是谁”的旧日常也保留，不重复堆。
+    if (/你是|我是/.test(body) && /对方|主人/.test(body)) return body;
     return `${identity}
 
 ${body}`;
@@ -1647,17 +1648,17 @@ ${body}`;
         }
       } catch (error) { done(snowStep, false, String(error?.message ?? error)); }
 
-      // 5) 主人 + 白名单
-      const idStep = installStep('identity', '写入主人 QQ 与白名单');
+      // 5) 你的 QQ + 白名单
+      const idStep = installStep('identity', '写入你的 QQ 与白名单');
       if (opts.groups.length) {
-        // 保留用户已有私聊白名单，只追加主人（2026-10-31：以前 [owner] 整体替换会冲掉用户加的人）
+        // 保留用户已有私聊白名单，只追加管理员（2026-10-31：以前 [owner] 整体替换会冲掉用户加的人）
         const { allow, warnings } = normalizeAllowlist({
           allow: { ...(readQqConfig().config?.allow ?? {}), groups: opts.groups },
           ownerQQ: opts.ownerQQ,
         });
         saveQqConfig({ allow });
         for (const w of warnings) pluginLog(`[安装] 白名单：${w.code} ${w.message}`);
-        done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 主人私聊' : ''}${warnings.length ? `（${warnings.length} 条修正）` : ''}`);
+        done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 你的私聊' : ''}${warnings.length ? `（${warnings.length} 条修正）` : ''}`);
       } else {
         done(idStep, true, '没选群，跳过（之后在设置 → QQ → 白名单里加）');
       }
@@ -1830,7 +1831,7 @@ ${body}`;
           }
         } catch {}
       }
-      // 2) 主人 QQ（用户确认过的才写）
+      // 2) 你的 QQ（用户确认过的才写）
       const owner = String(body.ownerQQ ?? '').trim();
       if (/^\d{5,15}$/.test(owner)) {
         saveUnified({ admin: { qq: owner } });
@@ -1848,7 +1849,7 @@ ${body}`;
         });
         saveQqConfig({ allow });
         for (const w of warnings) pluginLog(`[install-apply] 白名单：${w.code} ${w.message}`);
-        changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 主人私聊' : ''}${warnings.length ? `，${warnings.length} 条修正` : ''}）`);
+        changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 你的私聊' : ''}${warnings.length ? `，${warnings.length} 条修正` : ''}）`);
       }
       // 4) 配置骨架 / 控制台令牌
       for (const action of doctorFix({ ownerQQ: owner })) {
@@ -3229,7 +3230,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         archive(ownerCred, 'owner-credentials');
         try { fs.rmSync(ownerCred, { force: true }); } catch {}
       }
-      // 清掉配置里对应的 mid，避免下一次扫码又被"不是当前小肥鱼/主人"挡住
+      // 清掉配置里对应的 mid，避免下一次扫码又被"不是当前小肥鱼/你的账号"挡住
       try {
         const bili = readBiliConfig().config ?? {};
         if (target === 'fish' || target === 'both') bili.self = { mid: '', name: '' };
@@ -3312,7 +3313,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     json(res, 200, { ok: true, plugin, bridge, paths: { pluginLog: PLUGIN_LOG, bridgeLog: path.join(QQ_STATE_DIR(), 'bridge.log') } });
   }
 
-  // 主人特权操作审计：只读桥接写好的 state/owner-audit.jsonl；agent 永远拿不到。
+  // 管理员操作审计：只读桥接写好的 state/owner-audit.jsonl；agent 永远拿不到。
   async function handleOwnerAudit(req, res, url) {
     if (req.method === 'GET') {
       const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 50));

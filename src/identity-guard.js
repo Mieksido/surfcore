@@ -61,6 +61,6 @@ export function maskLeakValue(value) {
 export function formatIdentityLeakError(hits, surface = '公开内容') {
   const list = (hits ?? []).map((h) => maskLeakValue(h.value)).filter(Boolean);
   const uniq = [...new Set(list)].join('、');
-  return `这条${surface}里出现了主人/别人的账号标识（${uniq}）。`
-    + '跨平台互认只能用来认自己，账号信息不许外传：把号码删掉再发（用「主人」「那位」这类称呼代替），也不要暗示是哪个号。';
+  return `这条${surface}里出现了对方/别人的账号标识（${uniq}）。`
+    + '跨平台互认只能用来认自己，账号信息不许外传：把号码删掉再发（用「对方」「那位」这类称呼代替），也不要暗示是哪个号。';
 }

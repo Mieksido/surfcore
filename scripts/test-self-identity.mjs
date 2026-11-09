@@ -118,7 +118,7 @@ test('两侧都写明「身份信息只用于自己，不许外传主人/别人�
   for (const platform of ['qq', 'bili']) {
     const block = buildSelfIdentityBlock(CARD, { platform });
     assert.match(block, /【只用于自己】/, `${platform} 侧缺外传禁令`);
-    assert.match(block, /不要说出主人或任何别人的 QQ 号/, `${platform} 侧没写明禁止外传`);
+    assert.match(block, /不要说出对方或任何别人的 QQ 号/, `${platform} 侧没写明禁止外传`);
   }
   assert.match(buildProvenanceBlock(), /【只用于自己】/, 'QQ 每轮注入的来源块也要带外传禁令');
 });

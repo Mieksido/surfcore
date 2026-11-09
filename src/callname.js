@@ -31,6 +31,6 @@ export function pickPeerAlias(links, qq) {
 export function buildPeerAliasTag({ label = '', qq = '', isOwner = false, adminName = '' } = {}) {
   const name = String(label || (isOwner ? adminName : '') || '').trim();
   if (!name) return '';
-  const who = isOwner ? '主人' : '当前对话的这个人';
+  const who = isOwner ? '管理员' : '当前对话的这个人';
   return `【当前称呼】${who}（QQ ${String(qq || '?')}）希望被叫「${name}」；只用在这个会话，不要把这个称呼套到别人身上。\n`;
 }
