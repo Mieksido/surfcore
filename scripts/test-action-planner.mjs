@@ -21,9 +21,19 @@ const failed = planClose({ st: { lastActionAt: 100 }, sendFailed: true });
 assert.equal(failed.blocked, true);
 assert.equal(failed.code, 'CLOSE_AFTER_SEND_FAILED');
 assert.equal(failed.nextStep, 'send');
+// 2026-11-04：失败记录过期 / 明确放弃 时不应永久挡着收尾
+const stale = planClose({ st: { lastActionAt: 100 }, sendFailed: true, sendFailedAgeMs: 11 * 60 * 1000 });
+assert.equal(stale.blocked, false, '失败超过 10 分钟应放行');
+assert.equal(stale.staleSendFailure, true);
+const abandoned = planClose({ st: { lastActionAt: 100 }, sendFailed: true, allowAbandon: true });
+assert.equal(abandoned.blocked, false, '明确放弃本轮应放行');
+assert.equal(abandoned.abandonedSendFailure, true);
+const fresh = planClose({ st: { lastActionAt: 100 }, sendFailed: true, sendFailedAgeMs: 30 * 1000 });
+assert.equal(fresh.blocked, true, '新鲜失败仍要拦');
 
 const bridge = fs.readFileSync(path.resolve('src/bridge.js'), 'utf8');
-assert.ok(bridge.includes('planClose({ st, sendFailed'), 'close 必须接 Action Planner');
+assert.ok(bridge.includes('planClose({'), 'close 必须接 Action Planner');
+assert.ok(bridge.includes('sendFailedAgeMs'), 'close 必须把失败时间传给 planner');
 assert.ok(bridge.includes("type === 'assistant/message'"), 'step guard 必须按 assistant step 计数');
 const mcp = fs.readFileSync(path.resolve('src/mcp-snowluma-safe.js'), 'utf8');
 assert.ok(mcp.includes('PROFILE_HIDDEN'), '工具面 profile 必须存在');
