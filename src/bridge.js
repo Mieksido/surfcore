@@ -13541,16 +13541,79 @@ async function main() {
   // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。
   // 缓存 key 为两个文件的 mtime，mtime 未变时直接返回，避免每次同步读文件。
   let roleHintCache = { key: '', raw: '' };
+  // 贴吧语气画像：优先读 ~/.dsh/tieba-duty/bar-styles.json（AI 改写过的干净样本 + 标签 + mode），
+  // 退回 style-lib.json（原始高赞样本，可能带表情占位符/用户名等噪音）。
+  // 刷贴吧的学习每轮会更新这两个文件，缓存 key 里带 mtime:size 指纹，学完自动生效，不用重启。
+  function tiebaStyleLibPath() {
+    return path.join(DSH_HOME, 'tieba-duty', 'style-lib.json');
+  }
+  function tiebaBarStylesPath() {
+    return path.join(DSH_HOME, 'tieba-duty', 'bar-styles.json');
+  }
+  function tiebaFingerprint() {
+    try {
+      for (const f of [tiebaBarStylesPath(), tiebaStyleLibPath()]) {
+        if (fs.existsSync(f)) {
+          const s = fs.statSync(f);
+          return `${path.basename(f)}:${s.mtimeMs}:${s.size}`;
+        }
+      }
+      return 'none';
+    } catch { return 'none'; }
+  }
+  function tiebaToneBlock() {
+    try {
+      let bars = [];
+      const bsPath = tiebaBarStylesPath();
+      if (fs.existsSync(bsPath)) {
+        const bs = JSON.parse(fs.readFileSync(bsPath, 'utf8'));
+        bars = Object.entries(bs || {})
+          .map(([kw, v]) => {
+            const samples = (Array.isArray(v.samples) ? v.samples : [])
+              .map((s) => String(s).replace(/\s+/g, ' ').trim())
+              .filter((t) => t.length >= 4 && t.length <= 80);
+            return { kw, samples, tags: Array.isArray(v.tags) ? v.tags : [], mode: typeof v.mode === 'string' ? v.mode : '' };
+          })
+          .filter((b) => b.samples.length >= 1);
+      }
+      if (!bars.length) {
+        const f = tiebaStyleLibPath();
+        if (!fs.existsSync(f)) return '';
+        const lib = JSON.parse(fs.readFileSync(f, 'utf8'));
+        bars = Object.entries(lib || {})
+          .filter(([, v]) => v && Array.isArray(v.samples) && v.samples.length >= 3)
+          .map(([kw, v]) => ({
+            kw,
+            samples: (v.samples || [])
+              .map((s) => String(s.text || '').replace(/\s+/g, ' ').trim())
+              .filter((t) => t.length >= 6 && t.length <= 80),
+            tags: [],
+            mode: '',
+          }))
+          .filter((b) => b.samples.length >= 1);
+      }
+      if (!bars.length) return '';
+      const lines = [];
+      for (const b of bars.slice(0, 4)) {
+        const sampleText = b.samples.length ? ` 例：「${b.samples.slice(0, 2).join('」「')}」` : '';
+        const tagText = b.tags.length ? `（${b.tags.slice(0, 4).join('/')}）` : '';
+        lines.push(`「${b.kw}」吧${tagText}：句号少、直接不客套、爱吐槽带梗。${sampleText}`);
+      }
+      return `\n\n## 贴吧语气画像（刷贴吧自动学来）\n${lines.join('\n')}\n上面是真实高赞回复，只学断句、口气和用词习惯，不照抄原句。你的回复要明显带上这股劲：句子别太短、少句号、直接不客套、该吐槽就吐槽，别总端着冷静克制。`;
+    } catch { return ''; }
+  }
   // 原始人格卡（按 mtime 缓存，不截断）。
   function roleRawContent() {
     try {
       // 角色人格系统：当前角色包里的人格卡优先，不与 roles/*.md 混读。
+      const tiebaKey = tiebaFingerprint();
+      const tiebaExtra = tiebaToneBlock();
       const characterPersona = activePersonaFile();
       if (characterPersona) {
         const stat = fs.statSync(characterPersona);
-        const cacheKey = `character:${characterPersona}:${stat.mtimeMs}:${stat.size}`;
+        const cacheKey = `character:${characterPersona}:${stat.mtimeMs}:${stat.size}:${tiebaKey}`;
         if (roleHintCache.key === cacheKey) return roleHintCache.raw;
-        const raw = fs.readFileSync(characterPersona, 'utf8');
+        const raw = fs.readFileSync(characterPersona, 'utf8') + tiebaExtra;
         roleHintCache = { key: cacheKey, raw };
         return raw;
       }
@@ -13573,9 +13636,9 @@ async function main() {
       //    带上名字后，切换角色（例如 a.md → b.md）永远不会误命中。
       // ② 同名的原地重写若长度变了（大多数编辑都会变），size 变化也能击穿缓存。
       // 代价只是多几次 stat，比"热注入路径上一直发旧人格"划算得多。
-      const cacheKey = `${safeName}:${stateStat.mtimeMs}:${stateStat.size}:${roleStat.mtimeMs}:${roleStat.size}`;
+      const cacheKey = `${safeName}:${stateStat.mtimeMs}:${stateStat.size}:${roleStat.mtimeMs}:${roleStat.size}:${tiebaKey}`;
       if (roleHintCache.key === cacheKey) return roleHintCache.raw;
-      const raw = fs.readFileSync(roleFile, 'utf8');
+      const raw = fs.readFileSync(roleFile, 'utf8') + tiebaExtra;
       roleHintCache = { key: cacheKey, raw };
       return raw;
     } catch {
