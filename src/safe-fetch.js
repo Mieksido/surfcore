@@ -10,6 +10,7 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import { StringDecoder } from 'node:string_decoder';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 
 const dnsLookup = dns.promises.lookup;
 
@@ -193,6 +194,25 @@ function validateLimit(value, name) {
  * 返回 `{ok:true,result}` 或 `{ok:false,error,retryable}`；retryable 只标记网络层失败
  * （连接失败/超时/正文中断），大小与图片签名等策略性拒绝不重试。
  */
+/**
+ * 按 Content-Encoding 选解压流。
+ *
+ * B站 等站点即使请求里带 `accept-encoding: identity` 也照样回 `content-encoding: gzip`，
+ * 把压缩字节直接喂给 StringDecoder 会解出乱码（issue #83）。
+ *
+ * 只认单层 gzip / deflate / br；多重编码（`gzip, br` 这类）与未知编码一律返回 null，
+ * 退回原始字节，保持旧行为而不是猜一个可能错的解码器。
+ */
+export function pickContentDecoder(encoding) {
+  const ce = String(encoding ?? '').trim().toLowerCase();
+  if (!ce || ce === 'identity') return null;
+  if (ce.includes(',')) return null;
+  if (ce === 'gzip' || ce === 'x-gzip') return createGunzip();
+  if (ce === 'deflate') return createInflate();
+  if (ce === 'br') return createBrotliDecompress();
+  return null;
+}
+
 function attemptOnce(url, address, limit, binary, budgetMs) {
   return new Promise((resolve) => {
     let settled = false;
@@ -246,7 +266,14 @@ function attemptOnce(url, address, limit, binary, budgetMs) {
         }
         const chunks = [];
         const decoder = binary ? null : new StringDecoder('utf8');
+        // 文本响应按 Content-Encoding 解压；图片（binary）保持原始字节不动。
+        const inflater = binary ? null : pickContentDecoder(res.headers['content-encoding']);
+        const source = inflater ? res.pipe(inflater) : res;
         let size = 0;
+        const stopBoth = () => {
+          source.destroy();
+          res.destroy();
+        };
         const appendText = (text) => {
           const points = Array.from(text);
           const remaining = limit - size;
@@ -254,21 +281,24 @@ function attemptOnce(url, address, limit, binary, budgetMs) {
           size += Math.min(points.length, remaining);
           if (size >= limit) {
             done({ statusCode, body: chunks.join(''), truncated: true });
-            res.destroy();
+            stopBoth();
           }
         };
-        res.on('data', (chunk) => {
+        // 解压失败（服务端谎报编码 / 截断的 gzip 流）按可重试错误处理，
+        // 而不是把半截乱码当成正文返回。
+        inflater?.on('error', (error) => { fail(error, true); stopBoth(); });
+        source.on('data', (chunk) => {
           if (settled) return;
           if (!binary) { appendText(decoder.write(chunk)); return; }
           size += chunk.length;
           if (size > limit) {
             fail(new Error(`图片超过大小限制（${limit} 字节）`), false);
-            res.destroy();
+            stopBoth();
             return;
           }
           chunks.push(chunk);
         });
-        res.on('end', () => {
+        source.on('end', () => {
           if (settled) return;
           if (binary) done({ statusCode, buffer: Buffer.concat(chunks) });
           else {
