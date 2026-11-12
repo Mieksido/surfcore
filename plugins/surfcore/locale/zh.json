@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "SurfCore 控制台",
-    "description": "SurfCore：把 QQ 与 B站合成一个插件，统一设置窗口、双向脱敏记忆、QQ/B站身份对齐，并为贴吧/后续功能预留接入接口。"
+    "title": "SurfCore",
+    "description": "SurfCore 内核面板（临时壳）：UI 随更新包覆写旧入口，后端待接入。"
   }
 }

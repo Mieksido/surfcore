@@ -1,21 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="QQ × Bilibili whale">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="SurfCore">
   <defs>
-    <linearGradient id="sea" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1f6feb"/>
-      <stop offset="1" stop-color="#0b3d91"/>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="55%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#6366f1"/>
     </linearGradient>
-    <linearGradient id="fish" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#9ad7ff"/>
-      <stop offset="1" stop-color="#4aa8e8"/>
-    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#e0f2fe"/>
+      <stop offset="55%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0"/>
+    </radialGradient>
   </defs>
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#sea)"/>
-  <path d="M12 38c8-6 14-6 22-1 4 2 7 3 11 2 3-1 5-3 7-5v10c-10 6-22 7-33 1-3-2-5-4-7-7z" fill="url(#fish)"/>
-  <path d="M44 31c-3-5-2-9 1-12 1 5 3 7 6 8-3 1-5 2-7 4z" fill="#9ad7ff"/>
-  <circle cx="24" cy="35" r="2.1" fill="#06264f"/>
-  <circle cx="25" cy="34.2" r="0.7" fill="#fff"/>
-  <path d="M16 26c6-3 12-3 17 1" stroke="#d8f3ff" stroke-width="2.2" stroke-linecap="round" fill="none" opacity=".9"/>
-  <path d="M35 44c-2 3-5 5-9 6" stroke="#06264f" stroke-width="2" stroke-linecap="round" fill="none" opacity=".35"/>
-  <circle cx="49" cy="14" r="6.5" fill="#ff7aa2"/>
-  <path d="M45.5 14.7c0-2 1.4-3.4 3.5-3.4 2 0 3.4 1.4 3.4 3.4 0 2.5-3.4 4.6-3.4 4.6s-3.5-2.1-3.5-4.6z" fill="#fff" opacity=".95"/>
+  <circle cx="32" cy="32" r="22" fill="none" stroke="url(#ring)" stroke-width="3" stroke-linecap="round"
+          stroke-dasharray="92 46" transform="rotate(-35 32 32)"/>
+  <circle cx="32" cy="32" r="14" fill="none" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="9" fill="url(#core)"/>
+  <circle cx="32" cy="32" r="2.6" fill="#e0f2fe"/>
+  <circle cx="46" cy="14" r="2.2" fill="#22d3ee"/>
+  <circle cx="16" cy="48" r="1.8" fill="#60a5fa"/>
 </svg>
