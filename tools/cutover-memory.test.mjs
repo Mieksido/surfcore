@@ -1,0 +1,25 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { planCutover, applyCutover } from './cutover-memory.mjs';
+
+let pass = 0, fail = 0;
+const ok = (c, n) => { if (c) { pass += 1; console.log('  ✅', n); } else { fail += 1; console.error('  ❌', n); } };
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sc-cutover-'));
+const src = path.join(dir, 'shadow');
+const dst = path.join(dir, 'live');
+fs.mkdirSync(src, { recursive: true });
+fs.writeFileSync(path.join(src, 'kernel-state.json'), JSON.stringify({ version: 1, records: [{ text: 'a' }, { text: 'b' }] }));
+fs.writeFileSync(path.join(src, 'memory-full.jsonl'), '{"text":"a"}\n');
+const plan = planCutover({ from: src, to: dst });
+ok(plan.ok && plan.records === 2 && plan.targetExists === false, 'dry-run 统计');
+ok(!fs.existsSync(path.join(dst, 'kernel-state.json')), 'dry-run 不写');
+const applied = applyCutover({ from: src, to: dst });
+ok(applied.ok && applied.applied, 'apply 落盘');
+ok(JSON.parse(fs.readFileSync(path.join(dst, 'kernel-state.json'), 'utf8')).records.length === 2, '状态复制');
+ok(fs.existsSync(path.join(dst, 'memory-full.jsonl')), '全量卡复制');
+const again = applyCutover({ from: src, to: dst });
+ok(!again.ok && again.code === 'memory.cutover.target-exists', '拒绝覆盖');
+fs.rmSync(dir, { recursive: true, force: true });
+console.log(`\n结果：${pass} 通过，${fail} 失败`);
+if (fail > 0) process.exit(1);

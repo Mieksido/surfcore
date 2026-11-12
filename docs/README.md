@@ -67,6 +67,32 @@
 | [guides/ERROR-REPORTING.md](guides/ERROR-REPORTING.md) | **报错与建议规范（刚性）**：`ok/code/error/hint/tried` 结构、弹窗 vs toast 判据、禁止清单、交付自检；对应 AGENTS 1.7 | ✅ 2026-10-29 新增 |
 | [guides/PERMISSIONS.md](guides/PERMISSIONS.md) | **权限清单**：身份判定唯一来源、7 项主人特权（判定/代码/审计/测试状态）、关系与称呼不参与授权、变更检查单 | ✅ 2026-10-29 新增 |
 
+## persona-core/ —— 下一代架构（人格内核 + 适配器）
+
+> 这一节是**新架构的设计**，与上面"现状文档"分开读。当前代码仍是旧架构，两者会并存一段时间。
+> 与现状冲突时：**现状看 guides/，方向看本节。**
+> **元准则（准则 000）：旧架构是「需求」，不是「骨架」**——旧代码只用来回答"什么不能丢"，不用来决定新架构长什么样。
+
+| 文档 | 一句话说明 | 状态 |
+| --- | --- | --- |
+| [persona-core/DESIGN-PRINCIPLES.md](persona-core/DESIGN-PRINCIPLES.md) | **设计宪法 v0.1**：11 条准则（每条含"为什么"与"边界"）+ 适配器接口验收清单 8 条 + 旧代码冲突清单 5 条 | ✅ 2026-11-09 新增（用户口述逐条确认） |
+| [persona-core/ARCHITECTURE-PARADIGM.md](persona-core/ARCHITECTURE-PARADIGM.md) | **架构范式（当前版本 · 先读这篇）**：黑框人格核心九件套 + 红框运行时六件管道 + shared 地基 + 三层秘密边界；三种消息；语音如何横跨两层；包 = 一个目录（pack.json / 导入三条纪律 / 可 zip 带走）；**十条不变量**；适应度函数；目录=架构；现状与缺口 | ✅ 2026-11-10 新增（反映已落地代码） |
+| [persona-core/CAPABILITY-MAP.md](persona-core/CAPABILITY-MAP.md) | **能力清单（自动生成）**：22 个模块 × 能力 93 项（✅79/🟡1/⬜13），每个模块写清"它是什么、依赖谁、谁依赖它、不许依赖谁"，每条能力带状态与证据/旧代码出处 | ✅ 2026-11-10 由 `tools/capability-map.mjs` 生成 |
+| [persona-core/capability-map.json](persona-core/capability-map.json) | 上表的**唯一数据源**（手工维护这一个；MD 由它渲染，`--check` 会拦漂移） | ✅ 2026-11-10 新增 |
+| [persona-core/LEGACY-CAPABILITY-MAP.md](persona-core/LEGACY-CAPABILITY-MAP.md) | **旧仓库能力基线（自动生成）**：112 文件 / 67,066 行拆成 22 个域 / 125 条能力，逐域标"已复刻/部分/未做/红线"并指向新模块；拿它和新架构清单比对即可知道差哪 | ✅ 2026-11-10 由 `tools/legacy-map.mjs` 生成 |
+| [persona-core/legacy-capability-map.json](persona-core/legacy-capability-map.json) | 上表的唯一数据源（每个域列出旧文件+行数+职责、能力清单、mappedTo） | ✅ 2026-11-10 新增 |
+| [persona-core/ARCHITECTURE-LAWS.md](persona-core/ARCHITECTURE-LAWS.md) | **架构法则（17 条）**：法则 0 分阶段（**只定形状不写契约**）+ 边界/分层/耦合/按秘密切分/接口窄/格式统一/依赖方向/不成环/稳定必抽象/**不许拿字段当公约**/业务只认接口/假适配器/结构简内容繁/单写者/不启动世界就能测/**适应度函数让规则进日常流程**；含取舍说明与逐条落地 | ✅ 2026-11-09 新增（用户口述 18 条整理） |
+| [persona-core/ADAPTER-SHAPE.md](persona-core/ADAPTER-SHAPE.md) | **适配器形状（不含字段）**：两半身份（发布人+名字+版本 / 来源+实例+账号+频道）、**六条能力轴**（时序/形态/身份/方向/频率/模态）、菜单三问、生命四段、上行信息（文本/图像路径+说明/音频路径+说明/结构化状态）、下行八类动作、回执五类、通用性六问自检；**§9 单独标出"我大胆补的 8 条"及删掉后果** | ✅ 2026-11-09 新增（高度经用户确认） |
+| [persona-core/MIGRATION-PLAN.md](persona-core/MIGRATION-PLAN.md) | **迁移总计划**：目标状态五条判据 + **14 个迁移单元与顺序**（终端假适配器→基础设施→记忆→身份→时机→预算→审计→内容→QQ→语音→桌宠→B站→工具面→运维）+ 每单元固定五步（行为清单/验收/实现/对拍/删旧路）+ 风险对策 + 进度表 | ✅ 2026-11-09 新增（用户定方向） |
+| [persona-core/MEMORY-KERNEL-SHAPE.md](persona-core/MEMORY-KERNEL-SHAPE.md) | **记忆内核形状（双模块）**：叙事 + 向量双存储、`memory.mode` 只决定读哪套（实测确认代码已如此实现）；叙事=兼容层将淘汰、向量=长期方向；只在她**做出行为前**读；两个读取器**输出格式统一**；含 **叙事记忆 16 条行为清单** 与待定项 | ✅ 2026-11-09 新增 |
+| [persona-core/LEGACY-EMBEDDING-MAP.md](persona-core/LEGACY-EMBEDDING-MAP.md) | **旧 SurfCore 嵌合图**：`bridge.js` 不搬、按**六种职责**拆解归位；四类渠道怎么嵌；**工具面 = 表达器的输入**（不是第二条通道）；旧模块 → 新部件对照；**必须新建的 4 样**（记录身份/媒体库/内核心跳/适配器管家）；嵌合顺序；**3 个待拍板**（工具去留/控制台归属/状态根合并） | ✅ 2026-11-09 新增（用户指示嵌合） |
+| [handoffs/2026-11-09-persona-core-handoff.md](handoffs/2026-11-09-persona-core-handoff.md) | **致协调/发布会话的交接**：请他做新架构顾问（最了解旧功能行为）+ 已拍板 10 条决定 + 文件索引 + **5 条可执行请求**（审功能不丢表 / 补记忆行为清单 / 给行为不给代码 / 盯两套并存 / 冻结 extensions-platforms）+ 协作边界 + 沟通协议 + 可直接粘贴的开场提示词 | ✅ 2026-11-09 新增 |
+| [persona-core/ADAPTER-INTERFACE.md](persona-core/ADAPTER-INTERFACE.md) | **适配器接口 v0.2**：一证（身份证）+ 六表（能力/菜单/事件/意图/生命/媒体）+ 三管（上行事件/下行意图/上行回执）；含媒体存储与引用计数、存档层 vs 注意力层、"共享人格 + 可见性过滤"；§17 是按实测代码做的校正与 6 条建议 | ✅ 2026-11-09 新增 |
+| [persona-core/EXTENSION-HANDOFF.md](persona-core/EXTENSION-HANDOFF.md) | **外部扩展包交接（冻结版）**：大适配器 v0.3.0 冻结承诺 + 四层边界 + `pack.json`/小适配器/模块目录 + 事件/意图/回执/六轴/生命周期契约 + 禁止 import 内核与 runtime 内部 + 最小示例 + 验收清单 | ✅ 2026-11-12 新增 |
+| [persona-core/RELEASE-HANDOFF-0.8.9.md](persona-core/RELEASE-HANDOFF-0.8.9.md) | **0.8.9-dev 发布交接**：旧 SurfCore 代码/状态/UI 备份、bundle 校验、恢复测试、新架构组合根接线、release 分支、版本 `0.8.9-dev.2`、真机验收、回滚 | ✅ 2026-11-12 新增 |
+| [persona-core/ARCHITECTURE-FROM-CONTRACT.md](persona-core/ARCHITECTURE-FROM-CONTRACT.md) | **以契约为中心的两侧展开**：内核 12 个部件（每个由契约哪部分逼出来、输入输出、不做什么）+ 扩展侧最小实现与 SDK 分工 + **功能不丢对照表**（现有模块 → 新家）+ 三步迁移（骨架/双轨/删旧路）+ 修订记录 | ✅ 2026-11-09 新增 |
+| [persona-core/CAPABILITY-REGISTRY.md](persona-core/CAPABILITY-REGISTRY.md) | **能力清单与清单式治理**：物理能力 15 项 + 授权能力 11 项（另 2 项明确**不**通过授权提供）+ 禁止清单 + 校验/授权/运行期三条规则 + 清单驱动权限/表达/界面/测试/审计 + 与现有代码的差距与迁移 + **[目录说明](../../contracts/README.md)**（注：字段级清单属"接入时再定"，当前 `contracts/` 只有骨架） | ✅ 2026-11-09 新增（落实准则 012） |
+
 ## design/ —— 设计与规划（读设计意图用）
 
 > ⚠️ `design/`、`research/`、`audits/`、`legacy/` 四个目录**当前不在工作区**（它们在 `.gitignore` 里，

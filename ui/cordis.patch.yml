@@ -1,0 +1,3 @@
+- insert:
+    - id: surfcore-ui
+      name: '@local/surfcore-ui'

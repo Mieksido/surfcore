@@ -1,0 +1,9 @@
+{
+  "publisher": "surfcore",
+  "name": "web",
+  "version": "0.1.0",
+  "protocol": 1,
+  "entry": "index.js",
+  "trust": ["network.out"],
+  "requires": ["搜索端点/密钥由用户自备（不随包分发）"]
+}

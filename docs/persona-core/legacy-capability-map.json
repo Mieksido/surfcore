@@ -1,0 +1,974 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-10",
+  "source": "D:\\deepseekwork\\surfcore（旧仓库，只读基线）",
+  "totals": {
+    "srcFiles": 77,
+    "srcLines": 41125,
+    "libFiles": 35,
+    "libLines": 25941,
+    "files": 112,
+    "lines": 67066
+  },
+  "note": "旧仓库能力基线。mappedTo 指向 capability-map.json 的模块 id；没有对应模块就写 null。tools/legacy-map.mjs 会校验 mappedTo 是否真实存在，并算覆盖率。",
+  "areas": [
+    {
+      "id": "legacy.bridge",
+      "area": "桥接主程序",
+      "files": [
+        {
+          "path": "src/bridge.js",
+          "lines": 17801,
+          "what": "主循环：收消息→选模型→调模型→发消息→记账；所有渠道的入口都在这"
+        }
+      ],
+      "capabilities": [
+        "渠道主循环",
+        "消息分流",
+        "提示词拼装（内联）",
+        "发送与重试（内联）",
+        "命令与工具分发",
+        "状态与配置加载"
+      ],
+      "mappedTo": null,
+      "status": "partial",
+      "newPath": "拆成 kernel/index.js（判断）+ runtime（管道）+ packs（收发）",
+      "note": "旧桥 17,801 行 0 export，不可能 1:1 复刻；新架构按职责拆开，故整体记 partial"
+    },
+    {
+      "id": "legacy.memory.narrative",
+      "area": "记忆 · 叙事",
+      "files": [
+        {
+          "path": "src/memory-card.js",
+          "lines": 2296,
+          "what": "叙事记忆卡：清晰度五档、衰减、全量卡、可见性策略（含渠道判断）"
+        },
+        {
+          "path": "plugins/surfcore/lib/memory-card.js",
+          "lines": 552,
+          "what": "兼容层：对外暴露的旧接口"
+        },
+        {
+          "path": "plugins/surfcore/lib/memory.js",
+          "lines": 523,
+          "what": "兼容层：记忆读写门面"
+        }
+      ],
+      "capabilities": [
+        "五档清晰度衰减",
+        "全量卡（只追加）",
+        "可见性策略（私聊/群/同圈/敏感/主人）",
+        "复习升档",
+        "主人重要记忆保底",
+        "记忆卡片写入/读取",
+        "兼容层接口"
+      ],
+      "mappedTo": "kernel.memory",
+      "status": "done"
+    },
+    {
+      "id": "legacy.memory.vector",
+      "area": "记忆 · 向量",
+      "files": [
+        {
+          "path": "src/vector-memory.js",
+          "lines": 629,
+          "what": "向量记忆：嵌入、检索、与叙事并行存储"
+        },
+        {
+          "path": "plugins/surfcore/lib/vector-memory.js",
+          "lines": 538,
+          "what": "兼容层：向量接口"
+        },
+        {
+          "path": "src/embedding-packs.js",
+          "lines": 254,
+          "what": "嵌入包：把文本转成向量（本地/云端）"
+        },
+        {
+          "path": "plugins/surfcore/lib/embedding-packs.js",
+          "lines": 697,
+          "what": "嵌入包管理（选择/加载）"
+        }
+      ],
+      "capabilities": [
+        "向量存储（与叙事并行）",
+        "相似度检索",
+        "嵌入模型选择与加载",
+        "兼容层接口"
+      ],
+      "mappedTo": "kernel.memory",
+      "status": "partial",
+      "note": "双存储/检索已复现；真实 HTTP 嵌入已接（SURFCORE_EMBED_*，入库与检索共用一次向量）；嵌入包安装/选择（旧 embedding-packs 的目录管理）未做。"
+    },
+    {
+      "id": "legacy.memory.bili",
+      "area": "记忆 · B站专属",
+      "files": [
+        {
+          "path": "src/bili-memory.js",
+          "lines": 882,
+          "what": "B站专属记忆：视频、动态、评论的上下文"
+        }
+      ],
+      "capabilities": [
+        "B站内容记忆",
+        "跨视频关联",
+        "渠道专属上下文"
+      ],
+      "mappedTo": "kernel.memory",
+      "status": "partial",
+      "newPath": "packs/bilibili（渠道专属记忆应在包里）",
+      "note": "新架构里**没有“渠道专属记忆”**：记忆只有一套，来源只是 from.adapter 的值。 旧 bili-memory.js 的三条可拆解为： ① B站内容记忆 → 包把内容变成事件（来源/标签/重要度），内核用同一套流水线记； ② 跨视频关联 → 属“检索/关联”，由记忆读取（关键词/向量）承担，不是渠道概念； ③ 渠道专属上下文 → 属包：包在事件里带说明/标签，内核不写死任何平台逻辑。 目前 ①③ 已具备（包 + 事件字段），② 的关键词命中已有、主题聚类没有 → partial。 【更新】② 跨视频关联 已由 kernel.memory 的“联想/主题簇”承担（associate.js）。"
+    },
+    {
+      "id": "legacy.purpose",
+      "area": "目的机制",
+      "files": [
+        {
+          "path": "src/purpose-engine.js",
+          "lines": 2302,
+          "what": "主动搭话：驱动向量、目标假设、观察账本、闭环、安静时段、额度"
+        }
+      ],
+      "capabilities": [
+        "驱动向量",
+        "目标假设（归属/置信/风险）",
+        "观察账本",
+        "闭环反馈",
+        "安静时段",
+        "每日额度",
+        "投递即占次数",
+        "话题多样性"
+      ],
+      "mappedTo": "kernel.purpose",
+      "status": "done",
+      "note": "驱动向量/目标假设/观察账本/闭环/安静时段/每日额度/投递即占次数/话题多样性都已复现；权重是简化参数（可调），不是旧 2,302 行的逐行复刻。"
+    },
+    {
+      "id": "legacy.purpose.pet",
+      "area": "目的 · 桌宠载体",
+      "files": [
+        {
+          "path": "plugins/surfcore/lib/pet-purpose.js",
+          "lines": 632,
+          "what": "桌宠主动搭话：载体互斥、气泡、语音"
+        }
+      ],
+      "capabilities": [
+        "载体互斥",
+        "主动气泡",
+        "语音播报决策"
+      ],
+      "mappedTo": "pack.desktop-pet",
+      "status": "partial",
+      "note": "包的逻辑已复现；内核侧的'载体选择'尚未实现"
+    },
+    {
+      "id": "legacy.attention",
+      "area": "时机 · 注意力",
+      "files": [
+        {
+          "path": "src/wake-filter.js",
+          "lines": 125,
+          "what": "唤醒过滤：值不值得醒"
+        },
+        {
+          "path": "src/wake-policy.js",
+          "lines": 35,
+          "what": "唤醒策略：优先级"
+        },
+        {
+          "path": "src/wake-batch.js",
+          "lines": 58,
+          "what": "唤醒合批：窗口内合并"
+        },
+        {
+          "path": "src/fish-guard.js",
+          "lines": 286,
+          "what": "鱼群保护：机器人密度过高闭嘴"
+        },
+        {
+          "path": "src/group-policy.js",
+          "lines": 74,
+          "what": "群分层：大群严格、小群积极"
+        },
+        {
+          "path": "src/command-spam.js",
+          "lines": 9,
+          "what": "刷屏短指令识别"
+        },
+        {
+          "path": "src/turn-guard.js",
+          "lines": 112,
+          "what": "轮次守卫：同人限次"
+        },
+        {
+          "path": "src/qq-fish-guard.js",
+          "lines": 0,
+          "what": "（见 lib/qq-fish-guard.js）"
+        },
+        {
+          "path": "plugins/surfcore/lib/qq-fish-guard.js",
+          "lines": 85,
+          "what": "QQ 侧鱼群保护"
+        }
+      ],
+      "capabilities": [
+        "唤醒过滤",
+        "优先级",
+        "合批窗口",
+        "鱼群密度",
+        "群分层",
+        "刷屏指令",
+        "轮次守卫"
+      ],
+      "mappedTo": "kernel.attention",
+      "status": "partial",
+      "note": "判断逻辑已复现；'真正把多条消息合批成一轮'的执行还没做"
+    },
+    {
+      "id": "legacy.persona",
+      "area": "人格与身份",
+      "files": [
+        {
+          "path": "src/character-persona.js",
+          "lines": 727,
+          "what": "人格：核心设定、语气层、场景层"
+        },
+        {
+          "path": "src/self-identity.js",
+          "lines": 188,
+          "what": "自我认知：她怎么介绍自己"
+        },
+        {
+          "path": "src/persona-layers.js",
+          "lines": 127,
+          "what": "人格分层：核心/语气/场景"
+        },
+        {
+          "path": "src/role-card.js",
+          "lines": 108,
+          "what": "角色卡：结构化人设"
+        },
+        {
+          "path": "src/preset-prompt.js",
+          "lines": 157,
+          "what": "预设提示词"
+        },
+        {
+          "path": "src/persona-identity.js",
+          "lines": 22,
+          "what": "身份小工具"
+        },
+        {
+          "path": "src/identity-guard.js",
+          "lines": 66,
+          "what": "身份护栏：防越界"
+        },
+        {
+          "path": "src/admin-identity.js",
+          "lines": 247,
+          "what": "主人身份：判定、称呼"
+        },
+        {
+          "path": "plugins/surfcore/lib/persona.js",
+          "lines": 47,
+          "what": "人格门面"
+        },
+        {
+          "path": "plugins/surfcore/lib/persona-classify.js",
+          "lines": 159,
+          "what": "人格分类"
+        },
+        {
+          "path": "plugins/surfcore/lib/characters.js",
+          "lines": 188,
+          "what": "角色库"
+        },
+        {
+          "path": "plugins/surfcore/lib/align.js",
+          "lines": 507,
+          "what": "对齐：人格一致性检查"
+        }
+      ],
+      "capabilities": [
+        "人格核心/语气/场景分层",
+        "自我认知",
+        "角色卡",
+        "预设提示词",
+        "主人判定与称呼",
+        "身份护栏",
+        "对齐检查"
+      ],
+      "mappedTo": "kernel.support",
+      "status": "partial",
+      "note": "分层与主人判定已复现；角色卡/对齐检查/人格分类未复现"
+    },
+    {
+      "id": "legacy.expression.out",
+      "area": "表达 · 输出形态",
+      "files": [
+        {
+          "path": "src/forward.js",
+          "lines": 231,
+          "what": "合并转发"
+        },
+        {
+          "path": "src/md-to-plain.js",
+          "lines": 117,
+          "what": "Markdown 转纯文本"
+        },
+        {
+          "path": "src/safe-text.js",
+          "lines": 74,
+          "what": "CQ 转义"
+        },
+        {
+          "path": "src/sensitive.js",
+          "lines": 21,
+          "what": "敏感词"
+        },
+        {
+          "path": "src/qq-at.js",
+          "lines": 44,
+          "what": "@ 处理"
+        },
+        {
+          "path": "src/callname.js",
+          "lines": 36,
+          "what": "称呼解析"
+        },
+        {
+          "path": "src/qq-model-view.js",
+          "lines": 80,
+          "what": "模型看到的消息视图"
+        }
+      ],
+      "capabilities": [
+        "合并转发",
+        "Markdown 转纯文本",
+        "CQ 转义",
+        "敏感词过滤",
+        "@ 处理",
+        "称呼解析",
+        "模型侧消息视图"
+      ],
+      "mappedTo": "pack.qq",
+      "status": "partial",
+      "note": "CQ 转义/@ 已复现；合并转发、md 转纯文本、敏感词、模型视图未复现"
+    },
+    {
+      "id": "legacy.sticker",
+      "area": "表情包",
+      "files": [
+        {
+          "path": "src/sticker-lib.js",
+          "lines": 356,
+          "what": "表情库：收藏、标签、使用次数"
+        },
+        {
+          "path": "src/sticker-semantics.js",
+          "lines": 562,
+          "what": "表情语义：情绪分类、触发词"
+        }
+      ],
+      "capabilities": [
+        "表情收藏",
+        "情绪分类",
+        "触发关键词",
+        "按情绪推荐",
+        "使用统计"
+      ],
+      "mappedTo": "kernel.sticker",
+      "status": "done",
+      "newPath": "库在 kernel（她的收藏），发送走 send_media",
+      "note": "收藏/情绪/关键词/按情绪推荐/使用统计都在 kernel/sticker（新架构：库在内核，发送走 send_media）。"
+    },
+    {
+      "id": "legacy.slang",
+      "area": "黑话学习",
+      "files": [
+        {
+          "path": "src/slang-learner.js",
+          "lines": 382,
+          "what": "黑话/梗：候选提交、管理员确认、进入提示词"
+        }
+      ],
+      "capabilities": [
+        "候选收集",
+        "管理员确认",
+        "黑话表查询",
+        "进提示词"
+      ],
+      "mappedTo": "kernel.lexicon",
+      "status": "partial",
+      "newPath": "kernel/lexicon（新模块）",
+      "note": "【新架构】候选收集/确认/容量/证据/渲染防注入 已进 kernel.lexicon（learn.js + index.js）；联网核实与控制器界面未做。"
+    },
+    {
+      "id": "legacy.closure",
+      "area": "对话收尾",
+      "files": [
+        {
+          "path": "src/conversation-closure.js",
+          "lines": 523,
+          "what": "收尾判定、结束点、下次接法"
+        }
+      ],
+      "capabilities": [
+        "收尾判定",
+        "结束点记录",
+        "下次接法",
+        "收尾原因分类"
+      ],
+      "mappedTo": "kernel.closure",
+      "status": "done",
+      "newPath": "kernel/closure（新模块），用现有 close 意图",
+      "note": "收尾判定/结束点/下次接法/原因分类都在 kernel/closure，用现有 close 意图（不加新消息类型）。"
+    },
+    {
+      "id": "legacy.voice",
+      "area": "语音",
+      "files": [
+        {
+          "path": "src/voice-packs.js",
+          "lines": 1295,
+          "what": "语音包：角色、音色、库管理"
+        },
+        {
+          "path": "src/voice-pack-import.js",
+          "lines": 496,
+          "what": "语音包导入与校验"
+        },
+        {
+          "path": "src/voice-core.js",
+          "lines": 469,
+          "what": "语音核心：合成调用、路由"
+        },
+        {
+          "path": "src/voice-tts.js",
+          "lines": 150,
+          "what": "TTS 合成"
+        },
+        {
+          "path": "src/voice-diagnostics.js",
+          "lines": 68,
+          "what": "失败分类与建议"
+        },
+        {
+          "path": "src/voice-pack-secrets.js",
+          "lines": 19,
+          "what": "云端凭据剥离"
+        },
+        {
+          "path": "src/send-voice-lib.js",
+          "lines": 30,
+          "what": "语音发送"
+        },
+        {
+          "path": "plugins/surfcore/lib/voice-health.js",
+          "lines": 71,
+          "what": "语音健康检查"
+        }
+      ],
+      "capabilities": [
+        "语音包管理",
+        "导入与校验",
+        "本地/云端路由",
+        "TTS 合成",
+        "失败分类",
+        "凭据剥离",
+        "语音发送",
+        "健康检查"
+      ],
+      "mappedTo": "kernel.voice",
+      "status": "partial",
+      "note": "决策/分类/路由/闸门/语音库已复现；音频文件导入（扩展名/去重/上限）与 CLI 列表已加；语音包 manifest/时长探测/复制安装、真引擎驱动未做。"
+    },
+    {
+      "id": "legacy.budget",
+      "area": "预算与计费",
+      "files": [
+        {
+          "path": "src/token-ledger.js",
+          "lines": 1193,
+          "what": "账本：按类别记账、每日上限、明细"
+        },
+        {
+          "path": "src/token-budget.js",
+          "lines": 464,
+          "what": "预算：额度分配"
+        },
+        {
+          "path": "src/token-guard.js",
+          "lines": 137,
+          "what": "超支护栏"
+        },
+        {
+          "path": "src/billing-report.js",
+          "lines": 541,
+          "what": "账单报表"
+        },
+        {
+          "path": "src/model-prices.js",
+          "lines": 290,
+          "what": "模型价格表"
+        },
+        {
+          "path": "src/model-options.js",
+          "lines": 100,
+          "what": "模型选项"
+        },
+        {
+          "path": "plugins/surfcore/lib/token-budget.js",
+          "lines": 786,
+          "what": "兼容层：预算"
+        },
+        {
+          "path": "plugins/surfcore/lib/token-usage-pure.js",
+          "lines": 134,
+          "what": "纯函数：用量计算"
+        },
+        {
+          "path": "plugins/surfcore/lib/billing.js",
+          "lines": 139,
+          "what": "计费门面"
+        }
+      ],
+      "capabilities": [
+        "按类别记账",
+        "每日上限",
+        "超支拒绝",
+        "模型价格折算",
+        "账单报表",
+        "用量明细"
+      ],
+      "mappedTo": "kernel.support",
+      "status": "partial",
+      "note": "记账/上限/价格折算/用量明细已复现；报表已到命令行（ledger：总量/按模型/峰谷/没算价），还差控制台可视化。"
+    },
+    {
+      "id": "legacy.model",
+      "area": "模型接入",
+      "files": [
+        {
+          "path": "src/dsh-client.js",
+          "lines": 1137,
+          "what": "模型客户端：会话、重试、流式"
+        },
+        {
+          "path": "src/dsh-port.js",
+          "lines": 101,
+          "what": "端口发现"
+        },
+        {
+          "path": "src/dsh-model-follow.js",
+          "lines": 71,
+          "what": "跟随 DSH 选模型"
+        },
+        {
+          "path": "src/dsh-health.js",
+          "lines": 50,
+          "what": "健康检查"
+        },
+        {
+          "path": "src/v2-wait.js",
+          "lines": 60,
+          "what": "等待回复"
+        },
+        {
+          "path": "src/gate-events.js",
+          "lines": 208,
+          "what": "闸门事件"
+        },
+        {
+          "path": "src/context-telemetry.js",
+          "lines": 245,
+          "what": "上下文遥测"
+        },
+        {
+          "path": "src/context-snapshot.js",
+          "lines": 145,
+          "what": "上下文快照"
+        },
+        {
+          "path": "src/session-rollover.js",
+          "lines": 136,
+          "what": "回合结转"
+        },
+        {
+          "path": "src/session-map.js",
+          "lines": 46,
+          "what": "会话映射"
+        },
+        {
+          "path": "src/history-catchup.js",
+          "lines": 144,
+          "what": "历史补读"
+        }
+      ],
+      "capabilities": [
+        "模型客户端",
+        "端口发现",
+        "模型跟随",
+        "健康检查",
+        "等待回复",
+        "上下文遥测",
+        "上下文快照",
+        "回合结转",
+        "历史补读"
+      ],
+      "mappedTo": "kernel.expression",
+      "status": "partial",
+      "note": "HTTP 端口已复现；DSH 专用客户端/遥测/结转/补历史未复现"
+    },
+    {
+      "id": "legacy.qq.channel",
+      "area": "QQ 渠道",
+      "files": [
+        {
+          "path": "src/mcp-snowluma-safe.js",
+          "lines": 1540,
+          "what": "42 个渠道工具的 MCP 封装"
+        },
+        {
+          "path": "src/snowluma-conn.js",
+          "lines": 234,
+          "what": "WS 连接与事件"
+        },
+        {
+          "path": "src/allowlist.js",
+          "lines": 85,
+          "what": "群/私聊白名单"
+        },
+        {
+          "path": "plugins/surfcore/lib/bridge.js",
+          "lines": 274,
+          "what": "桥接门面"
+        },
+        {
+          "path": "plugins/surfcore/lib/platforms.js",
+          "lines": 165,
+          "what": "平台注册表"
+        },
+        {
+          "path": "plugins/surfcore/lib/qq-mode.js",
+          "lines": 3,
+          "what": "模式开关"
+        }
+      ],
+      "capabilities": [
+        "WS 连接",
+        "事件解析",
+        "42 个渠道工具",
+        "白名单",
+        "平台注册",
+        "发送"
+      ],
+      "mappedTo": "pack.qq",
+      "status": "partial",
+      "note": "连接/解析/发送/媒体/白名单已复现；42 个旧工具对账：5 个 OneBot 动作 + 18 个桥接语义工具（含取消息图片/表情图）+ 12 个由 intent 取代 + 7 个明确缺口（详见 QQ-TOOL-MAP.md）。"
+    },
+    {
+      "id": "legacy.bili",
+      "area": "B站渠道",
+      "files": [
+        {
+          "path": "src/bili-api.js",
+          "lines": 150,
+          "what": "B站 API 调用"
+        },
+        {
+          "path": "src/bili-dynamics.js",
+          "lines": 187,
+          "what": "动态发布"
+        },
+        {
+          "path": "src/bili-card.js",
+          "lines": 169,
+          "what": "内容卡片"
+        },
+        {
+          "path": "src/bili-share-scheduler.js",
+          "lines": 301,
+          "what": "分享排程"
+        },
+        {
+          "path": "plugins/surfcore/lib/bili-workspace.js",
+          "lines": 19,
+          "what": "工作区"
+        }
+      ],
+      "capabilities": [
+        "API 调用",
+        "动态发布",
+        "内容卡片",
+        "分享排程",
+        "工作区"
+      ],
+      "mappedTo": "pack.bilibili",
+      "status": "partial",
+      "note": "额度/生物钟/选片/分享文本/分享卡/分享任务/动态增量/动态同步命令都已复现；触发由外部计划任务调用 `bili run` / `bili sync`（不在四段内）。评论·动态·名片的网络读接口已加；动态“发布”与 structmsg 卡片不做（旧结论：真机不可用）。"
+    },
+    {
+      "id": "legacy.pet",
+      "area": "桌宠渠道",
+      "files": [
+        {
+          "path": "plugins/surfcore/lib/pet.js",
+          "lines": 770,
+          "what": "桌宠进程交互"
+        },
+        {
+          "path": "plugins/surfcore/lib/pet-chat.js",
+          "lines": 949,
+          "what": "桌宠聊天"
+        },
+        {
+          "path": "plugins/surfcore/lib/pet-api.js",
+          "lines": 230,
+          "what": "桌宠 HTTP 接口"
+        }
+      ],
+      "capabilities": [
+        "长轮询",
+        "气泡",
+        "聊天",
+        "专注模式",
+        "语音"
+      ],
+      "mappedTo": "pack.desktop-pet",
+      "status": "partial",
+      "note": "气泡/专注/语音决策已复现；长轮询与 HTTP 接口未复现"
+    },
+    {
+      "id": "legacy.tools.web",
+      "area": "联网工具",
+      "files": [
+        {
+          "path": "src/web-search.js",
+          "lines": 601,
+          "what": "联网搜索"
+        },
+        {
+          "path": "src/safe-fetch.js",
+          "lines": 385,
+          "what": "安全抓取（防 SSRF）"
+        },
+        {
+          "path": "src/mcp-web-search-safe.js",
+          "lines": 92,
+          "what": "MCP 封装"
+        },
+        {
+          "path": "src/mcp-host-server.js",
+          "lines": 93,
+          "what": "MCP 宿主"
+        }
+      ],
+      "capabilities": [
+        "联网搜索",
+        "安全抓取",
+        "MCP 暴露"
+      ],
+      "mappedTo": "pack.web",
+      "status": "done",
+      "newPath": "kernel skill + shared HTTP（不是渠道）",
+      "note": "安全抓取（SSRF/DNS/重定向/限量）与通用搜索端点已复现；旧 MCP 暴露改为 web 小适配器的工具面（web_fetch/web_search），不新增层。"
+    },
+    {
+      "id": "legacy.ops",
+      "area": "运维与外壳",
+      "files": [
+        {
+          "path": "plugins/surfcore/lib/index.js",
+          "lines": 4514,
+          "what": "控制台：180 个路由"
+        },
+        {
+          "path": "plugins/surfcore/lib/client.js",
+          "lines": 8268,
+          "what": "控制台前端脚本"
+        },
+        {
+          "path": "plugins/surfcore/lib/updates.js",
+          "lines": 2020,
+          "what": "更新器"
+        },
+        {
+          "path": "plugins/surfcore/lib/scheduler.js",
+          "lines": 1373,
+          "what": "定时器与日界任务"
+        },
+        {
+          "path": "plugins/surfcore/lib/store.js",
+          "lines": 694,
+          "what": "状态存储"
+        },
+        {
+          "path": "plugins/surfcore/lib/extensions.js",
+          "lines": 287,
+          "what": "扩展管理"
+        },
+        {
+          "path": "plugins/surfcore/lib/privacy.js",
+          "lines": 218,
+          "what": "隐私与脱敏"
+        },
+        {
+          "path": "plugins/surfcore/lib/doctor.js",
+          "lines": 117,
+          "what": "诊断"
+        },
+        {
+          "path": "plugins/surfcore/lib/paths.js",
+          "lines": 111,
+          "what": "路径解析"
+        },
+        {
+          "path": "plugins/surfcore/lib/automation.js",
+          "lines": 160,
+          "what": "自动化脚本"
+        },
+        {
+          "path": "plugins/surfcore/lib/http-guard.js",
+          "lines": 87,
+          "what": "HTTP 护栏"
+        },
+        {
+          "path": "plugins/surfcore/lib/compat.js",
+          "lines": 431,
+          "what": "兼容层"
+        },
+        {
+          "path": "plugins/surfcore/lib/compat-rules.js",
+          "lines": 44,
+          "what": "兼容规则"
+        },
+        {
+          "path": "src/self-test.js",
+          "lines": 118,
+          "what": "自检"
+        },
+        {
+          "path": "src/owner-audit.js",
+          "lines": 145,
+          "what": "审计"
+        },
+        {
+          "path": "src/greeting-schedule.js",
+          "lines": 119,
+          "what": "问候排程"
+        },
+        {
+          "path": "src/outbox.js",
+          "lines": 138,
+          "what": "发件箱"
+        },
+        {
+          "path": "src/action-planner.js",
+          "lines": 46,
+          "what": "动作规划"
+        },
+        {
+          "path": "src/question-answers.js",
+          "lines": 67,
+          "what": "问答"
+        },
+        {
+          "path": "src/share-mode.js",
+          "lines": 40,
+          "what": "分享模式"
+        },
+        {
+          "path": "src/node-path.js",
+          "lines": 41,
+          "what": "node 路径"
+        },
+        {
+          "path": "src/config-stamps.js",
+          "lines": 26,
+          "what": "配置戳"
+        },
+        {
+          "path": "src/schema-values.js",
+          "lines": 22,
+          "what": "配置校验"
+        },
+        {
+          "path": "src/admin-identity.js",
+          "lines": 0,
+          "what": "（见上）"
+        }
+      ],
+      "capabilities": [
+        "控制台（180 路由）",
+        "前端脚本",
+        "更新器",
+        "定时器",
+        "状态存储",
+        "扩展管理",
+        "隐私脱敏",
+        "诊断",
+        "自检",
+        "审计",
+        "问候排程",
+        "发件箱"
+      ],
+      "mappedTo": "kernel.store",
+      "status": "partial",
+      "note": "存储/审计/发件箱已复现（后者在 runtime）；控制台/更新器/定时器/隐私未复现"
+    },
+    {
+      "id": "legacy.compat",
+      "area": "兼容与迁移",
+      "files": [
+        {
+          "path": "plugins/surfcore/lib/compat.js",
+          "lines": 431,
+          "what": "旧接口兼容"
+        },
+        {
+          "path": "plugins/surfcore/lib/compat-rules.js",
+          "lines": 44,
+          "what": "兼容规则"
+        },
+        {
+          "path": "plugins/surfcore/lib/memory.js",
+          "lines": 523,
+          "what": "记忆兼容门面"
+        }
+      ],
+      "capabilities": [
+        "旧接口兼容",
+        "兼容规则",
+        "迁移工具"
+      ],
+      "mappedTo": "tools.gate",
+      "status": "partial",
+      "newPath": "一次性迁移脚本（tools/），不进本体",
+      "note": "旧 config.json → 新设置已做：白名单/QQ 连接/搜索端点，默认只预览、--apply 只写新状态、旧文件不动。旧接口门面（compat.js）不再需要；旧状态迁移未做。"
+    },
+    {
+      "id": "legacy.forbidden",
+      "area": "不可复现（红线）",
+      "files": [
+        {
+          "path": "plugins/surfcore/lib/snowluma-install.js",
+          "lines": 149,
+          "what": "第三方运行时安装/部署"
+        }
+      ],
+      "capabilities": [
+        "第三方运行时安装",
+        "程序化部署/启停",
+        "catalog 快照"
+      ],
+      "mappedTo": null,
+      "status": "forbidden",
+      "note": "EULA §5.4 / LICENSE §4：不得复制、不得程序化部署、不得随包分发。永久排除。"
+    }
+  ]
+}

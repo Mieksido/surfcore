@@ -1,0 +1,1 @@
+{"version":"0.1.0","name":"bilibili","publisher":"surfcore","entry":"index.js","trust":["event.publish","network.out"],"protocol":1}

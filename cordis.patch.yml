@@ -1,0 +1,6 @@
+# SurfCore 新包：host 与 client 同一个包
+# 旧 src/bridge.js 不在这个包里。
+- insert:
+    - id: surfcore
+      name: surfcore
+      config: {}

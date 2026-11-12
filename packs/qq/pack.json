@@ -1,0 +1,1 @@
+{"publisher":"surfcore","name":"qq","version":"0.3.0","protocol":1,"entry":"index.js","trust":["event.publish","network.out"],"requires":["onebot11-gateway（用户自备，不随包分发）"]}
