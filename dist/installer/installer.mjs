@@ -6,9 +6,10 @@
  * 不依赖 git；不碰你的 QQ 账号；不装第三方运行时（SnowLuma 需自己装）。
  *
  * 用法：
- *   node installer.mjs              # 完整安装
+ *   node installer.mjs              # 完整安装（版本自动取 GitHub 最新 release）
  *   node installer.mjs --check      # 只检查环境，不下载不安装
  *   node installer.mjs --zip <path> # 用本地 zip（给离线/测试用）
+ *   node installer.mjs --tag v0.8.9 # 指定要装的版本（等价于设 SURFCORE_TAG）
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,9 +21,33 @@ import readline from 'node:readline/promises';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHECK_ONLY = process.argv.includes('--check');
 const ZIP_ARG = process.argv.includes('--zip') ? process.argv[process.argv.indexOf('--zip') + 1] : '';
-const TAG = 'v0.8.9';
-const REPO_ZIP = `https://github.com/Mieksido/surfcore/archive/refs/tags/${TAG}.zip`;
+const TAG_ARG = process.argv.includes('--tag') ? process.argv[process.argv.indexOf('--tag') + 1] : '';
+const REPO_SLUG = 'Mieksido/surfcore';
+// 兜底版本：只有「离线 + 没给 --tag/SURFCORE_TAG」时才会用到。
+// 正常情况下版本由 /releases/latest 现查，发版后不用再手改这里（2026-11-12 改）。
+const PINNED_TAG = 'v0.8.9';
 const TARGET = path.join(HERE, 'surfcore');
+
+let TAG = PINNED_TAG;
+let REPO_ZIP = '';
+
+async function resolveTag() {
+  const explicit = (TAG_ARG || process.env.SURFCORE_TAG || '').trim();
+  if (explicit) return { tag: explicit, source: 'explicit' };
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO_SLUG}/releases/latest`, {
+      headers: { 'User-Agent': 'surfcore-installer', Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return { tag: PINNED_TAG, source: 'pinned', note: `GitHub 返回 ${res.status}` };
+    const body = await res.json();
+    const tag = typeof body?.tag_name === 'string' ? body.tag_name.trim() : '';
+    if (/^v?\d/.test(tag)) return { tag, source: 'github' };
+    return { tag: PINNED_TAG, source: 'pinned', note: `接口里的 tag 不可用（${tag || '空'}）` };
+  } catch (error) {
+    return { tag: PINNED_TAG, source: 'pinned', note: `连不上 GitHub（${error?.code || error?.message || 'timeout'}）` };
+  }
+}
 
 const say = (msg = '') => process.stdout.write(`${msg}\n`);
 const ok = (msg) => say(`  [OK]   ${msg}`);
@@ -75,9 +100,14 @@ async function ask(question, fallback = '') {
 }
 
 async function main() {
+  const resolved = await resolveTag();
+  TAG = resolved.tag;
+  REPO_ZIP = `https://github.com/${REPO_SLUG}/archive/refs/tags/${TAG}.zip`;
+
   say('==============================================');
   say('  SurfCore 安装程序');
   say(`  版本 ${TAG}`);
+  if (resolved.source === 'pinned') say(`  （离线兜底：${resolved.note}；要指定版本用 --tag vX.Y.Z）`);
   say('==============================================');
 
   step(1, '检查环境');
@@ -96,7 +126,12 @@ async function main() {
 
   step(2, '下载 SurfCore');
   if (fs.existsSync(path.join(TARGET, 'package.json'))) {
-    ok(`已存在：${TARGET}（跳过下载）`);
+    let have = '';
+    try { have = JSON.parse(fs.readFileSync(path.join(TARGET, 'package.json'), 'utf8')).version || ''; } catch {}
+    ok(`已存在：${TARGET}${have ? `（v${have}）` : ''}（跳过下载）`);
+    if (have && TAG.replace(/^v/, '') !== have) {
+      bad(`注意：这次要装的是 ${TAG}，本地已经是 v${have} —— 没有覆盖。要换版本请删掉 ${TARGET} 后重跑`);
+    }
   } else {
     const zip = ZIP_ARG || path.join(HERE, 'surfcore.zip');
     if (!ZIP_ARG) {
