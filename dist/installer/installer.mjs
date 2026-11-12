@@ -20,7 +20,7 @@ import readline from 'node:readline/promises';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHECK_ONLY = process.argv.includes('--check');
 const ZIP_ARG = process.argv.includes('--zip') ? process.argv[process.argv.indexOf('--zip') + 1] : '';
-const TAG = 'v0.3.2';
+const TAG = 'v0.8.9';
 const REPO_ZIP = `https://github.com/Mieksido/surfcore/archive/refs/tags/${TAG}.zip`;
 const TARGET = path.join(HERE, 'surfcore');
 
