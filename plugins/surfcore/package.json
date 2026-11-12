@@ -1,51 +1,23 @@
 {
-  "name": "surfcore",
-  "version": "0.8.9-dev.1",
-  "private": true,
-  "description": "SurfCore —— QQ × B站合体插件：统一设置窗口、双向脱敏记忆、QQ/B站身份对齐、鱼群保护、可扩展的平台接入层（贴吧预留）与插件接口。",
-  "type": "module",
-  "main": "./lib/index.js",
-  "exports": {
-    ".": "./lib/index.js",
-    "./client": "./lib/client.js",
-    "./qq-mode": "./lib/qq-mode.js",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg",
-    "./qq-tool-restrict.mjs": "./qq-tool-restrict.mjs"
-  },
-  "scripts": {
-    "test": "node scripts/test-snowluma-install.mjs && node scripts/test-ui-contrast.mjs && node scripts/test-voice-health.mjs && node scripts/test-voice-flatten.mjs && node scripts/test-voice-progress-instance.mjs && node scripts/test-doctor.mjs && node scripts/test-http-guard.mjs && node scripts/test-pet-api.mjs && node scripts/test-pet-dir-guard.mjs && node scripts/test-updates.mjs && node scripts/test-updates-version.mjs && node scripts/test-updates-pending.mjs && node scripts/test-updates-voice.mjs && node scripts/test-update-helper-env.mjs && node scripts/test-pet-update.mjs && node scripts/test-pet-install-guards.mjs && node scripts/test-pet-install-form.mjs && node scripts/test-pet-uninstall-keep.mjs && node scripts/test-bridge-status.mjs && node scripts/test-privacy.mjs && node scripts/test-align.mjs && node scripts/test-align-label-api.mjs && node scripts/test-store.mjs && node scripts/test-persona.mjs && node scripts/test-character-api.mjs && node scripts/test-admin-config-api.mjs && node scripts/test-admin-bili-prompt.mjs && node scripts/test-memory-card-api.mjs && node scripts/test-msgfeed-oid.mjs && node scripts/test-bili-automation.mjs && node scripts/test-automation-config-api.mjs && node scripts/test-kind-signals.mjs && node scripts/test-client-contract.mjs && node scripts/test-host-smoke.mjs && node scripts/test-platform-start-host.mjs && node scripts/test-pet-chat.mjs && node ../../scripts/test-platform-start.mjs && node ../../scripts/test-token-budget-service.mjs",
-    "ui:shot": "node scripts/ui-shot.mjs",
-    "ui:tabs": "node scripts/ui-tabs.mjs",
-    "ui:audit": "node scripts/ui-settings-editable.mjs"
-  },
-  "files": [
-    "lib",
-    "qq-mode",
-    "tools",
-    "extensions",
-    "platforms",
-    "persona",
-    "docs",
-    "locale",
-    "cordis.patch.yml",
-    "icon.svg",
-    "README.md",
-    "presets",
-    "qq-tool-restrict.mjs"
-  ],
-  "dsh": {
-    "bundle": {
-      "patch": [
-        "./cordis.patch.yml",
-        "./presets/qq-chat.patch.yml",
-        "./presets/qq-chat-v2.patch.yml"
-      ]
-    },
-    "client": {
-      "platform": "web",
-      "inject": []
-    }
-  },
-  "license": "MIT"
+    "dsh":  {
+                "client":  {
+                               "platform":  "web"
+                           },
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            },
+    "description":  "SurfCore 内核面板（临时壳）：UI 随更新包覆写旧入口",
+    "type":  "module",
+    "version":  "0.8.9-dev.4",
+    "name":  "surfcore",
+    "private":  true,
+    "exports":  {
+                    "./client":  "./lib/client.js",
+                    "./icon":  "./icon.svg",
+                    "./locale/*.json":  "./locale/*.json",
+                    ".":  "./lib/index.js"
+                },
+    "main":  "./lib/index.js",
+    "license":  "MIT"
 }

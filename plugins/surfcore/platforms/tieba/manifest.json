@@ -1,8 +1,0 @@
-{
-  "id": "tieba",
-  "name": "贴吧",
-  "version": "0.0.0",
-  "status": "planned",
-  "enabled": false,
-  "capabilities": ["identity", "memory.read", "memory.write", "prompt.block"]
-}
