@@ -151,6 +151,8 @@ node scripts/setup-dsh.mjs desktop
 
 **然后重启 DSH**（不是刷新页面，是退出重开）。
 
+> 打包版 DSH 的 `dsh` CLI 通常不在 PATH：脚本会自动探测（可用 `QQ_BRIDGE_DSH_CLI` 显式指定）；实在找不到会**跳过自动安装并正常结束**，不会回滚 profile。
+
 ---
 
 ## 5. 启动，让它跑起来
@@ -187,22 +189,19 @@ http://127.0.0.1:3100/?token=<consoleToken>
 
 ### 语音（二选一或都装）
 
-```powershell
-cd state\voice-packs
-git clone https://github.com/Mieksido/surfvoicecloud.git voice-cloud
-cd voice-cloud
-node scripts\fetch-models.mjs      # 下载模型并校验
-```
+设置 → **语音** → 选中「云端语音包」/「本地语音包」→ 点 **安装**。
+安装器会自动：下载代码 zip → 生成 `config.toml`（清空预置凭据）→ 拉模型（sha256 校验）→ 建 `.venv`。云端包约 280MB（模型 56MB + 依赖），首次 5~15 分钟。
 
-本地包同理（`voice-local`），体积大（约 1.8GB），按它 README 的 `fetch-models` 拉。
+> 不要手动 `git clone`：那样会跳过配置生成与凭据清理，旧版文档里的手动步骤已废弃。
 
-装好后：**设置 → 语音 → 选本地/云端 → 启动**。
+装好后：**设置 → 语音 → 选本地/云端 → 启动**（云端包要先填自己的火山 AppID / AccessKey / 音色 ID）。
 ⚠️ **AI 发语音默认是关的**，要在语音页和「工具开关」里打开 `sendVoice`。
 
 ### 桌宠
 
-1. 去 <https://github.com/Mieksido/surfpet/releases/latest> 下 `pet-pack.zip`；
-2. 设置 → 桌宠 → 填 Electron 路径（`electron.exe`）→ 填 zip 路径 → 安装 → 启动。
+1. 设置 → 桌宠 → 点「**用官方最新版**」自动填 `pet-pack.zip` 地址（v0.2.3，约 16MB，不含 Electron）；
+2. 「Electron」：本机已有会自动检测；没有就点「**下载 Electron**」（约 125MB，装到 `~/.dsh/surfcore/pet/runtime`）；
+3. 点 **安装** → **启动**。
 
 ---
 

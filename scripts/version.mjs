@@ -22,8 +22,31 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const ROOT_PKG = path.join(ROOT, 'package.json');
 const PLUGIN_PKG = path.join(ROOT, 'plugins', 'surfcore', 'package.json');
+const PLUGINS_DIR = path.join(ROOT, 'plugins');
 const CHANGELOG = path.join(ROOT, 'CHANGELOG.md');
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-(rc|beta|alpha|dev)\.(\d+))?$/;
+
+// 所有插件子目录的 package.json（跳过 node_modules / 隐藏目录）。插件版本一律跟根版本走。
+function listPluginPackages() {
+  const out = [];
+  if (!fs.existsSync(PLUGINS_DIR)) return out;
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const sub = path.join(dir, entry.name);
+      const pkgFile = path.join(sub, 'package.json');
+      if (fs.existsSync(pkgFile)) {
+        try {
+          const data = readJson(pkgFile);
+          out.push({ file: pkgFile, name: String(data.name || path.relative(PLUGINS_DIR, sub)), version: String(data.version || '') });
+        } catch {}
+      }
+      walk(sub);
+    }
+  };
+  walk(PLUGINS_DIR);
+  return out;
+}
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] || 'show';
@@ -76,6 +99,11 @@ function show() {
   const ahead = commitsSince(tag);
   console.log(`SurfCore            v${root.version}`);
   console.log(`  插件 package.json  v${plugin.version}${plugin.version === root.version ? '' : '  ← 不一致！'}`);
+  for (const item of listPluginPackages()) {
+    if (path.resolve(item.file) === path.resolve(PLUGIN_PKG)) continue;
+    const rel = path.relative(ROOT, item.file).split(path.sep).join('/');
+    console.log(`  插件 ${rel.replace(/\/package\.json$/, '')} v${item.version}${item.version === root.version ? '' : '  ← 不一致！'}`);
+  }
   console.log(`  最新 tag           ${tag || '(还没有 tag)'}${tag && tag !== `v${root.version}` ? `  ← 与 v${root.version} 不一致` : ''}`);
   console.log(`  tag 之后提交       ${ahead.length} 个${ahead.length ? '  ← 需要 bump 并打 tag' : ''}`);
 
@@ -113,6 +141,13 @@ function check() {
   if (!SEMVER.test(root.version)) errors.push(`根 package.json 版本不是合法 semver：${root.version}`);
   if (plugin.version !== root.version) {
     errors.push(`插件 package.json（${plugin.version}）与根（${root.version}）不一致`);
+  }
+  for (const item of listPluginPackages()) {
+    if (path.resolve(item.file) === path.resolve(PLUGIN_PKG)) continue;
+    if (item.version !== root.version) {
+      const rel = path.relative(ROOT, item.file).split(path.sep).join('/');
+      errors.push(`插件 ${rel}（${item.version}）与根（${root.version}）不一致`);
+    }
   }
 
   // 代码里不许硬编码版本
@@ -183,6 +218,13 @@ function bump(kind) {
   const plugin = readJson(PLUGIN_PKG);
   plugin.version = next;
   writeJson(PLUGIN_PKG, plugin);
+  for (const item of listPluginPackages()) {
+    if (path.resolve(item.file) === path.resolve(PLUGIN_PKG)) continue;
+    if (item.version === next) continue;
+    const data = readJson(item.file);
+    data.version = next;
+    writeJson(item.file, data);
+  }
 
   // README 顶部版本也要跟着 bump，否则 test-version 会红（文档漂移）。
   const readmeFile = path.join(ROOT, 'README.md');

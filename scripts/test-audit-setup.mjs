@@ -118,7 +118,7 @@ try {
     const capture = path.join(bin, 'called.json');
     const cli = path.join(bin, 'fake-dsh.mjs');
     fs.writeFileSync(cli, `import fs from 'node:fs'; fs.writeFileSync(process.env.QQ_TEST_CAPTURE, JSON.stringify({args: process.argv.slice(2), home: process.env.DSH_HOME}));\n`);
-    fs.writeFileSync(path.join(bin, 'dsh.cmd'), `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`);
+    fs.writeFileSync(path.join(bin, 'dsh.cmd'), `@echo off\r\ncd /d "%~dp0"\r\n"${process.execPath}" "${path.basename(cli)}" %*\r\n`);
     const profile = 'test&name%CD%!';
     const result = f.run(profile, {
       PATH: [bin, path.dirname(process.execPath)].join(path.delimiter),
@@ -140,7 +140,7 @@ const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
 pkg.dsh.profile.bundles = ['existing'];
 fs.writeFileSync(file, JSON.stringify(pkg));
 `);
-    fs.writeFileSync(path.join(bin, 'dsh.cmd'), `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`);
+    fs.writeFileSync(path.join(bin, 'dsh.cmd'), `@echo off\r\ncd /d "%~dp0"\r\n"${process.execPath}" "${path.basename(cli)}" %*\r\n`);
     const result = f.run('web', {
       PATH: [bin, path.dirname(process.execPath)].join(path.delimiter),
       QQ_BRIDGE_SKIP_DSH_INSTALL: '0',
@@ -151,6 +151,19 @@ fs.writeFileSync(file, JSON.stringify(pkg));
     assert.deepEqual(pkg.dsh.profile.bundles, ['existing'], '回滚后不能留下 surfcore 或丢失原 bundle');
     assert.equal(pkg.dependencies.existing, '1.0.0');
     assert.equal(pkg.dependencies.surfcore, undefined);
+  });
+
+  if (process.platform === 'win32') test('no dsh CLI found anywhere → setup succeeds and keeps surfcore (no rollback)', () => {
+    const f = fixture('no-cli');
+    const result = f.run('web', {
+      PATH: path.dirname(process.execPath), // 只有 node，没有任何 dsh
+      QQ_BRIDGE_SKIP_DSH_INSTALL: '0',
+      QQ_BRIDGE_SKIP_DSH_CLI_DETECT: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json'), 'utf8'));
+    assert.ok(pkg.dsh.profile.bundles.includes('surfcore'), '缺 CLI 时不能回滚掉 surfcore');
+    assert.match(`${result.stdout}${result.stderr}`, /跳过自动安装/, '必须明确提示已跳过自动安装');
   });
 } finally {
   // Resolve the exact fixture root before removing this test's temporary files.

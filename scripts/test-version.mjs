@@ -23,6 +23,22 @@ assert.equal(plugin.version, pkg.version, '插件 package.json 与根版本不�
 const indexSrc = fs.readFileSync(path.join(root, 'plugins/surfcore/lib/index.js'), 'utf8');
 assert.ok(!/const VERSION = '\d+\.\d+\.\d+/.test(indexSrc), 'index.js 里仍在硬编码版本');
 
+// 所有 plugins/**/package.json 的版本必须跟根版本一致（以最新版为标准，防止 dev 版本残留）。
+const pluginPkgFiles = [];
+(function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+    const sub = path.join(dir, entry.name);
+    const pkgFile = path.join(sub, 'package.json');
+    if (fs.existsSync(pkgFile)) pluginPkgFiles.push(pkgFile);
+    walk(sub);
+  }
+})(path.join(root, 'plugins'));
+for (const file of pluginPkgFiles) {
+  const data = read(file);
+  assert.equal(data.version, pkg.version, `${path.relative(root, file)} 版本（${data.version}）与根版本（${pkg.version}）不一致`);
+}
+
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const readmeVer = /\|\s*版本\s*\|\s*`([^`]+)`/.exec(readme)?.[1];
 assert.equal(readmeVer, pkg.version, `README 顶部版本（${readmeVer}）与 package.json（${pkg.version}）不一致`);

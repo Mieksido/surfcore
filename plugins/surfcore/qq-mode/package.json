@@ -1,6 +1,6 @@
 {
   "name": "surfcore-qq-mode",
-  "version": "0.8.6-dev.10",
+  "version": "0.8.9",
   "private": true,
   "description": "SurfCore host-only qq-mode settings namespace (no dsh.client).",
   "type": "module",

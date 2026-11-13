@@ -12,8 +12,10 @@
 | --- | --- |
 | 根 `package.json` 的 `version` | **唯一真相**，改版本只改这里（用 `scripts/version.mjs bump`） |
 | `plugins/surfcore/package.json` | 必须与根一致（脚本自动同步） |
+| `plugins/**/package.json`（含 qq-mode 等子插件） | 必须与根一致，`version:check` / `test:version` 会拦 |
 | `plugins/surfcore/lib/index.js` | **不许硬编码**，从根 `package.json` 读 |
 | `client.js` | 显示用，取 `overview.version`，不写死 |
+| `dist/installer` | 不写死版本，安装时取最新稳定 tag |
 
 ### 1.2 语义化版本（0.x 阶段）
 

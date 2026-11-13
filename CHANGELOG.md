@@ -1,3 +1,12 @@
+## [未发布] - 2026-11-14
+
+### 安装与版本一致性（以最新版为标准）
+
+- `dist/installer` 不再写死下载 `v0.3.2`：安装时自动取最新稳定 tag（GitHub Releases → jsdelivr 版本清单 → 内置兜底），并支持 `--tag` / `SURFCORE_INSTALL_TAG`；本目录放了 `surfcore.zip` 时直接把它当离线包用。
+- `setup-dsh` 自动探测打包版 DSH 自带的 `resources\runtime\cli\bin\dsh.cmd`（PATH → 注册表安装位置 → 运行中的 DSH 进程；`QQ_BRIDGE_DSH_CLI` 可显式指定）。找不到时**跳过自动安装并正常退出**，不再回滚 profile —— 修掉「打包版 DSH 装完设置页里没有 SurfCore」。
+- 所有 `plugins/**/package.json` 的版本必须与根 `package.json` 一致（`version:check` / `test:version` 已覆盖），`qq-mode` 从 `0.8.6-dev.10` 对齐到当前版本。
+- `docs/guides/INSTALL.md` 同步：语音包改为设置页一键安装、桌宠支持自动下载 Electron。
+
 ## [0.8.9] - 2026-11-07
 
 ### 向量记忆
