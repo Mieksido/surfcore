@@ -400,16 +400,76 @@ function ensureLocalModeFile() {
 // surfcore 以 link: 依赖注册进 profile package.json 后，DSH 首次启动
 // 需要先安装一次才能解析这些 bundle（否则 cold start 报 "cannot resolve profile bundle"）。
 // dsh CLI 可用时自动执行。
+//
+// 注意（2026-11-14）：打包版 DSH 自带 `resources\runtime\cli\bin\dsh.cmd`，但**不在 PATH**。
+// 不处理的话这里会失败，而 v0.8.7 起失败会触发 profile 回滚 → 设置页里看不到 SurfCore。
+// 所以先自动找 CLI（PATH → 注册表安装位置 → 运行中的 DSH 进程），找不到就**跳过并正常结束**。
+function locateDshCli() {
+  const explicit = String(process.env.QQ_BRIDGE_DSH_CLI || '').trim();
+  if (explicit && fs.existsSync(explicit)) return { file: explicit, dir: path.dirname(explicit) };
+  const pathDirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const names = process.platform === 'win32' ? ['dsh.cmd', 'dsh.exe', 'dsh'] : ['dsh'];
+  for (const dir of pathDirs) {
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try {
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) return { file, dir };
+      } catch {}
+    }
+  }
+  if (process.platform !== 'win32' || process.env.QQ_BRIDGE_SKIP_DSH_CLI_DETECT === '1') return null;
+  const installDirs = new Set();
+  // Windows 卸载项里 DisplayIcon / UninstallString 都指向安装目录里的 exe。
+  for (const key of [
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ]) {
+    const r = spawnSync('reg', ['query', key, '/s', '/f', 'DeepSeek Harness'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    if (!r || r.status !== 0 || !r.stdout) continue;
+    for (const line of String(r.stdout).split(/\r?\n/)) {
+      const m = /^\s*(DisplayIcon|UninstallString)\s+REG_\w+\s+(.+?)\s*$/.exec(line);
+      if (!m) continue;
+      const raw = m[2].replace(/^"|"$/g, '').replace(/,\d+$/, '');
+      const exe = /^(.+\.exe)/.exec(raw)?.[1];
+      if (exe) installDirs.add(path.dirname(exe));
+    }
+  }
+  // 安装时 DSH 通常开着，直接问进程路径。
+  try {
+    const ps = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/v:off', '/s', '/c',
+      'powershell -NoProfile -NonInteractive -Command "(Get-Process \'DeepSeek Harness\' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path)"'],
+    { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    const exe = String(ps?.stdout || '').trim();
+    if (exe && /\.exe$/i.test(exe)) installDirs.add(path.dirname(exe));
+  } catch {}
+  for (const dir of installDirs) {
+    const candidate = path.join(dir, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd');
+    try {
+      if (fs.existsSync(candidate)) return { file: candidate, dir: path.dirname(candidate) };
+    } catch {}
+  }
+  return null;
+}
+
 function autoInstallProfileBundles() {
   if (process.env.QQ_BRIDGE_SKIP_DSH_INSTALL === '1') {
     log('auto-install skipped: QQ_BRIDGE_SKIP_DSH_INSTALL=1');
     return { attempted: false, ok: true };
   }
   const windows = process.platform === 'win32';
+  const cli = locateDshCli();
+  if (!cli) {
+    // 缺 CLI 不是安装错误：profile 已写好，DSH 启动时会解析它；缺的只是这一次 pnpm reconcile。
+    // 以前这里直接 fatal + 回滚，结果是「打包版 DSH 装完设置页里没有 SurfCore」。
+    log('没找到 dsh CLI，跳过自动安装（profile 已写好，重启 DSH 即可）。');
+    log('补跑方式：把 <DSH 安装目录>\\resources\\runtime\\cli\\bin 加进 PATH 后重跑本脚本，或设 QQ_BRIDGE_DSH_CLI 指向 dsh.cmd。');
+    return { attempted: false, ok: true };
+  }
   // Node cannot spawn npm's .cmd shim directly. Keep the shell command constant;
   // the validated (no quotes/control chars) profile travels through one quoted
   // environment expansion, with delayed expansion disabled to preserve '!'.
-  const cmd = windows ? (process.env.ComSpec || 'cmd.exe') : 'dsh';
+  const cmd = windows ? (process.env.ComSpec || 'cmd.exe') : cli.file;
   const args = windows
     ? ['/d', '/v:off', '/s', '/c', 'dsh.cmd plugin --profile "%QQ_BRIDGE_SETUP_PROFILE%" install']
     : ['plugin', '--profile', PROFILE, 'install'];
@@ -418,7 +478,10 @@ function autoInstallProfileBundles() {
     timeout: 120000,
     windowsHide: true,
     windowsVerbatimArguments: windows,
-    ...(windows ? { env: { ...process.env, QQ_BRIDGE_SETUP_PROFILE: PROFILE } } : {}),
+    env: {
+      ...process.env,
+      ...(windows ? { PATH: `${cli.dir}${path.delimiter}${process.env.PATH || ''}`, QQ_BRIDGE_SETUP_PROFILE: PROFILE } : {}),
+    },
   });
   if (r.error) {
     log(`auto-install failed to start/complete（${r.error.code || r.error.message}）。`);

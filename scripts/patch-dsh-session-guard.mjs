@@ -21,6 +21,7 @@
 //   DSH 更新后补丁会消失，重跑 --check / --apply 即可（幂等）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const ASAR_DEFAULT = 'D:\\deepseek\\resources\\app.asar';
 export const TARGET = '/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js';
@@ -146,7 +147,7 @@ export function apply(asarPath = ASAR_DEFAULT, { dryRun = false } = {}) {
   return { ...state, changed: true, backup, previous: `${asarPath}.old-${stamp}` };
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   const args = process.argv.slice(2);
   const asarArg = args.indexOf('--asar');

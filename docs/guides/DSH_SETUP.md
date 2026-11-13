@@ -66,7 +66,7 @@
    - 在 `~/.dsh/profiles/web/package.json` 注册 `surfcore`（`dsh.profile.bundles` + `link:` 依赖），并维护 `node_modules` 下的 junction
    - 把 `qq-mode` 的默认模式设为 `reserved2`（二代仿真）
    - 创建本地 `state/mode.json`（`mode: reserved2`）作为 DSH settings 不可用时的兜底
-   - 尝试自动执行 `dsh plugin --profile web install`（当 `dsh` CLI 在 PATH 中可用时），注册两个插件的 bundle 依赖；若 `dsh` 不在 PATH，缺失依赖时 DSH 会提示补跑
+   - 尝试自动执行 `dsh plugin --profile web install` 注册两个插件的 bundle 依赖：先找 PATH，再自动探测打包版 DSH 自带的 `resources\runtime\cli\bin\dsh.cmd`（也可用 `QQ_BRIDGE_DSH_CLI` 指定）；找不到就跳过这一步并正常结束（profile 已写好，重启 DSH 即可），不会再回滚
 
    > 脚本可重复运行（幂等）：它会重建 `surfcore` 的 preset patch、更新 MCP 路径并重建失效的插件链接。
    > MCP 条目通过 YAML 解析后**按顶层 `insert` 内的条目 id 增删**（不依赖标记注释），支持带引号的 id、共享 `insert` 与行内 YAML，并保留其他插件配置和嵌套数据。

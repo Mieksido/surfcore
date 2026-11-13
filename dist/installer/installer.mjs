@@ -6,9 +6,17 @@
  * 不依赖 git；不碰你的 QQ 账号；不装第三方运行时（SnowLuma 需自己装）。
  *
  * 用法：
- *   node installer.mjs              # 完整安装
- *   node installer.mjs --check      # 只检查环境，不下载不安装
- *   node installer.mjs --zip <path> # 用本地 zip（给离线/测试用）
+ *   node installer.mjs                 # 完整安装（自动取最新稳定版）
+ *   node installer.mjs --check         # 只检查环境，不下载不安装
+ *   node installer.mjs --zip <path>    # 用本地 zip（给离线/测试用）
+ *   node installer.mjs --tag v0.8.9    # 指定版本（默认取最新稳定 tag）
+ *
+ * 版本策略（2026-11-14 起，以最新版为标准）：不再写死某个 tag，而是
+ *   1) --tag / SURFCORE_INSTALL_TAG 显式指定；
+ *   2) 本目录下的 surfcore.zip（离线包）；
+ *   3) GitHub Releases 的 latest（最新稳定版）；
+ *   4) jsdelivr 的版本清单（国内 api.github.com 常被限流/阻断）；
+ *   5) 全部失败才退回 FALLBACK_TAG（发版时随仓库更新）。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,13 +24,12 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
+import { REPO, resolveLatestTag } from './latest-tag.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHECK_ONLY = process.argv.includes('--check');
 const ZIP_ARG = process.argv.includes('--zip') ? process.argv[process.argv.indexOf('--zip') + 1] : '';
-const TAG = 'v0.3.2';
-const REPO_ZIP = `https://github.com/Mieksido/surfcore/archive/refs/tags/${TAG}.zip`;
-const TARGET = path.join(HERE, 'surfcore');
+const TAG_ARG = process.argv.includes('--tag') ? process.argv[process.argv.indexOf('--tag') + 1] : '';
 
 const say = (msg = '') => process.stdout.write(`${msg}\n`);
 const ok = (msg) => say(`  [OK]   ${msg}`);
@@ -77,7 +84,7 @@ async function ask(question, fallback = '') {
 async function main() {
   say('==============================================');
   say('  SurfCore 安装程序');
-  say(`  版本 ${TAG}`);
+  say(`  版本 自动取最新稳定版（--tag vX.Y.Z 可指定）`);
   say('==============================================');
 
   step(1, '检查环境');
@@ -98,12 +105,24 @@ async function main() {
   if (fs.existsSync(path.join(TARGET, 'package.json'))) {
     ok(`已存在：${TARGET}（跳过下载）`);
   } else {
-    const zip = ZIP_ARG || path.join(HERE, 'surfcore.zip');
-    if (!ZIP_ARG) {
-      say(`  下载 ${REPO_ZIP}`);
+    const localZip = path.join(HERE, 'surfcore.zip');
+    let zip = ZIP_ARG || (fs.existsSync(localZip) ? localZip : '');
+    if (zip) {
+      ok(`使用本地安装包：${zip}`);
+    } else {
+      const tag = await resolveLatestTag({ explicitTag: TAG_ARG, say: (m) => say(m) });
+      const url = `https://github.com/${REPO}/archive/refs/tags/${tag}.zip`;
+      zip = localZip;
+      say(`  安装版本：${tag}（自动取最新稳定版）`);
+      say(`  下载 ${url}`);
       const dl = run('powershell', ['-NoProfile', '-Command',
-        `$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '${REPO_ZIP}' -OutFile '${zip}'`], { timeout: 300000 });
-      if (!dl.ok || !fs.existsSync(zip)) { bad(`下载失败：${dl.out.slice(0, 300)}`); say('        可以手动下载后放在本目录，命名 surfcore.zip，再重跑本程序'); process.exit(1); }
+        `$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '${url}' -OutFile '${zip}'`], { timeout: 300000 });
+      if (!dl.ok || !fs.existsSync(zip)) {
+        bad(`下载失败：${dl.out.slice(0, 300)}`);
+        say(`        可以手动下载 ${url} 放在本目录，命名 surfcore.zip，再重跑本程序；`);
+        say('        或者用 --tag <版本> 指定版本重跑。');
+        process.exit(1);
+      }
     }
     const ex = run('powershell', ['-NoProfile', '-Command',
       `Expand-Archive -LiteralPath '${zip}' -DestinationPath '${HERE}' -Force`], { timeout: 120000 });
