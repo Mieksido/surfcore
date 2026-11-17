@@ -64,7 +64,7 @@ import {
   consoleBase, consoleToken } from './bridge.js';
 import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
-import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
+import { isAllowedHost, isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
 import { startScheduler } from './scheduler.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
@@ -267,6 +267,9 @@ export function apply(ctx) {
     petService,
     stateDir: STATE_DIR,
     currentDshUrl,
+    // 桌宠 API 同样是「本机接口」，但服务器上桌宠与 DSH 同机运行时 Host 也可能是绑定地址；
+    // 与设置页共用同一份策略，避免两处判据漂移（桌面端默认仍是回环，不变）。
+    hostPolicy: () => webAccessPolicy(),
     pluginLog,
     version: VERSION,
   });
@@ -665,6 +668,11 @@ export function apply(ctx) {
   // 桥接是否还是“上一轮 DSH 的”：旧版本不报 root/dshBaseUrl，或者端口已经变了。
   function bridgeStaleReason(status) {
     if (!status?.running) return '';
+    // 状态接口本身读不到（401 / 超时 / 端口在监听但拒绝访问）时**不能**判「旧目录」：
+    // 判了就会每 2 分钟重启一次、每次都停在「进程没有在预期时间内退出」，
+    // 2026-11-17 服务器上就是这么刷了 15624 条。修配置（consoleToken / QQBOT_ROOT）才是解，
+    // 自愈轮询只负责「确实连错了 DSH」这一种。
+    if (status.ok === false) return '';
     const runningRoot = status.root ? path.resolve(String(status.root)) : '';
     if (!runningRoot || runningRoot !== path.resolve(QQBOT_ROOT)) {
       return `桥接还在旧目录（root=${status.root ?? '未知'}）`;
@@ -681,8 +689,12 @@ export function apply(ctx) {
   // DSH 重启后端口会变，桥接如果还连着旧端口，下一次轮询会自动重启它（而不是等用户发现）。
   let bridgeRepairBusy = false;
   let bridgeRepairTimer = null;
+  // 自愈失败退避：重启失败一次就等更久再试，避免「停不掉→重启→再判旧→再重启」无限刷
+  // （2026-11-17 服务器日志里 15624 条就是这么来的：每 2 分钟一轮，永远不收敛）。
+  let bridgeRepairFailures = 0;
   const maybeAutoStartBridge = async () => {
     if (bridgeRepairBusy) return;
+    if (bridgeRepairFailures >= 3) return; // 连续 3 次失败就停手，等人看（用户点重启会清零）
     bridgeRepairBusy = true;
     try {
       if (process.env.SURFCORE_SKIP_AUTOSTART === '1') return;
@@ -694,7 +706,15 @@ export function apply(ctx) {
         if (stale) {
           pluginLog(`autoStartBridge：${stale}，自动重启`);
           const restarted = await restartBridge({ dshWebUrl: currentDshUrl() });
-          pluginLog('autoStartBridge 重启结果：', restarted.message || restarted.error || '');
+          if (restarted.ok) {
+            bridgeRepairFailures = 0;
+          } else {
+            bridgeRepairFailures += 1;
+            pluginLog(`autoStartBridge 重启失败（第 ${bridgeRepairFailures} 次）：`, restarted.error || restarted.message || '未知原因',
+              bridgeRepairFailures >= 3 ? '——已停手，请手动排查后点「重启 QQ 桥接」' : '');
+          }
+        } else {
+          bridgeRepairFailures = 0;
         }
         return;
       }
@@ -709,12 +729,41 @@ export function apply(ctx) {
   };
 
   const disposers = [];
+  // 最近一次设置页请求的 Host：只用于「网页端访问」卡片显示「你现在是用哪个地址打开的」，
+  // 让用户不用猜就知道该把哪个值填进白名单。
+  let lastApiHost = '';
+
+  /**
+   * 设置页 API 的 Host 允许策略：自己的监听地址 + 用户白名单（见 store.js 的 webAccess）。
+   * 每次请求现读配置：改完保存立即生效，不用重启 DSH。
+   */
+  function webAccessPolicy() {
+    const raw = readUnified().config?.webAccess ?? {};
+    return {
+      bindHost: String(ctx.get('webServer')?.host ?? ''),
+      trustBindAddress: raw.trustBindAddress !== false,
+      trustedHosts: Array.isArray(raw.trustedHosts) ? raw.trustedHosts : [],
+    };
+  }
+
+  /** 403 时同时给机器读的 code 与人读的 hint（AGENTS §1.7：失败必须可见且可行动）。 */
+  function rejectHost(req, res) {
+    json(res, 403, {
+      ok: false,
+      code: 'HOST_NOT_ALLOWED',
+      error: '这个地址不在允许列表里，设置页接口拒绝访问',
+      hint: '在「QQ → 访问与安全」里把当前地址加进允许的主机名（或在 DSH 启动参数里用 --host 绑定该地址）',
+      host: String(req.headers?.host ?? ''),
+    });
+  }
+
   function route(kind, pathname, handler) {
     disposers.push(ctx.webServer.register({
       kind,
       path: pathname,
       handler: async (req, res) => {
-        if (!isLoopbackReq(req)) { json(res, 403, { ok: false, error: '只接受本机回环访问' }); return; }
+        lastApiHost = String(req.headers?.host ?? '');
+        if (!isAllowedHost(req, webAccessPolicy())) { rejectHost(req, res); return; }
         if (req.method !== 'GET' && !sameOrigin(req)) { json(res, 403, { ok: false, error: '跨站请求被拒绝' }); return; }
         if (req.method !== 'GET' && !String(req.headers['content-type'] ?? '').toLowerCase().includes('application/json')) {
           json(res, 415, { ok: false, error: '写操作必须是 application/json' });
@@ -776,6 +825,13 @@ export function apply(ctx) {
       extensions: extensionHost.describe(),
       // 平台启动开关：设置页顶部状态点、概览三按钮的可用性都读它。
       platformStart: platformStartState(),
+      // 网页端访问：设置页「网页端访问」卡与 403 诊断都用它。
+      // bindHost 是 DSH 的监听地址（服务器上就是 LAN IP）；currentHost 是这次请求自己的 Host。
+      webAccess: {
+        ...webAccessPolicy(),
+        bindHost: String(ctx.get('webServer')?.host ?? ''),
+        currentHost: lastApiHost,
+      },
       // 组件更新：概览「更新」卡与启动弹窗都读它（检查结果是缓存的，不在这里触发网络）。
       updates: updates.status(),
       scheduler: schedulerStatus,

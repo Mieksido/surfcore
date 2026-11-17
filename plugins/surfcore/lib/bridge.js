@@ -240,11 +240,18 @@ export async function stop() {
   if (pid && pidAlive(pid)) {
     try { process.kill(pid); } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
   }
-  for (let i = 0; i < 10; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+  // 15 秒而不是 4 秒：桥接收到 SIGTERM 要先 saveState()（会话/社交/账本都要落盘），
+  // 状态大时 4 秒根本不够 —— 旧值会在「其实已经退出」的情况下报「进程没有在预期时间内退出」。
+  for (let i = 0; i < 30; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
     if (!(await portOpen())) return { ok: true, stopped: true, message: '桥接已停止' };
   }
-  return { ok: false, error: '进程没有在预期时间内退出' };
+  return {
+    ok: false,
+    code: 'BRIDGE_STOP_TIMEOUT',
+    error: '进程没有在预期时间内退出（15 秒）',
+    hint: '桥接可能卡在落盘或子进程：用进程号手动结束，或重启 DSH',
+  };
 }
 
 export async function restart(options = {}) {

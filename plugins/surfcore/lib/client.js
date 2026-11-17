@@ -557,6 +557,45 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
         out ? h("pre", { className: "qbw-code", style: { whiteSpace: "pre-wrap", maxHeight: "220px", overflow: "auto", marginTop: "6px" } }, out) : null);
     }
 
+    // ── 网页端访问（2026-11-17）──────────────────────────────────────────────
+    // 现象：DSH 跑在服务器上、浏览器从别的电脑打开时，设置页连不上，前端只报
+    // 「读取 token 额度失败：只接受本机回环访问」。
+    // 根因是设置页 API 的 Host 判据只认 127.0.0.1；服务器上 Host 是服务器 IP。
+    // 这张卡把判据的两个输入暴露出来，默认值保持安全（只信 DSH 自己绑定的地址）。
+    function WebAccessCard({ unified, setUnified, overview, onSave, busy }) {
+      const access = unified?.webAccess ?? {};
+      const trustBind = access.trustBindAddress !== false;
+      const bindHost = String(overview?.webAccess?.bindHost ?? "");
+      const hosts = Array.isArray(access.trustedHosts) ? access.trustedHosts : [];
+      const opened = overview?.webAccess?.currentHost ?? "";
+      return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+        h("h4", null, "网页端访问"),
+        h("p", null, "决定「浏览器里的设置页」能不能连上这个 DSH。默认只允许 DSH 启动时绑定的地址与 127.0.0.1。"),
+        h("div", { className: "qbw-hint", style: { marginBottom: "6px" } },
+          "当前 DSH 监听：", h("code", { className: "qbw-code" }, bindHost || "（未知）"),
+          opened ? ["；本次请求的 Host：", h("code", { className: "qbw-code" }, opened)] : null),
+        h("div", { style: { display: "flex", alignItems: "center", gap: "8px", margin: "6px 0" } },
+          h("input", {
+            className: "qbw-switch", type: "checkbox", checked: trustBind,
+            onChange: (e) => setUnified(["webAccess", "trustBindAddress"], e.target.checked),
+          }),
+          h("span", null, "信任 DSH 绑定的地址"),
+          h("span", { className: "qbw-hint" }, trustBind ? "（推荐：换端口/换 IP 不用再改这里）" : "（只接受 127.0.0.1，远程打不开）")),
+        h("div", { style: { display: "flex", gap: "8px", alignItems: "center", marginTop: "6px" } },
+          h("span", { style: { minWidth: "110px" } }, "额外允许的主机名"),
+          h(ListInput, {
+            className: "qbw-input",
+            value: hosts,
+            placeholder: "192.168.3.110，dsh.example.com",
+            onChange: (list) => setUnified(["webAccess", "trustedHosts"], list),
+          })),
+        h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
+          "带端口（如 10.0.0.5:8443）则只放行该端口；不带端口则任意端口都算。",
+          "允许的地址能读设置页与 Token 额度；写操作仍然要求同源 + DSH 登录态，跨站请求一律拒绝。"),
+        h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
+          h(Btn, { onClick: () => onSave?.(), disabled: !!busy }, busy ? "保存中…" : "保存（立即生效）")));
+    }
+
     function AreaButton({ title, note, badge, onClick }) {
       return h("button", { type: "button", className: "qbw-area-btn", title: note || title, "data-tip": note || title, onClick },
         h("div", { style: { minWidth: 0, textAlign: "left" } },
@@ -1161,6 +1200,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { group: "安全通知", note: "黑名单（deny.users / deny.groups / deny.private）在页面顶部的「QQ 黑名单」卡片里，这里不再重复输入框", fields: [
         F("security.interceptNotify", "安全拦截通知", "拦截到敏感操作时通知管理员", "switch"),
       ]},
+
       { group: "人格与注入", note: "人格卡在「角色」页统一编辑", fields: [
         F("role.maxInjectChars", "人格注入上限（字符）", "1000~20000；默认 6000", "number", { min: 1000, max: 20000 }),
       ]},
@@ -3781,6 +3821,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.bridge?.running || overview?.bridge?.ok),
           overview,
         }),
+        h(WebAccessCard, { unified, setUnified, overview, onSave, busy }),
         h(ModelSettingsCard, { busy, toast, reload }),
         h(CostCard, { toast, set }),
         h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext, onSave: () => onSave?.(true), busy, canSave: dirty }),
@@ -7945,7 +7986,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       };
       const loadBudget = useCallback(async () => {
         try { applyBudget(await api("/token-budget")); }
-        catch (e) { setErr(`读取 token 额度失败：${e.message}`); }
+        catch (e) { setErr(`读取 token 额度失败：${e.message}${e.hint ? `（${e.hint}）` : ""}`); }
       }, []);
       const loadOverview = useCallback(async () => {
         try { const r = await api("/overview"); setOverview(r); } catch (e) { setErr(`读取概览失败：${e.message}`); }

@@ -151,6 +151,15 @@ export const DEFAULT_UNIFIED = {
     hideConsoles: true,
   },
   ui: { activeTab: 'overview', showAdvanced: false },
+  // 网页端访问策略（2026-11-17）：DSH 搬到服务器后用 `--host <LAN IP>` 绑定网卡地址，
+  // 客户端浏览器打开的就是那个地址，Host 也随之不是回环 —— 旧判据只认回环，
+  // 于是设置页与「Token 额度」全量 403（前端报「读取 token 额度失败：只接受本机回环访问」）。
+  // 默认**保持安全**：trustBindAddress=true 只放行 DSH 自己监听的地址（本来就是运维决定），
+  // trustedHosts 默认空 = 不接受任何额外主机名；要再加域名就自己填。
+  webAccess: {
+    trustBindAddress: true,
+    trustedHosts: [],
+  },
   // 组件更新（2026-10-26）：检查 SurfCore 本体 / 语音包 / 桌宠 / 未来登记的扩展。
   // 只做 git 快进；`components` 里可以自己加 `{id,name,dir,branch}` 把别的仓库纳入检查。
   updates: {

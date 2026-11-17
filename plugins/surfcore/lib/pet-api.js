@@ -14,7 +14,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { isLoopbackReq, json, readBody, sameOrigin, safeEqual } from './http-guard.js';
+import { isAllowedHost, isLoopbackReq, json, readBody, sameOrigin, safeEqual } from './http-guard.js';
 
 const API_PREFIX = '/dsh-surfcore/pet-api';
 const HOST_FILE_VERSION = 1;
@@ -30,7 +30,7 @@ const PET_BODY_LIMIT = 256 * 1024;
  * @param {() => string} opts.currentDshUrl   DSH 当前 Web 地址
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
  */
-export function createPetApiService({ chat, purpose, petService, stateDir, currentDshUrl, pluginLog = () => {}, version = '' }) {
+export function createPetApiService({ chat, purpose, petService, stateDir, currentDshUrl, hostPolicy = null, pluginLog = () => {}, version = '' }) {
   const root = path.join(stateDir, 'pet');
   const hostFile = path.join(root, 'host.json');
   let lastHostWrite = 0;
@@ -106,7 +106,17 @@ export function createPetApiService({ chat, purpose, petService, stateDir, curre
   }
 
   async function handle(req, res, url) {
-    if (!isLoopbackReq(req)) { json(res, 403, { ok: false, error: '只接受本机回环访问' }); return; }
+    // 未注入策略时保持旧语义（只认回环）；注入了就与设置页共用同一份判据。
+    const allowed = typeof hostPolicy === 'function' ? isAllowedHost(req, hostPolicy() || {}) : isLoopbackReq(req);
+    if (!allowed) {
+      json(res, 403, {
+        ok: false,
+        code: 'HOST_NOT_ALLOWED',
+        error: '这个地址不在允许列表里，桌宠接口拒绝访问',
+        hint: '服务器上桌宠与 DSH 同机运行时，把 DSH 的绑定地址加进「访问与安全 → 允许的主机名」',
+      });
+      return;
+    }
     if (req.method !== 'GET' && !sameOrigin(req)) { json(res, 403, { ok: false, error: '跨站请求被拒绝' }); return; }
     if (req.method !== 'GET' && !String(req.headers['content-type'] ?? '').toLowerCase().includes('application/json')) {
       json(res, 415, { ok: false, error: '写操作必须是 application/json' });

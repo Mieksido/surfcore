@@ -17,6 +17,45 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-17 21:40 · 服务器部署下网页端 403（Host 判据 + 桥接自愈）
+<!-- release-batch: start=2026-11-17T20:51+08:00 end=2026-11-17T21:40+08:00 commits=95b7951 -->
+
+**覆盖提交**：`eb18a7b`（PR #111，分支 `feat/lan-web-access`，基于 `0ce8580` = v0.8.9；两提交 `83a101e` 主修复 + `eb18a7b` profile 脏文件硬化）
+**建议**：**0.8.10（patch）**——纯修 bug，无接口破坏。
+
+**改了什么**：
+- `plugins/surfcore/lib/http-guard.js`：新增 `splitHostHeader()` / `isAllowedHost()`。
+  放行 = 回环 ∥ DSH 绑定地址 ∥ 用户白名单；`sec-fetch-site: cross-site` 一律拒。
+- `plugins/surfcore/lib/index.js`：`route()` 改用 `isAllowedHost`；403 带 `code=HOST_NOT_ALLOWED` + hint；
+  概览新增 `webAccess`；`bridgeStaleReason` 不再把 `ok:false` 判成旧目录；自愈轮询连续失败 3 次停手。
+- `plugins/surfcore/lib/pet-api.js`：接受 `hostPolicy` 注入（不注入时仍只认回环）。
+- `plugins/surfcore/lib/store.js`：`webAccess.{trustBindAddress:true, trustedHosts:[]}`。
+- `plugins/surfcore/lib/paths.js`：`QQBOT_ROOT` 解引用 `src/bridge.js` 符号链接再判（修 Linux 部署解析到 node_modules）。
+- `plugins/surfcore/lib/bridge.js`：`stop()` 4s → 15s，超时带 code/hint。
+- `plugins/surfcore/lib/client.js`：QQ 页「网页端访问」卡片；额度页失败提示追加 hint。
+- 文档：`docs/cases/2026-11-17-server-web-access-host.md`、`docs/PITFALLS.md` #127、`docs/ROADMAP.md` §1.3、`README.md` FAQ。
+
+**没做**：
+- 没在「真实服务器 + 远程浏览器」上跑端到端（本机沙箱无法直连该 DSH 登录态）；
+- 桌宠远程形态没实测（同机时 Host 仍是回环，行为不变）；
+- 没动桥接控制台 3100 的 Host 白名单（仍是单机回环，按 ROADMAP §1.3 保留）。
+
+**验证**：
+```text
+cd plugins/surfcore && node scripts/test-http-guard.mjs   # 新增 15 条断言全绿
+node scripts/test-pet-api.mjs && node scripts/test-bridge-status.mjs
+node scripts/test-store.mjs && node scripts/test-client-contract.mjs
+node scripts/test-admin-config-api.mjs && node scripts/test-host-smoke.mjs
+npm run test:audit                                        # 144/153（与改动前同数）
+```
+
+**重启**：重启 DSH（插件重新加载）。`webAccess` 配置保存后立即生效，无需重启。
+
+**风险**：
+- 默认放开「DSH 自己绑定的地址」——绑 `0.0.0.0` 时等于该机所有地址都被接受（DSH 自己本来就如此）；
+  想更紧：`webAccess.trustBindAddress=false` + 显式列白名单。
+- `stop()` 等待变长：桥接真卡死时「停止」按钮要多等 11 秒才报错。
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 

@@ -4,7 +4,7 @@
 // 剩下那层（DSH 的 requestRejection、桌宠的 x-pet-token）各管一边。
 // 判据写错的表现是"接口照样能用"，不会报错——所以必须有回归测试。
 import assert from 'node:assert/strict';
-import { isLoopbackReq, json, readBody, sameOrigin, safeEqual } from '../lib/http-guard.js';
+import { isAllowedHost, isLoopbackReq, json, readBody, sameOrigin, safeEqual } from '../lib/http-guard.js';
 
 let failures = 0;
 const ok = (cond, label) => {
@@ -21,6 +21,38 @@ console.log('## 1. 只接受回环 Host');
   for (const host of ['192.168.1.5:3100', 'evil.com', '127.0.0.1.evil.com', '', undefined, '0.0.0.0:3100']) {
     ok(!isLoopbackReq(req(host)), `拒绝非回环 Host：${host === undefined ? '(缺失)' : JSON.stringify(host)}`);
   }
+}
+
+console.log('## 1b. 设置页 Host 允许策略（2026-11-17：服务器部署要能远程打开网页端）');
+{
+  const req = (host, extra = {}) => ({ headers: { host, ...extra } });
+  // 默认策略：信任 DSH 绑定地址，白名单为空。
+  const serverPolicy = { bindHost: '192.168.3.110', trustBindAddress: true, trustedHosts: [] };
+  ok(isAllowedHost(req('192.168.3.110:43120'), serverPolicy), '放行 DSH 绑定的地址（服务器部署的主路径）');
+  ok(isAllowedHost(req('127.0.0.1:43120'), serverPolicy), '回环照旧放行');
+  ok(!isAllowedHost(req('192.168.3.111:43120'), serverPolicy), '同网段别的 IP 不放行（绑定地址才受信）');
+  ok(!isAllowedHost(req('evil.com'), serverPolicy), '外部域名不放行');
+  ok(!isAllowedHost(req('192.168.3.110.evil.com'), serverPolicy), '后缀伪装不放行');
+
+  // 关掉「信任绑定地址」= 回到旧行为（只认回环）。
+  const loopbackOnly = { bindHost: '192.168.3.110', trustBindAddress: false, trustedHosts: [] };
+  ok(!isAllowedHost(req('192.168.3.110:43120'), loopbackOnly), 'trustBindAddress=false 时绑定地址也不放行（可回退）');
+  ok(isAllowedHost(req('127.0.0.1:1'), loopbackOnly), 'trustBindAddress=false 仍放行回环');
+
+  // 用户白名单：不带端口 = 任意端口；带端口 = 精确匹配那个端口。
+  const withList = { bindHost: '192.168.3.110', trustBindAddress: false, trustedHosts: ['dsh.example.com', '10.0.0.5:8443'] };
+  ok(isAllowedHost(req('dsh.example.com'), withList), '白名单主机名（无端口）放行任意端口');
+  ok(isAllowedHost(req('DSH.Example.com:43120'), withList), '白名单匹配大小写不敏感');
+  ok(isAllowedHost(req('10.0.0.5:8443'), withList), '白名单带端口精确匹配');
+  ok(!isAllowedHost(req('10.0.0.5:43121'), withList), '白名单带端口时别的端口不放行');
+
+  // 跨站发起一律拒绝：Host 再对也不放行（与 DSH 的 sec-fetch-site 判据同源）。
+  ok(!isAllowedHost(req('192.168.3.110:43120', { 'sec-fetch-site': 'cross-site' }), serverPolicy), 'sec-fetch-site=cross-site 一律拒绝');
+
+  // 坏输入 fail-closed。
+  ok(!isAllowedHost({ headers: {} }, serverPolicy), '没有 Host → 拒绝');
+  ok(!isAllowedHost(req('[::1'), serverPolicy), '方括号没闭合 → 拒绝');
+  ok(!isAllowedHost(req('192.168.3.110:43120'), {}), '没有 bindHost 也没有白名单 → 拒绝（默认不放开）');
 }
 
 console.log('## 2. 写操作同源校验');

@@ -55,6 +55,75 @@ export function isLoopbackReq(req) {
 }
 
 /**
+ * 把 Host 头拆成「主机名 + 授权串」。IPv6 字面量必须带方括号才能和端口区分，
+ * 裸 IPv6（`::1`）按主机名处理。
+ * @returns {{ name: string, authority: string } | null} 解析失败返回 null（调用方 fail-closed）
+ */
+export function splitHostHeader(rawHost) {
+  const host = String(rawHost ?? '').trim().toLowerCase();
+  if (!host) return null;
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    if (end === -1) return null;
+    const name = host.slice(0, end + 1);
+    return name.length > 2 ? { name, authority: host } : null;
+  }
+  const colon = host.indexOf(':');
+  const name = colon === -1 ? host : host.slice(0, colon);
+  return name ? { name, authority: host } : null;
+}
+
+/** 监听地址是裸 IPv6（`::` / `fe80::1`）时补方括号，再交给 splitHostHeader。 */
+function authorityOf(raw) {
+  const text = String(raw ?? '').trim().toLowerCase();
+  if (!text) return null;
+  const wrapped = text.startsWith('[') || text.split(':').length <= 2 ? text : `[${text}]`;
+  return splitHostHeader(wrapped);
+}
+
+/**
+ * 设置页 API（`/dsh-surfcore/api/*`）的 Host 判据。
+ *
+ * 为什么不再只认回环（2026-11-17）：DSH 搬到 Linux 服务器后用 `--host 192.168.3.110`
+ * 绑定网卡地址，客户端浏览器打开的地址就是它，Host 也随之是 `192.168.3.110:43120`。
+ * 旧判据只认 127.0.0.1/localhost/::1 → 设置页与「Token 额度」全量 403，
+ * 前端只能显示「读取 token 额度失败：只接受本机回环访问」。
+ *
+ * 现在与 DSH 自己的 `isTrustedApiRequest` 采用同一套策略：
+ *   回环 ∥ DSH 监听地址（绑到 LAN 地址本身就是运维明确决定）∥ `webAccess.trustedHosts` 白名单。
+ *
+ * 放宽到「监听地址」不等于放开任意来源：浏览器无法伪造 Host，DNS rebinding 仍被 Host +
+ * `sec-fetch-site` 挡住，写操作还要过 `sameOrigin` 与 DSH 的 `connection.requestRejection`。
+ * 想退回只认回环：`webAccess.trustBindAddress = false` 且清空白名单。
+ *
+ * @param {object} req Node HTTP 请求（只看 headers）
+ * @param {{trustedHosts?: string[], bindHost?: string, trustBindAddress?: boolean}} policy
+ * @returns {boolean} true = 放行
+ */
+export function isAllowedHost(req, policy = {}) {
+  if (isLoopbackReq(req)) return true;
+  // 跨站发起：即使 Host 是我们自己的也不放行（与 DSH 的 sec-fetch-site 判据同源）。
+  if (String(req.headers?.['sec-fetch-site'] ?? '').toLowerCase() === 'cross-site') return false;
+  const parsed = splitHostHeader(req.headers?.host);
+  if (!parsed) return false;
+
+  const { trustedHosts = [], bindHost = '', trustBindAddress = true } = policy ?? {};
+  if (trustBindAddress && bindHost) {
+    const bind = authorityOf(bindHost);
+    if (bind && bind.name === parsed.name) return true;
+  }
+  for (const entry of Array.isArray(trustedHosts) ? trustedHosts : []) {
+    const candidate = authorityOf(entry);
+    if (!candidate) continue;
+    // 白名单条目写了端口就按「主机:端口」精确匹配；没写端口则任意端口都算
+    // （与 DSH 的 trustedHosts 语义一致）。
+    const explicitPort = candidate.authority.length > candidate.name.length;
+    if (explicitPort ? candidate.authority === parsed.authority : candidate.name === parsed.name) return true;
+  }
+  return false;
+}
+
+/**
  * 写操作的同源校验：带了 Origin 就必须与 Host 一致；**没带 Origin 视为通过**。
  *
  * 没带 Origin 的是非浏览器客户端（curl / 桌宠主进程）。浏览器对跨站 POST 一定会带
