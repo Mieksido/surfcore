@@ -39,9 +39,27 @@ const ROOT_CANDIDATES = [
   process.cwd(),
 ].filter(Boolean);
 
+/**
+ * 这个目录是不是「DSH profile 目录」（profiles/<name>），而不是桥接仓库根。
+ *
+ * 为什么必须排除（2026-11-17 真事故）：QQBOT_ROOT 一旦解析错到 profile 目录，
+ * 插件会把 config.json / state/ **写在那里**；等解析逻辑修好之后，那份脏文件又
+ * 让 profile 目录长得「像」桥接根，于是修好的逻辑仍然命中它 —— 错误点自我强化。
+ * profile 目录的标志是 package.json 的名字形如 `dsh-profile-<name>`。
+ */
+function isProfileDir(dir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    return /^dsh-profile-/.test(String(pkg?.name ?? ''));
+  } catch {
+    return false;
+  }
+}
+
 function looksLikeQqbotRoot(dir) {
   try {
-    return fs.existsSync(path.join(dir, 'config.json')) && fs.existsSync(path.join(dir, 'src', 'bridge.js'));
+    if (!fs.existsSync(path.join(dir, 'config.json')) || !fs.existsSync(path.join(dir, 'src', 'bridge.js'))) return false;
+    return !isProfileDir(dir);
   } catch {
     return false;
   }

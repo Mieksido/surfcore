@@ -50,6 +50,13 @@ if (!linkOk) {
 const stubPath = path.join(profileDir, 'src', 'node-path.js');
 fs.writeFileSync(stubPath, 'export function findNodeExe() { return process.execPath; }\n');
 
+// 再放一份「污染现场」：旧 bug 曾把 config.json 往 profile 目录写，写完之后 profile
+// 看起来就像一个合法的桥接根（有 config.json + src/bridge.js），修好的解析逻辑仍然命中它。
+// 这里把这个自我强化的错误点钉住：profile 目录（package.json 名为 dsh-profile-*）必须被排除。
+fs.writeFileSync(path.join(profileDir, 'package.json'), JSON.stringify({ name: 'dsh-profile-test' }, null, 2));
+fs.writeFileSync(path.join(profileDir, 'config.json'), JSON.stringify({ ownerQQ: 'polluted' }, null, 2));
+fs.mkdirSync(path.join(profileDir, 'state'), { recursive: true });
+
 // 清掉所有显式覆盖，让候选链走「插件相对位置」这条默认路径。
 for (const key of ['SURFCORE_ROOT', 'SURFCORE_QQBOT_ROOT', 'QQBILI_QQBOT_ROOT']) delete process.env[key];
 
