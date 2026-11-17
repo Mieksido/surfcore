@@ -4000,3 +4000,31 @@ npm run test:audit
   读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
 - **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
 - **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。
+
+## #127（2026-11-17）服务器部署下网页端设置页 403「只接受本机回环访问」
+
+- **现象**：DSH 跑在 Ubuntu 上（`dsh --profile web --host 192.168.3.110 --port 43120`），
+  从台式机浏览器打开网页端，设置页红字「读取 token 额度失败：只接受本机回环访问」；概览 / 额度全空。
+- **根因**：两层闸门，卡在第二层。
+  - DSH 自己的 `isTrustedApiRequest`（`dsh-client-connection`）除回环与 `trustedHosts` 外，
+    **还接受监听地址字面量**（`isBindAddressAuthority`）⇒ `--host` 绑的 LAN IP 是放行的。
+  - SurfCore `plugins/surfcore/lib/index.js` 的 `route()` 只认 `isLoopbackReq()`（127.0.0.1/localhost/::1）
+    ⇒ `/dsh-surfcore/api/*` 全量 403，前端把 `error` 拼成红字。
+  - 对照实验：`curl http://<服务器IP>:43120/dsh-surfcore/api/budget` → 403；
+    加 `-H 'Host: 127.0.0.1:43120'` → 401（过了 surfcore，停在 DSH 鉴权）。
+  - **升级修不掉**：0.8.6 与 0.8.9 的 `http-guard.js` 逐字节相同，上游单测还断言必须拒 `192.168.x`。
+- **修法**：`isAllowedHost(req, { bindHost, trustBindAddress, trustedHosts })`
+  = 回环 ∥ DSH 绑定地址 ∥ 用户白名单；跨站（`sec-fetch-site: cross-site`）一律拒。
+  默认 `trustBindAddress: true`、`trustedHosts: []`；想回到「只认回环」关掉开关即可。
+  设置页 QQ 页新增「网页端访问」卡片；403 带 `code=HOST_NOT_ALLOWED` + 可执行 hint。
+- **同批修掉的兄弟问题**（同一次部署暴露）：
+  - `paths.js`：插件装在 `profiles/<p>/node_modules/surfcore`、旁边 `src` 是符号链接时，
+    `looksLikeQqbotRoot()` 判否 ⇒ `QQBOT_ROOT` 落到 `node_modules`，`consoleToken` / `bridge.lock` 全读不到。
+    修法：找不到标准根时解引用 `src/bridge.js` 再判一次。
+  - `bridgeStaleReason()`：状态接口 `ok:false`（401 / 超时）也被判成「旧目录」，自愈轮询无限重启；
+    叠加 `stop()` 只等 4 秒（桥接要先 `saveState()` 落盘）⇒ 每 2 分钟刷
+    「进程没有在预期时间内退出」，服务器上累计 15624 条。
+    修法：`ok:false` 不判旧目录、连续失败 3 次停手、`stop()` 放宽到 15 秒。
+- **教训**：写「只允许本机」的判据前先问一句「这个程序会不会被部署到别的机器、绑非回环地址」。
+  一旦会，判据要写成「回环 ∥ 自己监听的地址 ∥ 显式白名单」并默认保守，而不是硬编码 127.0.0.1。
+

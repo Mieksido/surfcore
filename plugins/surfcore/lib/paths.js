@@ -47,7 +47,33 @@ function looksLikeQqbotRoot(dir) {
   }
 }
 
-export const QQBOT_ROOT = ROOT_CANDIDATES.find(looksLikeQqbotRoot) || path.resolve(PLUGIN_ROOT, '..', '..');
+/**
+ * 顺着 `<dir>/src/bridge.js` 找到真正的根。
+ *
+ * Linux 服务器上的部署形态是：插件作为包被装进 `<DSH_HOME>/profiles/<profile>/node_modules/surfcore`，
+ * 旁边放一个 `src -> /srv/surfcore/src` 的符号链接指向真正的仓库根。此时那个 profile 目录
+ * 只有 `src/bridge.js` 而没有 `config.json`，于是 looksLikeQqbotRoot 判否 ——
+ * QQBOT_ROOT 落到 `node_modules`，连带读不到 `config.json` 与 `state/bridge.lock`：
+ *   · consoleToken 读成空 → 桥接状态接口 401；
+ *   · lockPid 读不到 → 「重启桥接」杀不掉进程；
+ * 现象是 plugin.log 每 2 分钟刷一次「桥接还在旧目录（root=未知），自动重启 / 进程没有在预期时间内退出」。
+ * 所以这里再补一轮：解引用符号链接，确认真实根有 config.json 才采用。
+ */
+function rootBehindBridgeLink(dir) {
+  try {
+    // `.native` 在 Windows 上才认得出 junction（桌面版打包目录常用）；Linux 的符号链接两者都行。
+    const realpath = fs.realpathSync.native ?? fs.realpathSync;
+    const real = realpath(path.join(dir, 'src', 'bridge.js'));
+    const root = path.resolve(path.dirname(real), '..');
+    return looksLikeQqbotRoot(root) ? root : '';
+  } catch {
+    return '';
+  }
+}
+
+export const QQBOT_ROOT = ROOT_CANDIDATES.find(looksLikeQqbotRoot)
+  || ROOT_CANDIDATES.map(rootBehindBridgeLink).find(Boolean)
+  || path.resolve(PLUGIN_ROOT, '..', '..');
 export const QQ_CONFIG = path.join(QQBOT_ROOT, 'config.json');
 export const QQ_CONFIG_EXAMPLE = path.join(QQBOT_ROOT, 'config.example.json');
 export const QQ_STATE_DIR = path.join(QQBOT_ROOT, 'state');
