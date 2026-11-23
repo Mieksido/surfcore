@@ -71,7 +71,8 @@ node --input-type=module -e "import('./plugins/surfcore/lib/compat.js').then(m=>
 ```
 
 预期：本机未装 billion-context 时 `ok=true`，仅对未声明工具的 UI bundle 给出 `info/unknown`；
-装了 billion-context 的用户会看到 `COMPAT_TOOL_DENIED` blocker + `COMPAT_COMPACTION_CONFLICT` high。
+装了 billion-context 的用户会看到 `COMPAT_TOOL_DENIED` blocker + `COMPAT_COMPACTION_CONFLICT` high
+（2026-11-17 起：billion-context 的工具都放行时，压缩接管降为 `warn`，只有 QQ 侧拒了工具才是 `high`）。
 
 ## 7. 回滚与残余
 
