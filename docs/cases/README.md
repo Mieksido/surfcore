@@ -6,6 +6,10 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-23 | [语音包重装必然失败：平铺看不见残留](2026-11-23-voice-pack-reinstall-flatten.md) | 平铺前忽略 `PACK_KEEP`；`PACK_KEEP` 提到模块作用域；合并式搬运 | 待发布 |
+| 2026-11-23 | [「修复 DSH 注册」引用局部变量 rootPkg，点了就 500](2026-11-23-dsh-repair-rootpkg.md) | 仓库根提到模块级 `REPO_ROOT`；静态断言改成能抓住作用域 | 待发布 |
+| 2026-11-17 | [一键停止只停桥接，SnowLuma 变孤儿进程](2026-11-17-snowluma-stop-sync.md) | stop-selected 的 QQ 项收掉 SnowLuma；测试跳过真实进程；文案同步 | 待发布 |
+| 2026-11-17 | [插件体检误报：`pkg/subpath` 被当成第二个客户端来源](2026-11-17-compat-subpath-false-positive.md) | 归属复刻 DSH `exactPackageSpecifier`；压缩接管按“工具是否被拒”分级 | 待发布 |
 | 2026-11-06 | [多模型重建索引（本地/云端多选）](2026-11-06-multi-model-index-picker.md) | 弹窗多选；已有索引标注；本地走 runtime、云端直连；不改 active provider | 待发布 |
 | 2026-11-06 | [向量记忆库：最近记录 + 语义搜索](2026-11-06-vector-memory-library.md) | 只读记忆库；最近 30 条 + 一句话搜旧事；默认隐藏敏感 | 待发布 |
 | 2026-11-05 | [向量记忆 UI/自检/完整重建](2026-11-05-vector-memory-ui-self-test.md) | 本地/云端 Tab；radio + 一键启动；真实 embedding 自检；stale 检测；重建到 pending=0 | 待发布 |
