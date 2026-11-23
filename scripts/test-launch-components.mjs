@@ -31,6 +31,8 @@ assert.ok(client.includes('读不到 SnowLuma 控制台') && client.includes('�
 assert.ok(index.includes('spawnSnowLumaDetached') && index.includes('WScript.Shell') && index.includes('explorer+vbs'), 'SnowLuma 默认必须隐藏并脱离 DSH 进程树');
 assert.ok(client.includes('snowluma.launchMode'), '设置页必须能切回 legacy 启动方式');
 assert.ok(index.includes("'stop-snowluma'") && index.includes('stopSnowLuma'), '孤儿 SnowLuma 必须能在插件里关闭');
+assert.ok(index.includes('openWebui: true'), '一键启动必须顺带打开 SnowLuma 控制台（2026-11-17 用户反馈：还得自己手动开 5099）');
+assert.ok(!index.includes('openWebui: false'), '一键启动不能把打开控制台吞掉');
 assert.ok(client.includes('关闭 SnowLuma'), 'SnowLuma 设置卡必须有「关闭 SnowLuma」按钮');
 
 for (const text of ['一键启动 SurfCore', '一键停止（全部）', 'voiceBranch', '语音分支', '向量模型']) {

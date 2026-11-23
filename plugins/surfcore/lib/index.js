@@ -121,6 +121,9 @@ function readOwnVersion() {
 }
 
 const VERSION = readOwnVersion();
+// 仓库根（plugins/surfcore 往上两级）。DSH 注册修复脚本、版本校验都从这里找；
+// 2026-11-23 修：handleDshRepair 曾直接引用 readOwnVersion 里的局部变量 rootPkg，点了就 500。
+const REPO_ROOT = path.resolve(PLUGIN_ROOT, '..', '..');
 const API_PREFIX = '/dsh-surfcore/api';
 const EXT_PREFIX = '/dsh-surfcore/ext';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -2440,9 +2443,23 @@ ${body}`;
     }
     const webui = snowLumaWebui();
 
-    // 已登录（OneBot 3000/3001 在听）：什么都不用做，也别弹窗口。
+    // 已在运行（OneBot 3000/3001 在听）：不重复拉起，但「一键启动」的语义是「把环境摆好」，
+    // 所以照样把控制台打开——2026-11-17 用户反馈：点了按钮还得自己手动开 http://127.0.0.1:5099。
     if (await portOpen(3000) || await portOpen(3001)) {
-      return { ok: true, already: true, opened: false, message: 'SnowLuma 已在运行且已登录' };
+      const webuiUp = await portOpen(webui.port, 600, webui.host);
+      const opened = openWebui && webuiUp ? openLocalUrl(webui.url) : false;
+      return {
+        ok: true,
+        already: true,
+        opened,
+        webui: webui.url,
+        webuiUp,
+        message: opened
+          ? `SnowLuma 已在运行，已打开控制台 ${webui.url}`
+          : webuiUp
+            ? `SnowLuma 已在运行：${webui.url}`
+            : `SnowLuma 已在运行，但控制台端口还没起来（可能刚启动，稍等再点一次）：${webui.url}`,
+      };
     }
 
     // 进程在、但 OneBot 没起 → 多半停在登录页：直接把 WebUI 打开让人扫码。
@@ -2531,6 +2548,10 @@ ${body}`;
    * 找不到端口时再按命令行兜底。失败返回结构化原因。
    */
   async function stopSnowLuma() {
+    // 单测/宿主接线测试里绝不去停真实进程（tests 用 SURFCORE_SKIP_AUTOSTART=1 关自启）。
+    if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
+      return { ok: true, skipped: true, stopped: [], message: '测试环境：跳过关闭 SnowLuma' };
+    }
     if (process.platform !== 'win32') {
       return { ok: false, code: 'SNOWLUMA_STOP_UNSUPPORTED', error: '当前平台不支持自动关闭 SnowLuma', hint: '请手动结束 SnowLuma 进程' };
     }
@@ -3179,7 +3200,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const status = await bridgeStatus();
         const stale = bridgeStaleReason(status);
         const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
-        const snowluma = await launchSnowLuma({ openWebui: false, hideConsoles: opts.hideConsoles === true }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        // 2026-11-17 用户反馈：一键启动把 SnowLuma 拉起来了，但控制台要自己手动开。
+        // 一键启动的语义是「把环境摆好」，所以这里必须 openWebui: true（登录/加载 QQ 账号都要用控制台）。
+        const snowluma = await launchSnowLuma({ openWebui: true, hideConsoles: opts.hideConsoles === true }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
         const bridgeOk = bridge?.ok !== false;
         const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
         return launchItem(id, bridgeOk && snowOk, {
@@ -3255,13 +3278,33 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         });
       }
       if (id === 'qq') {
-        const r = await stopBridge();
-        return launchItem(id, r?.ok !== false, {
-          message: 'QQ 桥接已停止（SnowLuma 本体不会被本程序关闭）',
-          code: r?.ok === false ? 'QQ_STOP_FAILED' : '',
-          error: r?.ok === false ? (r.error || 'QQ 桥接停止失败') : '',
-          hint: r?.ok === false ? '看桥接日志/手动结束残留进程' : '',
-          detail: r,
+        // 2026-11-17 用户要求：一键启动和「一键停止」要对称。
+        // 启动时 QQ 这一项会顺手拉起 SnowLuma（startComponent → launchSnowLuma），
+        // 停止时如果只停桥接，SnowLuma 会继续占着 3000/3001/5099 当孤儿进程——
+        // 下次「一键启动」就会看到「已在运行」而什么都不做，用户以为按钮失灵。
+        const bridge = await stopBridge();
+        const snowluma = await stopSnowLuma().catch((error) => ({
+          ok: false,
+          stopped: [],
+          error: String(error?.message ?? error),
+          hint: '任务管理器结束 node.exe（命令行含 SnowLuma/index.mjs），或重启电脑',
+        }));
+        const bridgeOk = bridge?.ok !== false;
+        const snowOk = snowluma?.ok !== false;
+        const stoppedPids = Array.isArray(snowluma?.stopped) ? snowluma.stopped : [];
+        const snowMessage = snowOk
+          ? (stoppedPids.length ? `SnowLuma 已关闭（PID ${stoppedPids.join(', ')}）` : 'SnowLuma 本来就没在跑')
+          : '';
+        return launchItem(id, bridgeOk && snowOk, {
+          message: [bridgeOk ? 'QQ 桥接已停止' : '', snowMessage].filter(Boolean).join('；'),
+          code: bridgeOk && snowOk ? '' : 'QQ_STOP_PARTIAL',
+          error: !bridgeOk
+            ? (bridge?.error || 'QQ 桥接停止失败')
+            : (snowOk ? '' : `QQ 桥接已停止，但 SnowLuma 没关掉：${snowluma?.error || '未知原因'}`),
+          hint: !bridgeOk
+            ? '看桥接日志/手动结束残留进程'
+            : (snowOk ? '' : (snowluma?.hint || '任务管理器结束 node.exe（SnowLuma/index.mjs）')),
+          detail: { bridge, snowluma },
         });
       }
       if (id === 'bili') {
@@ -4028,7 +4071,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, 400, { ok: false, code: 'DSH_REPAIR_PROFILE', error: 'profile 名非法', hint: '只填 profile 目录名（如 desktop），不要填路径' });
       return;
     }
-    const repoRoot = path.dirname(rootPkg);
+    const repoRoot = REPO_ROOT;
     const script = path.join(repoRoot, 'scripts', 'setup-dsh.mjs');
     if (!fs.existsSync(script)) {
       json(res, 400, {

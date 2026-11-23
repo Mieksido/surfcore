@@ -82,6 +82,9 @@ try {
   ok(plugin.includes('handleDshRepair'), '插件要有 DSH 注册修复接口');
   ok(plugin.includes('DSH_REPAIR_SCRIPT_MISSING'), '缺脚本要给出结构化 code');
   ok(plugin.includes('ELECTRON_RUN_AS_NODE'), '用 Electron 内置 node 跑脚本的兜底');
+  // 2026-11-23：handleDshRepair 曾引用 readOwnVersion 里的局部变量 rootPkg，点「修复 DSH 注册」直接 500。
+  ok(plugin.includes('const REPO_ROOT = path.resolve(PLUGIN_ROOT'), '仓库根要从模块级 REPO_ROOT 取，别抄 readOwnVersion 的局部变量');
+  ok(!/repoRoot\s*=\s*path\.dirname\(rootPkg\)/.test(plugin), 'rootPkg 只在 readOwnVersion 里定义，handleDshRepair 引用必 ReferenceError');
   ok(!/startup[\s\S]{0,80}handleDshRepair\(/.test(plugin), '修复不能自动执行（只能点按钮）');
 } finally {
   fs.rmSync(home, { recursive: true, force: true });
