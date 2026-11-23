@@ -52,6 +52,11 @@ function devPackUrl(id) {
   return path.join(REPO_ROOT, '..', 'voice', 'packages', id);
 }
 
+/** 重装时保留这些（模型/环境/配置）：否则断点续传的 .part 也会被一起删掉。
+ *  2026-11-23：提到模块作用域——flattenSingleDir 也要用它忽略这些残留（之前它只在
+ *  createVoicePacks 里面，平铺函数引用不到，重装必报「缺少 scripts/fetch-models.mjs」）。 */
+const PACK_KEEP = ['models', 'vendor', 'voices', 'voicepack', 'logs', 'cache', '.venv', '.venv-gsv', 'config.toml'];
+
 /** 默认两个语音包。url 支持：http(s) 链接、本地目录、本地 zip。 */
 export const DEFAULT_MANIFESTS = [
   {
@@ -221,11 +226,16 @@ async function exists(p) {
 export async function flattenSingleDir(destDir) {
   let entries = [];
   try { entries = await fsp.readdir(destDir, { withFileTypes: true }); } catch { return false; }
-  const dirs = entries.filter((e) => e.isDirectory());
-  const files = entries.filter((e) => !e.isDirectory());
+  // 2026-11-23 修复：重装（force）时 clearPackKeepingAssets 会把 models/vendor/.venv/config.toml
+  // 留在原地再解压代码，所以这一层本来就会「多出几个目录 + config.toml」。
+  // 旧逻辑看到 dirs.length !== 1 / 有任何文件就直接放弃 → GitHub archive 的 `<repo>-main/` 永远平不掉，
+  // 接着 postInstall 找不到 scripts/fetch-models.mjs，用户只看到「下载到了不完整的版本」。
+  const kept = new Set(PACK_KEEP);
+  const fresh = entries.filter((e) => !kept.has(e.name));
+  const dirs = fresh.filter((e) => e.isDirectory());
+  const files = fresh.filter((e) => !e.isDirectory());
   if (dirs.length !== 1 || files.length > 0) return false;
   const inner = path.join(destDir, dirs[0].name);
-  if (await exists(path.join(destDir, 'config.toml'))) return false;
   // 判定“这层是包根”不能看 config.toml：仓库里只有 config.example.toml（真实配置不入库），
   // 用 package.json / models.json / version.json / config.example.toml 任一存在即可（2026-10-28 报告 #1）。
   const markers = ['package.json', 'models.json', 'version.json', 'config.example.toml', 'config.toml'];
@@ -235,7 +245,20 @@ export async function flattenSingleDir(destDir) {
   }
   if (!isPackRoot) return false;
   for (const name of await fsp.readdir(inner)) {
-    await fsp.rename(path.join(inner, name), path.join(destDir, name));
+    const from = path.join(inner, name);
+    const to = path.join(destDir, name);
+    // 目标已存在（用户的 config.toml、断点续传的 models/）：合并而不是 rename，否则会把用户的东西顶掉。
+    if (await exists(to)) {
+      const st = await fsp.stat(to).catch(() => null);
+      if (st?.isDirectory()) {
+        await fsp.cp(from, to, { recursive: true, force: false, errorOnExist: false });
+        await fsp.rm(from, { recursive: true, force: true });
+      } else {
+        await fsp.rm(from, { recursive: true, force: true });
+      }
+      continue;
+    }
+    await fsp.rename(from, to);
   }
   await fsp.rm(inner, { recursive: true, force: true });
   return true;
@@ -724,9 +747,6 @@ export function createVoicePacks(cfg) {
     };
   }
 
-  /** 重装时保留这些（模型/环境/配置）：否则断点续传的 .part 也会被一起删掉。 */
-const PACK_KEEP = ['models', 'vendor', 'voices', 'voicepack', 'logs', 'cache', '.venv', '.venv-gsv', 'config.toml'];
-
 /** 清掉代码，但把模型/环境/配置暂时挪出去再挪回来。 */
 async function clearPackKeepingAssets(dir) {
   if (!(await exists(dir))) return;
@@ -1014,7 +1034,9 @@ async function install(id, { force = false, mirror = '', jobs = 0 } = {}) {
         };
       }
       // 进程已经退出且端口没起来：没必要再傻等，马上把真实报错带回去。
-      if (exitCode !== null) break;
+      // 注意 exit 0 不算失败：run.bat 用 `start "" /b pythonw …` 拉起 voxd 后自己立刻退出 0，
+      // 真正的服务进程是脱离出去的（2026-11-23 实测：voxd 明明起来了，界面却报「启动失败 exit 0」）。
+      if (exitCode !== null && exitCode !== 0) break;
     }
     // 超时/早退：把这次拉起的进程树杀掉（cmd + python 子进程），别留占端口的僵尸。
     try {
