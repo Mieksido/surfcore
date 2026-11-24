@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.9",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-24T14:37:22.491Z",
+  "generatedAt": "2026-11-24T14:37:26.100Z",
   "files": {
     ".gitignore": "7999eeae654e6f1e9fd6565ea48496ffd32b2f5fbf657ac8e03f5c659e8584cd",
     ".npmrc": "a093bb2fed59d699b7f9a62a5203cc196054c624e9c39c6d908c9e7db5dd2464",
