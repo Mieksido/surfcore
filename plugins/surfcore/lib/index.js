@@ -2394,6 +2394,31 @@ ${body}`;
    *   → wscript 退出后 node 变成孤儿进程，taskkill /T DSH 也带不走它。
    * 失败时返回 ok:false，调用方回退旧逻辑（保持原有行为不变）。
    */
+  /**
+   * 找一个真正的 node.exe 来跑 SnowLuma。
+   *
+   * 2026-11-24 用户反馈「点一键启动，SnowLuma 控制台还没起来」：插件跑在 DSH（Electron）里，
+   * `process.execPath` 是 `E:\deepseek\DeepSeek Harness.exe`，旧代码直接拿它去跑 index.mjs。
+   * SnowLuma 启动的第一行日志就把这事写明白了：`Node integrity: … EXE=unlabeled` —— 它自己
+   * 是个「父进程 → 子进程」结构（`runApplication` 里 `spawn(process.execPath, …)`），父进程被换成
+   * Electron 之后子进程起不来，WebUI 端口亮一瞬就跟着没了。
+   * 优先顺序：配置里的 nodePath → 安装目录自带的 node.exe → 当前进程就是 node 时用它 → PATH 里的 node.exe。
+   */
+  function resolveNodeExe(appDir = '') {
+    const cfg = readQqConfig().config?.snowluma ?? {};
+    const explicit = String(cfg.nodePath ?? '').trim();
+    const exeName = process.platform === 'win32' ? 'node.exe' : 'node';
+    const candidates = [];
+    if (explicit) candidates.push(path.isAbsolute(explicit) ? explicit : path.resolve(QQBOT_ROOT, explicit));
+    if (appDir) candidates.push(path.join(appDir, exeName));
+    if (path.basename(process.execPath).toLowerCase() === exeName) candidates.push(process.execPath);
+    const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'Path';
+    for (const dir of String(process.env[pathKey] ?? '').split(path.delimiter)) {
+      if (dir) candidates.push(path.join(dir, exeName));
+    }
+    return candidates.find((file) => { try { return fs.existsSync(file); } catch { return false; } }) ?? '';
+  }
+
   function spawnSnowLumaDetached({ launcher, cwd, env }) {
     if (process.platform !== 'win32') return { ok: false, error: '非 Windows 平台' };
     if (/["\r\n]/.test(String(launcher)) || /["\r\n]/.test(String(cwd))) {
@@ -2404,10 +2429,12 @@ ${body}`;
       const entry = path.join(appDir, 'index.mjs');
       const lower = launcher.toLowerCase();
       const isBatch = lower.endsWith('.bat') || lower.endsWith('.cmd');
+      const nodeExe = isBatch && fs.existsSync(entry) ? resolveNodeExe(appDir) : '';
       let target;
-      if (isBatch && fs.existsSync(entry)) {
-        // 直接起 node：绕开 launcher.bat 里的 cmd 窗口和末尾的 pause
-        target = `"${process.execPath}" "${entry}"`;
+      if (nodeExe) {
+        // 直接起 node：绕开 launcher.bat 里的 cmd 窗口和末尾的 pause。
+        // 必须用真正的 node.exe（见 resolveNodeExe 注释），不能拿 process.execPath 顶替。
+        target = `"${nodeExe}" "${entry}"`;
       } else if (isBatch) {
         target = `"${process.env.ComSpec || 'cmd.exe'}" /d /c ""${launcher}""`;
       } else {
@@ -2501,8 +2528,9 @@ ${body}`;
           // 完全绕开 cmd/Windows Terminal 标签。
           const appDir = path.dirname(launcher);
           const entry = path.join(appDir, 'index.mjs');
-          if (fs.existsSync(entry)) {
-            spawn(process.execPath, [entry], {
+          const nodeExe = fs.existsSync(entry) ? resolveNodeExe(appDir) : '';
+          if (nodeExe) {
+            spawn(nodeExe, [entry], {
               cwd: appDir, detached: true, stdio: 'ignore', env: nodePathEnv(), windowsHide: true,
             }).unref();
           } else {

@@ -4105,3 +4105,23 @@ node plugins/surfcore/scripts/test-platform-start-host.mjs
 **根因**：exit code 描述的是「启动器」，不是「服务」；detached 启动器天然 exit 0。
 **修法**：`if (exitCode !== null && exitCode !== 0) break;`，退出 0 继续按端口轮询。
 **教训**：凡是「先 fork 再退出」的启动方式，不能用父进程退出码判断子服务生死；唯一的真相是端口。
+
+## #132（2026-11-24）一键启动把 Electron 当 node 跑 SnowLuma：控制台亮一瞬就死
+
+**现象**：点「一键启动」，界面回「已启动 SnowLuma 并打开控制台 http://127.0.0.1:5099」，
+浏览器也确实打开了一下，但立刻变成「拒绝连接」；`snowluma-<date>.log` 只有五行：
+`[App] SnowLuma starting`、`Node integrity: … EXE=unlabeled`、`hook auto-load enabled`、
+`[WebUI] listening http://127.0.0.1:5099`，之后连 shutdown 都没有。
+
+**根因**：插件跑在 DSH（Electron）进程里，`process.execPath` 是 `…\DeepSeek Harness.exe`。
+`spawnSnowLumaDetached()` 生成的 VBS 和 legacy+hideConsoles 分支都用它去跑 `index.mjs`；
+SnowLuma 内部又是 `runApplication() → spawn(process.execPath, [index.mjs])`，子进程同样变 Electron，
+原生 QQ 注入/OneBot 适配层起不来，父进程随即退出。`nodePathEnv()` 也只把 Electron 目录加进 PATH。
+旁证：`state/snowluma-launch.vbs` 里明写 `sh.Run """…\DeepSeek Harness.exe"" "...\index.mjs""", 0, False`。
+
+**修法**：新增 `resolveNodeExe(appDir)` —— `cfg.snowluma.nodePath` → `<appDir>\node.exe`（发行包自带）
+→ 当前进程本身就是 `node.exe` → `PATH` 里的 `node.exe`，取第一个存在的；两处启动都改用它，
+找不到才回退 `launcher.bat`。断言禁止 `spawn(process.execPath, [entry]`。
+
+**教训**：Electron 宿主里任何「拿 node 跑外部脚本」的地方都不能用 `process.execPath`；
+判断标准是 `basename === 'node.exe'`，不是「它能启动」。同类代码要一次搜干净。

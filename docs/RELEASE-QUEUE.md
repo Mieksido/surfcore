@@ -17,6 +17,32 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+<!-- release-batch: start=2026-11-24T09:45+08:00 end=2026-11-24T10:05+08:00 commits=pending -->
+
+### 批次 2026-11-24 10:05 · 一键启动把 Electron 当 node 跑 SnowLuma
+
+**覆盖提交**：待提交（dev）
+**建议**：**0.8.11（patch）**，可与 11-23 的批次合并发
+
+**改了什么**：
+- `plugins/surfcore/lib/index.js`：新增 `resolveNodeExe(appDir)`（`snowluma.nodePath` → `<appDir>\node.exe` → 当前进程就是 node.exe → PATH 里的 node.exe）；
+  `spawnSnowLumaDetached()` 与 legacy+hideConsoles 分支都改用它，找不到才回退 `launcher.bat`。
+- `scripts/test-launch-components.mjs`：断言 `resolveNodeExe` 存在，且禁止 `spawn(process.execPath, [entry]`。
+- `docs/cases/2026-11-24-snowluma-electron-execpath.md`（新增）。
+
+**没做**：
+- 没动 SnowLuma 本体；`snowluma.nodePath` 还没做 UI（可直接写 config.json 覆盖）。
+
+**验证**：`node scripts/test-launch-components.mjs` → ✅；`node --check` OK；
+用 `C:\Users\29765\SnowLuma2\node.exe` 拉起后 3000/3001/5099 全监听、桥接 `snowluma.connected=true`；
+`npm run test:audit` 待整批跑。
+
+**生效**：插件代码在 DSH 宿主里，**重启 DSH** 才用新逻辑。
+
+**风险**：发行包没有 `node.exe` 且 PATH 里也没有 node 时回退 `launcher.bat`（可能弹黑框）。
+
+---
+
 <!-- release-batch: start=2026-11-23T22:00+08:00 end=2026-11-23T22:30+08:00 commits=3ca1272 -->
 
 ### 批次 2026-11-23 22:30 · 语音包「重装」平铺失败
