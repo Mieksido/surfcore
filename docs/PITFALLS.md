@@ -4125,3 +4125,19 @@ SnowLuma 内部又是 `runApplication() → spawn(process.execPath, [index.mjs])
 
 **教训**：Electron 宿主里任何「拿 node 跑外部脚本」的地方都不能用 `process.execPath`；
 判断标准是 `basename === 'node.exe'`，不是「它能启动」。同类代码要一次搜干净。
+
+## #133（2026-11-24）更新面板显示「已是最新 v?→v0.8.9」：git 通道不报本地版本
+
+**现象**：检查更新判定 `ahead=0 / behind=0 / status=latest`，界面左侧版本的槽位仍是 `v?`；
+只有走 git 通道的「SurfCore 本体」这样，走 release 通道的桌宠正常。
+
+**根因**：`inspectGitComponent()` 的返回对象里根本没有 `installedVersion`——版本号读取只在
+`inspectVersionComponent()` 里（`package.json` → `version.json` → `.installed-meta.json`）。
+`client.js` 渲染是 `v${item.installedVersion ?? "?"}→v${item.latestVersion}`，字段缺失必然落成 `?`。
+
+**修法**：新增 `readLocalVersion(dir)`（`package.json` → `version.json`），
+`inspectGitComponent()` 的 `base` 带上 `installedVersion`，所有 return 分支继承。
+新增 `scripts/test-update-git-local-version.mjs` 固定「有 package.json 报版本 / 没有报空串」。
+
+**教训**：两条检查通道（git / version）必须对同一个字段给同一份语义；
+界面上的 `?` 往往不是「查不到」，而是「这个分支压根没填」。新增返回字段时先数一遍调用方的兜底分支。

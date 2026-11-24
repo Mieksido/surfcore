@@ -17,6 +17,26 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+<!-- release-batch: start=2026-11-24T22:20+08:00 end=2026-11-24T22:45+08:00 commits=pending -->
+
+### 批次 2026-11-24 22:45 · 更新面板 git 通道补本地版本
+
+**覆盖提交**：（提交后回填）
+**建议**：**0.8.11（patch）**，与 11-24 上一批合并发
+
+**改了什么**：
+- `plugins/surfcore/lib/updates.js`：新增 `readLocalVersion(dir)`（package.json → version.json）；`inspectGitComponent()` 的 `base` 带 `installedVersion`，所有 return 分支继承。
+- `scripts/test-update-git-local-version.mjs`：新回归（真 git 仓库报版本 / 删掉 package.json 报空串）。
+
+**没做**：界面 `fmtV()` 对空串的文案（仍会显示 `v?`），本次只补数据源；没动 `inspectVersionComponent` 的读取顺序。
+
+**验证**：`node --check plugins/surfcore/lib/updates.js`；`node scripts/test-update-git-local-version.mjs` → `git 通道本地版本回填 OK`；真实仓库只读校验 `installedVersion:"0.8.9"`；`npm run test:audit` 全绿。
+
+**生效**：需重启 DSH（插件代码在内存里）。
+
+**风险**：只多读两个本地 JSON，失败返回空串，不影响 ahead/behind/blocked 判定。
+
+**case**：[2026-11-24-update-git-local-version.md](cases/2026-11-24-update-git-local-version.md)
 <!-- release-batch: start=2026-11-24T09:45+08:00 end=2026-11-24T10:05+08:00 commits=pending -->
 
 ### 批次 2026-11-24 10:05 · 一键启动把 Electron 当 node 跑 SnowLuma

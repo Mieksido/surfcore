@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-24 | [更新面板显示「已是最新 v?→v0.8.9」：git 通道不报本地版本](2026-11-24-update-git-local-version.md) | 新增 readLocalVersion；inspectGitComponent 的 base 带 installedVersion | 待发布 |
 | 2026-11-24 | [一键启动把 Electron 当 node 跑 SnowLuma，控制台亮一瞬就死](2026-11-24-snowluma-electron-execpath.md) | resolveNodeExe 四级候选；禁止 process.execPath 跑 index.mjs | 待发布 |
 | 2026-11-23 | [语音包重装必然失败：平铺看不见残留](2026-11-23-voice-pack-reinstall-flatten.md) | 平铺前忽略 `PACK_KEEP`；`PACK_KEEP` 提到模块作用域；合并式搬运 | 待发布 |
 | 2026-11-23 | [「修复 DSH 注册」引用局部变量 rootPkg，点了就 500](2026-11-23-dsh-repair-rootpkg.md) | 仓库根提到模块级 `REPO_ROOT`；静态断言改成能抓住作用域 | 待发布 |
