@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.9",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-24T01:42:50.683Z",
+  "generatedAt": "2026-11-24T01:42:55.918Z",
   "files": {
     ".gitignore": "7999eeae654e6f1e9fd6565ea48496ffd32b2f5fbf657ac8e03f5c659e8584cd",
     ".npmrc": "a093bb2fed59d699b7f9a62a5203cc196054c624e9c39c6d908c9e7db5dd2464",
@@ -21,7 +21,7 @@
     "docs/OPTIMIZATION-BACKLOG.md": "c6321602be25d188cb3aabddacad58211b89bd956ae207aca4183f5356f27560",
     "docs/PITFALLS.md": "84d625edf02af0602f2649669690b7badea1b27276b0049a907079255a07a5ac",
     "docs/README.md": "efcaf7cfc014db961a9e57afb5ffeee27b326fab711306b1a5dc83b5ccb11aa7",
-    "docs/RELEASE-QUEUE.md": "488b73d5607cc70b900cc39f961aa59c064d6cbb09ae4b70d08d7e70c6b17644",
+    "docs/RELEASE-QUEUE.md": "c7f42d61a05432ecb3496a71227d93223930dedea5c15f37d5f89974ecd3692d",
     "docs/RELEASE.md": "9381b15535aa16c7b95dfe43fd7465dfa9c95cb2a56a6bb9245b23b7d3be26cb",
     "docs/RISK_REGISTER.md": "79587e248eb1dc904392e3bacd044eed636f018109aec82c6df5bf3f73af066f",
     "docs/ROADMAP.md": "7b8e16219980abc5715e533dd3280564e4ce69c259f70feb3a965580f6b69c7f",
