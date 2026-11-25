@@ -2414,7 +2414,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 checked: unified?.bridge?.startupNotify !== false,
                 onChange: (e) => setUnified(["bridge", "startupNotify"], e.target.checked),
               })),
-            h("div", { className: "qbw-hint" }, "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma，并弹出「加载 QQ 账号」窗口自动检测进程（QQ 本身未登录时仍需扫码）。勾选「向量记忆」会启动 Embedding runtime 并把记忆方式切到向量（自检不过不会切）；一键停止会把记忆方式切回叙事。不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
+            h("div", { className: "qbw-hint" }, "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma，并弹出「加载 QQ 账号」窗口自动检测进程（QQ 本身未登录时仍需扫码）。勾选「向量记忆」会启动 Embedding runtime 并把记忆方式切到向量（自检不过不会切）；一键停止会把记忆方式切回叙事，并连 SnowLuma 一起关掉（含脱离 DSH 的孤儿进程，3000/3001/5099 会一起释放）；只想停桥接就点 QQ 卡片里的「停止」。人格卡在「角色」页维护。")),
           h("div", { className: "qbw-card" },
             h("h4", null, "更新 ", (() => {
               const rows = updates.results ?? [];

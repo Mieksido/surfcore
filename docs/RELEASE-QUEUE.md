@@ -17,6 +17,186 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+<!-- release-batch: start=2026-11-24T22:20+08:00 end=2026-11-24T22:45+08:00 commits=pending -->
+
+### 批次 2026-11-24 22:45 · 更新面板 git 通道补本地版本
+
+**覆盖提交**：`d3ed165`
+**建议**：**0.8.11（patch）**，与 11-24 上一批合并发
+
+**改了什么**：
+- `plugins/surfcore/lib/updates.js`：新增 `readLocalVersion(dir)`（package.json → version.json）；`inspectGitComponent()` 的 `base` 带 `installedVersion`，所有 return 分支继承。
+- `scripts/test-update-git-local-version.mjs`：新回归（真 git 仓库报版本 / 删掉 package.json 报空串）。
+
+**没做**：界面 `fmtV()` 对空串的文案（仍会显示 `v?`），本次只补数据源；没动 `inspectVersionComponent` 的读取顺序。
+
+**验证**：`node --check plugins/surfcore/lib/updates.js`；`node scripts/test-update-git-local-version.mjs` → `git 通道本地版本回填 OK`；真实仓库只读校验 `installedVersion:"0.8.9"`；`npm run test:audit` 全绿。
+
+**生效**：需重启 DSH（插件代码在内存里）。
+
+**风险**：只多读两个本地 JSON，失败返回空串，不影响 ahead/behind/blocked 判定。
+
+**case**：[2026-11-24-update-git-local-version.md](cases/2026-11-24-update-git-local-version.md)
+<!-- release-batch: start=2026-11-24T09:45+08:00 end=2026-11-24T10:05+08:00 commits=pending -->
+
+### 批次 2026-11-24 10:05 · 一键启动把 Electron 当 node 跑 SnowLuma
+
+**覆盖提交**：`211b2f5`
+**建议**：**0.8.11（patch）**，可与 11-23 的批次合并发
+
+**改了什么**：
+- `plugins/surfcore/lib/index.js`：新增 `resolveNodeExe(appDir)`（`snowluma.nodePath` → `<appDir>\node.exe` → 当前进程就是 node.exe → PATH 里的 node.exe）；
+  `spawnSnowLumaDetached()` 与 legacy+hideConsoles 分支都改用它，找不到才回退 `launcher.bat`。
+- `scripts/test-launch-components.mjs`：断言 `resolveNodeExe` 存在，且禁止 `spawn(process.execPath, [entry]`。
+- `docs/cases/2026-11-24-snowluma-electron-execpath.md`（新增）。
+
+**没做**：
+- 没动 SnowLuma 本体；`snowluma.nodePath` 还没做 UI（可直接写 config.json 覆盖）。
+
+**验证**：`node scripts/test-launch-components.mjs` → ✅；`node --check` OK；
+用 `C:\Users\29765\SnowLuma2\node.exe` 拉起后 3000/3001/5099 全监听、桥接 `snowluma.connected=true`；
+`npm run test:audit` 待整批跑。
+
+**生效**：插件代码在 DSH 宿主里，**重启 DSH** 才用新逻辑。
+
+**风险**：发行包没有 `node.exe` 且 PATH 里也没有 node 时回退 `launcher.bat`（可能弹黑框）。
+
+---
+
+<!-- release-batch: start=2026-11-23T22:00+08:00 end=2026-11-23T22:30+08:00 commits=3ca1272 -->
+
+### 批次 2026-11-23 22:30 · 语音包「重装」平铺失败
+
+**覆盖提交**：`3ca1272`
+**建议**：**0.8.12（patch）**，与 rootPkg 批次一起发
+
+**改了什么**：
+- `src/voice-packs.js`：`PACK_KEEP` 提到模块作用域；`flattenSingleDir()` 先过滤 `PACK_KEEP` 再判层数、
+  删掉 config.toml 守卫、逐项合并搬运（目录 `fsp.cp({recursive,force:false,errorOnExist:false})`，文件保留用户版本）。
+- `scripts/test-voice-flatten-reinstall.mjs`（新增）：残留模型/日志/config + 新解压 `<repo>-main/` 并存时仍平铺成功。
+
+**没做**：
+- 没改语音包本身的下载/模型（那是包内 `fetch-models.mjs` 的事）。
+- 没做「重装前把资产挪到临时目录」的路线（改动大、要复制 1.84GB）。
+
+**验证**：`node scripts/test-voice-flatten-reinstall.mjs` 7 项全绿；`node --check src/voice-packs.js` OK；
+本机真机把 `surfvoicelocal-main/` 平铺后 `fetch-models.mjs` 能正常开始下载。
+
+**生效**：桥接进程（`src/bridge.js`）重启后载入新代码；设置页「重装」走桥接。
+
+**风险**：平铺是跨盘/跨目录的搬运，用户把包目录指到别的盘时仍有 IO 成本；合并逻辑只删空目录，不删用户文件。
+
+**case**：[`docs/cases/2026-11-23-voice-pack-reinstall-flatten.md`](cases/2026-11-23-voice-pack-reinstall-flatten.md)
+
+<!-- release-batch: start=2026-11-23T21:45+08:00 end=2026-11-23T22:00+08:00 commits=b865f15 -->
+
+### 批次 2026-11-23 21:50 · 修复「修复 DSH 注册」的 rootPkg 崩溃
+
+**覆盖提交**：`b865f15`
+**建议**：**0.8.12（patch）**，可与 0.8.11 合并发布（都是小修）
+
+**改了什么**：
+- `plugins/surfcore/lib/index.js`：新增模块级 `const REPO_ROOT = path.resolve(PLUGIN_ROOT, '..', '..')`；
+  `handleDshRepair()` 的 `path.dirname(rootPkg)` 改成 `REPO_ROOT`（`rootPkg` 是 `readOwnVersion()` 的局部变量，
+  跨函数引用必 `ReferenceError`，v0.8.9 起就带着）。
+- `scripts/test-dsh-health.mjs`：加两条断言（必须用模块级 `REPO_ROOT`、禁止 `path.dirname(rootPkg)`）。
+- 文档：`docs/cases/2026-11-23-dsh-repair-rootpkg.md`、PITFALLS #129、case 索引一行。
+
+**没做**：
+- 没改「修复 DSH 注册」的行为（仍只跑 `setup-dsh.mjs`、不自动重启 DSH）。
+- 没补能真正执行这条路由的集成测试（只在静态断言层面钉死）。
+
+**验证**：
+```text
+node --check plugins/surfcore/lib/index.js
+node scripts/test-dsh-health.mjs          # ✅ dsh-health 通过
+npm run test:audit                        # Audit suite: 153/153 scripts passed.
+```
+
+**note**：运行中的 DSH 需重启才载入新代码。
+
+---
+
+<!-- release-batch: start=2026-11-17T18:25+08:00 end=2026-11-17T19:15+08:00 commits=b865f15 -->
+
+### 批次 2026-11-17 18:35 · 一键停止同步关闭 SnowLuma
+
+**覆盖提交**：`b865f15`
+**建议**：**0.8.11（patch）**（与 0.8.10 同批发布也可，都是小修）
+
+**改了什么**：
+- `plugins/surfcore/lib/index.js`：`stopComponent('qq')` 先 `stopBridge()` 再 `stopSnowLuma()`，合并两边结果，
+  部分失败给 `QQ_STOP_PARTIAL` + 可执行 hint（一键停止和一键启动终于对称）。
+- `plugins/surfcore/lib/index.js`：`stopSnowLuma()` 加 `SURFCORE_SKIP_AUTOSTART` 短路，测试不误杀真实网关。
+- `plugins/surfcore/lib/index.js`（19:10 补）：`startComponent('qq')` 的 `launchSnowLuma` 由 `openWebui: false`
+  改成 `true`；「已在运行」分支按 `portOpen(webui.port)` 决定 `openLocalUrl`，返回 `opened/webuiUp/message`
+  —— 一键启动不再把用户丢在「连接被拒绝」的 5099 上（PITFALLS #128）。
+- `plugins/surfcore/lib/client.js`：一键启动卡片文案删掉「不会关闭 SnowLuma 本体」，说明一键停止会连
+  SnowLuma 一起关、只停桥接用 QQ 卡片的「停止」。
+- 测试：`test-platform-start-host.mjs` 断言 `detail.snowluma.skipped`；`test-client-contract.mjs` 断言新旧文案；
+  `scripts/test-launch-components.mjs` 断言 `openWebui: true` 且禁止 `openWebui: false`。
+
+**没做**：
+- 没加 `snowluma.stopWithQq` 开关（用户明确要同步，默认即同步）。
+- QQ 卡片上的单「停止」仍只停桥接（刻意语义）。
+- 开机自启仍未做。
+
+**验证**：
+```text
+node scripts/test-launch-components.mjs
+node plugins/surfcore/scripts/test-client-contract.mjs
+node plugins/surfcore/scripts/test-platform-start-host.mjs
+npm run test:audit
+```
+另：真实配置下直连 `/bridge` 的 `start-snowluma` → `opened:true`，3000/3001/5099 三端口监听、
+`status.snowluma.connected:true good:true`。
+
+**重启**：重启 DSH 主进程（插件宿主与 client 包都在启动时载入）。
+
+**风险**：用户手动启动、与桥接无关的 SnowLuma 也会被一键停止收掉——这是「同步控制」的代价，文案已写明；
+只想停桥接就用 QQ 卡片的「停止」。
+
+**case**：`docs/cases/2026-11-17-snowluma-stop-sync.md`
+
+---
+
+<!-- release-batch: start=2026-11-17T18:00+08:00 end=2026-11-17T18:15+08:00 commits=6aa23fe -->
+
+### 批次 2026-11-17 18:15 · 插件体检：子路径误报与压缩接管分级
+
+**覆盖提交**：`6aa23fe`
+**建议**：**0.8.10（patch）**
+
+**改了什么**：
+- `plugins/surfcore/lib/compat.js`：新增 `exactPackageSpecifier`（与 DSH `client-modules` 同构）；
+  `resolveLoaderPackage` 的裸说明符只在「精确包名且命中」时归属，`pkg/subpath` 返回 `null`，
+  不再被算成同一客户端包的第二个来源（`COMPAT_CLIENT_MULTI_SOURCE` 误报消失）。
+- `COMPAT_COMPACTION_CONFLICT`：工具全放行（`denied.length === 0`）时降为 `warn`，标题/说明改成
+  「压缩由该插件接管、`auto:false` 是配套设计」；QQ 侧拒了工具才升回 `high`。
+- `scripts/test-plugin-compat.mjs`：新夹具 `subpath-client`（同包 `./client` + `./gate` 两行）断言不报
+  MULTI_SOURCE；断言放行时 `warn`；新增 `deniedScan` 断言被拒时 `high`。
+
+**没做**：
+- 没动 billion-context 的 patch（gate 行承载 preset 等待的服务，不能单删）；
+- 没改 DSH 上游语义，只让体检对齐；
+- 12 条 `COMPAT_TOOL_INVENTORY_UNKNOWN` 保持 info（插件没声明工具清单 ≠ 故障）。
+
+**验证**：
+```text
+node scripts/test-plugin-compat.mjs
+npm run test:audit
+```
+
+**重启**：重启 DSH 主进程（`compat.js` 驻留内存，GUI 的「插件体检」才用新逻辑）。
+
+**风险**：
+- DSH 若改成「按 patch 所属包」判定归属，体检会重新漏报真重复，`exactPackageSpecifier` 需跟着改；
+- 压缩接管降为 warn 后，用户可能忽略「QQ 侧拒工具」这个真实分支——该分支仍由 `COMPAT_TOOL_DENIED` blocker 拦。
+
+**case**：`docs/cases/2026-11-17-compat-subpath-false-positive.md`
+
+---
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 

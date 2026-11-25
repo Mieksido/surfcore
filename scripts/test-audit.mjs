@@ -247,6 +247,8 @@ const tests = [
   'test-voice-gates.mjs',
   'test-update-apply-result.mjs',
   'test-update-version-fallback.mjs',
+  // git 通道也要报本地版本，否则更新面板只能显示 `v?→v0.8.9`（2026-11-24）。
+  'test-update-git-local-version.mjs',
   // 版本号单一真相：根/插件 package.json 一致、无硬编码、CHANGELOG 有当前版本。
   'test-version.mjs',
   // 插件冲突体检：已知第三方工具是否被 QQ 策略拒绝、压缩接管冲突、未知插件必须标 unknown。

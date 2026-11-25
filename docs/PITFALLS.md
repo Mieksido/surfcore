@@ -4000,3 +4000,144 @@ npm run test:audit
   读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
 - **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
 - **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。
+## #127（2026-11-17）一键启动会拉起 SnowLuma，一键停止却只停桥接 → 孤儿进程占着 3000/3001/5099
+
+**现象**
+- 概览点「一键启动 SurfCore」后 SnowLuma 起来了；点「一键停止（全部）」后只有桥接停了，3000/3001/5099 仍被占。
+- 再点「一键启动」没反应：`launchSnowLuma` 看到 3000/3001 在听，走「已登录」分支直接返回 `already:true`。
+- 用户原话（m00373）：「我希望能在我于SurfCore界面内点击"一键启动"或者"停止"时能同步控制」。
+
+**根因**
+- `plugins/surfcore/lib/index.js` 的 `stopComponent('qq')` 只 `await stopBridge()`，message 写死「SnowLuma 本体不会被本程序关闭」；而 `startComponent('qq')`（第 3182 行）会 `launchSnowLuma(...)` —— 启动/停止不对称。
+- 更深一层：`spawnSnowLumaDetached`（第 2394 行）故意让 `explorer.exe` 经 VBS 拉起 node，变成 explorer 的孤儿进程，躲开 DSH 的 job object（否则 DSH 每次更新/重启都会连带杀掉网关，2026-11-06 事故）。代价是插件也不再有句柄，只能靠 `stopSnowLuma()` 按端口 + 命令行找 PID。
+
+**处置**
+- `stopComponent('qq')`：先 `stopBridge()` 再 `stopSnowLuma()`，合并 `ok/message/error/hint`，部分失败 `QQ_STOP_PARTIAL`。
+- `stopSnowLuma()`：`SURFCORE_SKIP_AUTOSTART=1` 时返回 skipped（测试绝不误杀开发机上的真实网关）。
+- 前端文案删掉「不会关闭 SnowLuma 本体」，说明一键停止会连 SnowLuma 一起关、只停桥接用 QQ 卡片的「停止」。
+- 测试：`test-platform-start-host.mjs` 钉住 `detail.snowluma.skipped`；`test-client-contract.mjs` 钉住新文案。
+- case：`docs/cases/2026-11-17-snowluma-stop-sync.md`
+
+**怎么验证**
+```text
+node plugins/surfcore/scripts/test-client-contract.mjs
+node plugins/surfcore/scripts/test-platform-start-host.mjs
+npm run test:audit
+```
+
+**残余**
+- QQ 卡片的单「停止」仍然只停桥接（刻意：那是“桥接”按钮）。
+- 开机自启仍未做：重启电脑后要再点一次一键启动。
+
+## #128（2026-11-17）一键启动把 SnowLuma 拉起来了，控制台却要用户手动开
+
+**现象**：点「一键启动 SurfCore」后 QQ 桥接连上，但浏览器没有控制台标签；「加载 QQ 账号」弹窗报
+`(SNOWLUMA_WEBUI_DOWN) SnowLuma 控制台还没起来`，进程列表空白，用户只能自己在地址栏敲 `http://127.0.0.1:5099`。
+
+**根因**：`startComponent('qq')` 调 `launchSnowLuma({ openWebui: false })`——**启动成功但不打开控制台**，
+且完全不报错；`launchSnowLuma` 的 3000/3001「已在运行」分支也写死 `opened: false`。前端没有「控制台没开」
+的自动兜底，于是唯一的信号是那个弹窗。
+
+**处置**
+- `index.js` 的 qq 分支改为 `openWebui: true`；「已在运行」分支按 `portOpen(webui.port)` 决定是否 `openLocalUrl`，
+  并在 message 里说清三种情况（已打开 / 已在运行 + URL / 端口还没起来稍等）。
+- `scripts/test-launch-components.mjs` 钉住 `openWebui: true`、禁止 `openWebui: false`。
+- case：`docs/cases/2026-11-17-snowluma-stop-sync.md` 的「补充（2026-11-17 19:10）」。
+
+**怎么验证**
+```text
+node --check plugins/surfcore/lib/index.js
+node scripts/test-launch-components.mjs
+node plugins/surfcore/scripts/test-client-contract.mjs
+node plugins/surfcore/scripts/test-platform-start-host.mjs
+```
+真实配置下 `/bridge` 的 `start-snowluma` 返回 `opened:true`，且 3000/3001/5099 三端口都监听。
+
+**残余**
+- 重复点一键启动会在「已在运行」分支再开一次控制台标签（浏览器行为，不重复拉起进程）。
+- 仍需要重启 DSH 才载入新代码。
+- 开机自启仍未做（见 #127 残余）。
+
+## #129（2026-11-23）「修复 DSH 注册」引用了别的函数的局部变量 rootPkg → 必 500
+
+**现象**：控制台点「修复 DSH 注册」，接口回 `API 失败： rootPkg is not defined`（`plugin.log` 有同样的行）；
+插件其余功能正常，只有这一个动作炸。
+
+**根因**：`handleDshRepair()` 里写 `const repoRoot = path.dirname(rootPkg);`，而 `rootPkg` 只在
+`readOwnVersion()` 内部定义。跨函数引用局部变量 → `ReferenceError`。v0.8.9 起就有。
+
+**为什么测试没抓到**：`test-dsh-health.mjs` 只断言插件字符串里有 `handleDshRepair`，从不执行这条路径。
+
+**修法**：`const REPO_ROOT = path.resolve(PLUGIN_ROOT, '..', '..');` 放模块级，`handleDshRepair` 用 `REPO_ROOT`；
+`test-dsh-health.mjs` 加两条断言（必须用 `REPO_ROOT`、禁止 `path.dirname(rootPkg)`）。
+
+**教训**：静态断言「这个函数存在」不等于「这个函数能跑」；能真跑一条就真跑，跑不了至少把关键引用钉死。
+同类坑：任何 `path.dirname(<别的函数里的变量>)` 都要能在同一作用域里找到定义。
+
+**残余**：要重启 DSH 才载入新代码（运行中的插件模块已驻留内存）。
+
+## #130（2026-11-23）语音包「重装」必然失败：平铺函数看不见 `PACK_KEEP`，还坚持 `dirs.length === 1`
+
+**现象**：设置 → 语音 → 本地语音包点「重装」，96% 后报
+`安装包里缺少 scripts/fetch-models.mjs（可能下载到了不完整的版本），请重试或先删掉 …voice-local 再装`。
+删目录全新安装没事，装过一次之后重装必挂。
+
+**根因**（`src/voice-packs.js`）：`install()` = `clearPackKeepingAssets()`（保 `PACK_KEEP`）→ 解压代码 zip → `flattenSingleDir()`。
+旧 `flattenSingleDir` 要求「恰好一个子目录、零个文件、没有 config.toml」，而保留下来的 models/logs/config.toml
+让这三个条件全破，`surfvoicelocal-main/` 永远平不掉 → postInstall 找不到脚本。另外 `PACK_KEEP` 原先定义在
+`createVoicePacks` 闭包里，平铺函数引用它是 `ReferenceError`（修第一条才会撞上）。
+
+**修法**：`PACK_KEEP` 提到模块作用域；`flattenSingleDir` 先过滤 `PACK_KEEP` 名字再判层数，删掉 config.toml 守卫，
+逐项搬运时目录用 `fsp.cp({ recursive:true, force:false, errorOnExist:false })` 合并、文件保留用户版本。
+回归 `scripts/test-voice-flatten-reinstall.mjs`（残留 + 新解压并存、.part 保留、用户 config 不被顶掉）。
+
+**教训**：「保资产重装」和「干净目录平铺」是两套契约，必须在平铺函数里显式承认残留；`PACK_KEEP` 这类
+跨函数共享的常量从一开始就该在模块作用域。测试要覆盖「第二次安装」，不能只测新装。
+
+
+## #131（2026-11-23）语音包「启动成功」被误判成失败：启动器 exit 0 就 break
+
+`run.bat` 用 `start "" /b pythonw.exe -m voxd …` 把服务甩出去后立刻 `exit /b 0`；`voice-packs.js`
+的等待循环 `if (exitCode !== null) break;` 把这次退出当成致命错误，界面报
+`VOICE_START_EXITED … 启动失败（进程已退出，exit 0）；脚本输出：另一个程序正在使用此文件`，
+而端口 2 秒后其实是起来的——用户看到「启动失败」，实际引擎好好的。
+
+**根因**：exit code 描述的是「启动器」，不是「服务」；detached 启动器天然 exit 0。
+**修法**：`if (exitCode !== null && exitCode !== 0) break;`，退出 0 继续按端口轮询。
+**教训**：凡是「先 fork 再退出」的启动方式，不能用父进程退出码判断子服务生死；唯一的真相是端口。
+
+## #132（2026-11-24）一键启动把 Electron 当 node 跑 SnowLuma：控制台亮一瞬就死
+
+**现象**：点「一键启动」，界面回「已启动 SnowLuma 并打开控制台 http://127.0.0.1:5099」，
+浏览器也确实打开了一下，但立刻变成「拒绝连接」；`snowluma-<date>.log` 只有五行：
+`[App] SnowLuma starting`、`Node integrity: … EXE=unlabeled`、`hook auto-load enabled`、
+`[WebUI] listening http://127.0.0.1:5099`，之后连 shutdown 都没有。
+
+**根因**：插件跑在 DSH（Electron）进程里，`process.execPath` 是 `…\DeepSeek Harness.exe`。
+`spawnSnowLumaDetached()` 生成的 VBS 和 legacy+hideConsoles 分支都用它去跑 `index.mjs`；
+SnowLuma 内部又是 `runApplication() → spawn(process.execPath, [index.mjs])`，子进程同样变 Electron，
+原生 QQ 注入/OneBot 适配层起不来，父进程随即退出。`nodePathEnv()` 也只把 Electron 目录加进 PATH。
+旁证：`state/snowluma-launch.vbs` 里明写 `sh.Run """…\DeepSeek Harness.exe"" "...\index.mjs""", 0, False`。
+
+**修法**：新增 `resolveNodeExe(appDir)` —— `cfg.snowluma.nodePath` → `<appDir>\node.exe`（发行包自带）
+→ 当前进程本身就是 `node.exe` → `PATH` 里的 `node.exe`，取第一个存在的；两处启动都改用它，
+找不到才回退 `launcher.bat`。断言禁止 `spawn(process.execPath, [entry]`。
+
+**教训**：Electron 宿主里任何「拿 node 跑外部脚本」的地方都不能用 `process.execPath`；
+判断标准是 `basename === 'node.exe'`，不是「它能启动」。同类代码要一次搜干净。
+
+## #133（2026-11-24）更新面板显示「已是最新 v?→v0.8.9」：git 通道不报本地版本
+
+**现象**：检查更新判定 `ahead=0 / behind=0 / status=latest`，界面左侧版本的槽位仍是 `v?`；
+只有走 git 通道的「SurfCore 本体」这样，走 release 通道的桌宠正常。
+
+**根因**：`inspectGitComponent()` 的返回对象里根本没有 `installedVersion`——版本号读取只在
+`inspectVersionComponent()` 里（`package.json` → `version.json` → `.installed-meta.json`）。
+`client.js` 渲染是 `v${item.installedVersion ?? "?"}→v${item.latestVersion}`，字段缺失必然落成 `?`。
+
+**修法**：新增 `readLocalVersion(dir)`（`package.json` → `version.json`），
+`inspectGitComponent()` 的 `base` 带上 `installedVersion`，所有 return 分支继承。
+新增 `scripts/test-update-git-local-version.mjs` 固定「有 package.json 报版本 / 没有报空串」。
+
+**教训**：两条检查通道（git / version）必须对同一个字段给同一份语义；
+界面上的 `?` 往往不是「查不到」，而是「这个分支压根没填」。新增返回字段时先数一遍调用方的兜底分支。

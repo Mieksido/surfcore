@@ -106,6 +106,21 @@ function normalizeDir(dir) {
 }
 
 /**
+ * 本地已装版本号：package.json → version.json。
+ * git 通道以前完全不报版本，界面只能显示 `v?→v0.8.9`（2026-11-24 用户反馈）。
+ */
+function readLocalVersion(dir) {
+  if (!dir) return '';
+  for (const file of ['package.json', 'version.json']) {
+    try {
+      const version = String(JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')).version ?? '').trim();
+      if (version) return version;
+    } catch {}
+  }
+  return '';
+}
+
+/**
  * 检查单个组件（只读；`fetch` 时才会碰网络）。
  *
  * 两种通道，按组件声明自动选：
@@ -630,7 +645,11 @@ export async function inspectGitComponent(component, { fetch = true } = {}) {
   const id = String(component?.id ?? '').trim();
   const name = String(component?.name ?? id);
   const dir = normalizeDir(component?.dir);
-  const base = { id, name, dir: dir || String(component?.dir ?? ''), kind: component?.kind ?? 'component' };
+  const base = {
+    id, name, dir: dir || String(component?.dir ?? ''), kind: component?.kind ?? 'component',
+    // git 通道也要报本地版本，否则弹窗只能显示 `v?→v0.8.9`（2026-11-24 用户反馈）。
+    installedVersion: readLocalVersion(dir),
+  };
   if (!id) return { ...base, available: false, reason: '组件缺少 id' };
   if (!dir) return { ...base, available: false, reason: '目录不存在（还没安装？）' };
 

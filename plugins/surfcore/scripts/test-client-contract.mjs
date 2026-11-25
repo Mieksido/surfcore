@@ -395,6 +395,10 @@ assert.ok(/setSnowImport\(true\)/.test(source), '按钮要打开说明弹窗（�
 assert.ok(source.includes('导入 SnowLuma 的安装位置'), '说明弹窗标题存在');
 assert.ok(source.includes('SnowLuma.exe —— SnowLuma2 目录里的主程序'), '弹窗必须说清要选什么文件');
 assert.ok(source.includes('不会下载、不会安装、不会移动或删除任何文件'), '弹窗必须说明不会改动文件');
+// 2026-11-17：一键停止必须和一键启动对称——启动顺手拉起 SnowLuma，停止也要收掉它。
+assert.ok(source.includes('一键停止（全部）'), '一键停止按钮存在');
+assert.ok(!source.includes('不会关闭 SnowLuma 本体'), '文案不能再声称不会关闭 SnowLuma');
+assert.ok(source.includes('并连 SnowLuma 一起关掉'), '必须说明一键停止会连 SnowLuma 一起关掉');
 assert.ok(/browseNative\("file",[^)]*"snowluma"\)/.test(source), '文件选择必须用 snowluma 过滤器');
 assert.ok(!/browseNative\("file",[^)]*filter:/.test(source), '不得把原始 filter 串传给宿主');
 

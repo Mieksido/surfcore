@@ -143,12 +143,26 @@ function nearestPackage(start) {
   }
 }
 
+/** DSH 的 exactPackageSpecifier：只有裸包名或 @scope/name 才算“这个包”。 */
+function exactPackageSpecifier(raw) {
+  if (raw.startsWith('@')) {
+    const parts = raw.split('/');
+    return parts.length === 2 && parts.every(Boolean) ? raw : undefined;
+  }
+  return raw.length > 0 && !raw.includes('/') && !raw.includes(':') ? raw : undefined;
+}
+
 function resolveLoaderPackage(name, baseDir, packages) {
   const raw = String(name ?? '').trim();
   if (!raw) return null;
   if (!raw.startsWith('.') && !raw.startsWith('file:') && !path.isAbsolute(raw)) {
-    const exact = packages.find((pkg) => pkg.name === raw || raw.startsWith(`${pkg.name}/`));
+    // 与 DSH 对齐：`pkg/subpath` 是独立模块。DSH 的 exactPackageSpecifier 对子路径
+    // 返回 undefined，所以这样的行不会被算成“又解析了一次 pkg 的客户端 bundle”。
+    // billion-context 的 bili-compaction-gate 就是这种 host-only 子路径行。
+    if (exactPackageSpecifier(raw) === undefined) return null;
+    const exact = packages.find((pkg) => pkg.name === raw);
     if (exact) return { name: exact.name, dir: exact.dir, pkg: exact.pkg };
+    return null;
   }
   let candidate;
   if (raw.startsWith('file:')) {
@@ -375,19 +389,29 @@ export function scanPluginCompatibility({
     }
 
     if (contextProvider && autoOff.length) {
+      // 已知上下文插件（如 billion-context）关掉 DSH compaction-basic 是它的设计：
+      // 压缩由它的预设策略 + 自己的工具接管。只有工具被拒时才真的“两套都没有”，
+      // 那由上面的 COMPAT_TOOL_DENIED 报 blocker，这里降为 warn。
+      const bothOff = denied.length > 0;
       add({
         code: 'COMPAT_COMPACTION_CONFLICT',
-        severity: 'high',
+        severity: bothOff ? 'high' : 'warn',
         confidence: 'confirmed',
-        title: '第三方上下文插件接管压缩，但 DSH 自动压缩被关闭',
+        title: bothOff
+          ? '第三方上下文插件接管压缩，但 DSH 自动压缩被关闭，且它的工具被拒'
+          : '第三方上下文插件接管压缩，DSH 自动压缩按设计关闭',
         evidence: {
           bundle: pkg.name,
           version: pkg.version,
           compactionAutoOff: autoOff,
           sources: autoOffSources.map((f) => path.relative(profile.dir, f) || f),
         },
-        impact: '如果 QQ 又拒绝该插件的压缩工具，这个会话既没有 DSH 自动压缩、也没有可用的第三方压缩，上下文会持续变长。',
-        recommendation: '确认压缩由哪一套负责：要么恢复 DSH compaction-basic 的 auto，要么允许该插件的上下文工具；不要两套都关。',
+        impact: bothOff
+          ? 'QQ 会话既没有 DSH 自动压缩、也没有可用的第三方压缩，上下文会持续变长。'
+          : `压缩由 ${pkg.name} 的工具接管（本次体检里其工具均被策略放行），DSH 的 compaction-basic auto 关闭与此配套；只有在 QQ 侧拒绝这些工具时才会变成“两套都没有”。`,
+        recommendation: bothOff
+          ? '确认压缩由哪一套负责：要么恢复 DSH compaction-basic 的 auto，要么允许该插件的上下文工具；不要两套都关。'
+          : '保持现状即可；若打算在 QQ 会话禁用该插件的压缩工具，先恢复 DSH compaction-basic 的 auto。',
       });
     }
   }

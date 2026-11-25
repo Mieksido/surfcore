@@ -14,10 +14,11 @@ fs.mkdirSync(path.join(profile, 'node_modules', 'mystery-context'), { recursive:
 fs.mkdirSync(path.join(profile, 'node_modules', 'declared-context'), { recursive: true });
 fs.mkdirSync(path.join(profile, 'node_modules', 'evil-plugin'), { recursive: true });
 fs.mkdirSync(path.join(profile, 'node_modules', 'client-dupe'), { recursive: true });
+fs.mkdirSync(path.join(profile, 'node_modules', 'subpath-client'), { recursive: true });
 
 fs.writeFileSync(path.join(profile, 'package.json'), JSON.stringify({
   name: 'fixture-profile',
-  dsh: { profile: { bundles: ['surfcore', 'billion-context', 'mystery-context', 'declared-context', 'evil-plugin', 'client-dupe'] } },
+  dsh: { profile: { bundles: ['surfcore', 'billion-context', 'mystery-context', 'declared-context', 'evil-plugin', 'client-dupe', 'subpath-client'] } },
 }));
 fs.writeFileSync(path.join(profile, 'cordis.patch.yml'), [
   '- id: billion-context',
@@ -61,6 +62,23 @@ fs.writeFileSync(path.join(profile, 'node_modules', 'client-dupe', 'cordis.patch
   '      name: ./entry.js',
   '',
 ].join('\n'));
+// 2026-11-17：`pkg/subpath` 是 host-only 独立模块（DSH 的 exactPackageSpecifier 不归属它），
+// 不能算成“第二次解析同一个客户端包”。billion-context 的 bili-compaction-gate 就是这种布局。
+fs.writeFileSync(path.join(profile, 'node_modules', 'subpath-client', 'package.json'), JSON.stringify({
+  name: 'subpath-client',
+  version: '1.0.0',
+  type: 'module',
+  exports: { './client': './client.js', './gate': './gate.js' },
+  dsh: { client: { platform: 'web' }, bundle: { patch: ['./cordis.patch.yml'] } },
+}));
+fs.writeFileSync(path.join(profile, 'node_modules', 'subpath-client', 'cordis.patch.yml'), [
+  '- insert:',
+  '    - id: subpath-main',
+  '      name: subpath-client',
+  '    - id: subpath-gate',
+  '      name: subpath-client/gate',
+  '',
+].join('\n'));
 fs.writeFileSync(path.join(profile, 'node_modules', 'declared-context', 'surfcore.compat.json'), JSON.stringify({
   schema: 1,
   tools: [{ name: 'acp_status', class: 'model-context' }],
@@ -99,6 +117,14 @@ try {
   assert.equal(multi.severity, 'blocker');
   assert.equal(multi.evidence.sources.length, 2);
 
+  // `pkg/subpath` 行不归属到包：不能制造假 blocker（billion-context 的 gate 行）。
+  assert.ok(!r.issues.some((i) => i.code === 'COMPAT_CLIENT_MULTI_SOURCE'
+    && i.evidence?.package === 'subpath-client'),
+  'pkg/subpath（host-only 子路径）不应报多来源客户端包');
+
+  // 压缩接管：已知上下文插件且工具都放行时，DSH auto=false 是配套设计 → warn，不阻断 ok。
+  assert.equal(compact.severity, 'warn', `压缩接管在工具放行时应降为 warn（实际 ${compact.severity}）`);
+
   // 显式放行上下文工具：工具拒绝应消失；压缩接管冲突仍存在。
   const allowed = scanPluginCompatibility({
     dshHome: root, profileName: 'desktop', surfcoreVersion: '0.7.18',
@@ -106,6 +132,14 @@ try {
   });
   assert.ok(!allowed.issues.some((i) => i.code === 'COMPAT_TOOL_DENIED'), '放行后不应再报工具拒绝');
   assert.ok(allowed.issues.some((i) => i.code === 'COMPAT_COMPACTION_CONFLICT'), '压缩接管仍需报');
+
+  // 工具被拒时：压缩接管升级为 high（真的“两套都没有”）。
+  const deniedScan = scanPluginCompatibility({
+    dshHome: root, profileName: 'desktop', surfcoreVersion: '0.7.18',
+    safeExact: SAFE_EXACT_TOOLS.filter((n) => n !== 'compress'),
+  });
+  const deniedCompact = deniedScan.issues.find((i) => i.code === 'COMPAT_COMPACTION_CONFLICT');
+  assert.equal(deniedCompact?.severity, 'high', '工具被拒时压缩接管必须升级为 high');
 
   // 没有 profile：必须报 blocker，不能返回空报告冒充通过。
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'sfc-compat-empty-'));

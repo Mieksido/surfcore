@@ -116,6 +116,10 @@ try {
   assert.equal(stopped.status, 200);
   assert.equal(stopped.data.items?.length, 4, '一键停止要覆盖四项');
   assert.ok(stopped.data.items.every((x) => x.ok), '未运行的服务停止应幂等成功');
+  // 2026-11-17：一键停止要和一键启动对称——QQ 这一项也要收掉 SnowLuma。
+  const qqStop = stopped.data.items.find((x) => x.id === 'qq');
+  assert.equal(qqStop?.detail?.snowluma?.skipped, true, '测试环境必须跳过真实的 SnowLuma 关闭（不能误杀开发机进程）');
+  assert.match(String(qqStop?.message || ''), /SnowLuma/, 'QQ 停止项的结果说明里要写清 SnowLuma 怎么处置');
 
   // 一键启动：两个都关 → 跳过两边，不启动任何进程。
   const all = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-all' });
